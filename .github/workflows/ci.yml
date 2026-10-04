@@ -9,7 +9,8 @@
 #                  packages into shards using real timings (.github/scripts/test-matrix.sh): regular packages
 #                  go whole into TEST_SHARDS shards; a package slower than SPLIT_THRESHOLD is split by test
 #                  into several shards, so one slow package cannot dominate the wall time
-#   test (N)    -> each shard on its own runner, in parallel; the TestCluster* tests are skipped (cluster job)
+#   test (N)    -> each shard on its own runner, in parallel; the TestCluster* tests (cluster job) and the
+#                  TestArchitecture* tests (architecture job) are skipped
 #   test-report -> merges coverage, publishes the slowest tests, stores timings for the next run
 #   test (min)  -> builds with the minimum Go (PR to develop) or runs everything (PR to main)
 #   modules     -> build, vet and test of every nested module (persistence/postgres, publishers, compat,
@@ -20,10 +21,14 @@
 #                  never on feature or hotfix PRs
 #   benchmark   -> every benchmark of the benchmark module once (-benchtime=1x; a manual run can choose a
 #                  longer benchtime), same triggers as inttest; fails if no benchmark ran
+#   architecture-> the TestArchitecture* tests (go list and source scans that enforce the dependency boundaries,
+#                  #208) of the packages the plan selected, in every module that has them, the four publishers
+#                  included; every one of them on a full run. No -race, no coverage, -count=1; fails if an
+#                  expected test did not pass (a run that executed none included)
 #   cluster     -> every TestCluster* test of the root module, alone (the shards skip them); same triggers as
 #                  inttest (push to develop, release PR develop -> main, manual); fails if no TestCluster* test passed
-#   race        -> the selected root packages (the whole module on a full run) under -race, TestCluster*
-#                  skipped; same scope as the test shards
+#   race        -> the selected root packages (the whole module on a full run) under -race, TestCluster* and
+#                  TestArchitecture* skipped; same scope as the test shards
 #   unit-gate   -> the unit-test rules of #204 (no testify, no generated mocks, go-specs, no real resources)
 #                  plus the no-skip rule for inttest/
 #   ci-ok       -> the one required check: compares every job with the plan; a job the plan requires that did
@@ -64,6 +69,11 @@ env:
   # the race job skip them (-skip), the cluster job runs only them (-run), and test-matrix.sh leaves them
   # out of the lists it distributes, so every test runs in exactly one lane.
   CLUSTER_TESTS: "^TestCluster"
+  # Top-level tests that enforce a dependency boundary with `go list` or a source scan (named TestArchitecture*,
+  # see docs/ci.md and docs/testing/architecture-tests.md). The shards, the race job and the modules job skip
+  # them (-skip "$CLUSTER_TESTS|$ARCHITECTURE_TESTS" or -skip "$ARCHITECTURE_TESTS"); the architecture job runs
+  # them, without -race or coverage. test (min) keeps running them with the minimum Go.
+  ARCHITECTURE_TESTS: "^TestArchitecture"
   GOTESTSUM_VERSION: "v1.13.0"
 
 jobs:
@@ -125,6 +135,7 @@ jobs:
       lanes: ${{ steps.impact.outputs.lanes }}
       modules: ${{ steps.impact.outputs.modules }}
       race_packages: ${{ steps.impact.outputs.race_packages }}
+      architecture: ${{ steps.impact.outputs.architecture }}
       matrix: ${{ steps.matrix.outputs.matrix || '{"include":[{"id":0,"packages":"./...","run":""}]}' }}
     steps:
       - uses: actions/checkout@v7
@@ -143,6 +154,9 @@ jobs:
           git rev-parse --verify --quiet "$HEAD_SHA^{commit}" >/dev/null || { echo "::error::head commit $HEAD_SHA is not available"; exit 1; }
           git diff --name-status -M -z "origin/$BASE...$HEAD_SHA" > "$RUNNER_TEMP/changes.z"
           echo "Changed paths: $(tr -cd '\0' < "$RUNNER_TEMP/changes.z" | wc -c) fields"
+      # The selector decides what every other job runs, and nothing else in the workflow runs its tests.
+      - name: Selector tests
+        run: go test -count=1 ./.github/scripts/impact
       - name: Impact plan
         id: impact
         env:
@@ -207,9 +221,9 @@ jobs:
           mkdir -p reports
           args=()
           [ -z "$RUN" ] || args+=(-run "$RUN")
-          # -run selects the share of a split package and -skip removes the cluster tests from it;
-          # both apply at once. The cluster tests run in the cluster job.
-          args+=(-skip "$CLUSTER_TESTS")
+          # -run selects the share of a split package and -skip removes the cluster and architecture tests
+          # from it; both apply at once. They run in the cluster and architecture jobs.
+          args+=(-skip "$CLUSTER_TESTS|$ARCHITECTURE_TESTS")
           # shellcheck disable=SC2086  # PACKAGES is a space-separated list
           gotestsum --format github-actions \
             --jsonfile "reports/test-$ID.json" --junitfile "reports/junit-$ID.xml" \
@@ -341,7 +355,7 @@ jobs:
       - name: Test
         if: matrix.vet-only != 'yes'
         working-directory: ${{ matrix.dir }}
-        run: go test $TESTFLAGS ./...
+        run: go test $TESTFLAGS -skip "$ARCHITECTURE_TESTS" ./...
 
   # Integration tests: the inttest module starts its own containers with Testcontainers (Docker is already
   # on ubuntu-latest), so there are no services: and no DSN variables. A missing Docker fails the job, a test
@@ -453,7 +467,42 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-  # The root module under the race detector (#206), TestCluster* skipped: they are not run under -race
+  # The architecture tests (#208): the top-level TestArchitecture* tests of every module. They resolve the import
+  # graph with `go list` subprocesses and scan the sources, so -race and coverage only slow them down; the
+  # shards, the race job and the modules job skip them and this job runs them, with -count=1 so a cached result
+  # never stands in. The plan chooses them (.github/scripts/impact): the packages the change reaches through
+  # the import graph and, because the graph cannot see a boundary that is a new import in a package the test does
+  # not import, the source-reading packages whenever a production Go file changed; every one of them on a push
+  # to develop, the release PR and a manual run. The nested modules (the four publishers) run from their own
+  # directory. `go test` reports "no tests to run" as a pass, so the command checks that every test the plan
+  # expected has a pass event, and fails otherwise (a run that executed none included). ci-ok requires it
+  # whenever the plan does: a skipped architecture job fails the gate.
+  architecture:
+    needs: plan
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).architecture
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/go-setup
+      - name: Architecture tests
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ needs.plan.outputs.architecture }}
+        run: |
+          status=0
+          go run ./.github/scripts/impact architecture -out "$RUNNER_TEMP/architecture" > "$RUNNER_TEMP/architecture.md" || status=$?
+          cat "$RUNNER_TEMP/architecture.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: architecture-results
+          path: ${{ runner.temp }}/architecture/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # The root module under the race detector (#206), TestCluster* and TestArchitecture* skipped: they are not run under -race
   # yet (out of scope for #206, a follow-up once the in-process suites are known to be race-free). Its triggers
   # are those of the unit shards; its scope is the plan's: the selected packages on a pull request, the whole
   # module on a push to develop, the release PR and a manual run. A race
@@ -473,7 +522,7 @@ jobs:
           PACKAGES: ${{ needs.plan.outputs.race_packages }}   # ./... on a full run, else the selected packages
         run: |
           # shellcheck disable=SC2086  # PACKAGES is a space-separated list
-          go test -race -count=1 -timeout=8m -skip "$CLUSTER_TESTS" $PACKAGES
+          go test -race -count=1 -timeout=8m -skip "$CLUSTER_TESTS|$ARCHITECTURE_TESTS" $PACKAGES
 
   # Unit-test rules of #204 over every Go file of every module (docs/testing/go-specs.md, "The unit-test gate").
   # Cheap and independent of the test shards, so it runs even when the plan skips the tests.
@@ -560,7 +609,7 @@ jobs:
   # the planner; the gate fails on a job it does not know. Branch protection is not touched.
   ci-ok:
     if: always()
-    needs: [flow, lint, plan, test, test-report, test-min, modules, inttest, benchmark, cluster, race, unit-gate, tidy, api, vuln]
+    needs: [flow, lint, plan, test, test-report, test-min, modules, inttest, benchmark, cluster, architecture, race, unit-gate, tidy, api, vuln]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
