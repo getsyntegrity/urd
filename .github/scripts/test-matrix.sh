@@ -21,6 +21,9 @@
 #                    The shards run with -skip of this regex, so a split package never distributes these
 #                    tests: they are dropped from the list, and "every listed test lands in exactly one
 #                    shard" covers exactly the tests the shards run. An empty value disables the filter.
+#   ARCHITECTURE_TESTS regex of the top-level tests that belong to the architecture lane (#208). Default
+#                    '^TestArchitecture'. Handled exactly like CLUSTER_TESTS: the shards run with -skip of
+#                    both regexes, so a split package never distributes them either.
 #   PACKAGES_FILE    optional file with the import paths the impact selector chose (one per line). The
 #                    script keeps only those of `go list ./...`; without it every package of the module
 #                    is planned. A selection that leaves no package is an error, never an empty matrix.
@@ -32,6 +35,10 @@ threshold="${SPLIT_THRESHOLD:-90}"
 target="${SPLIT_TARGET:-90}"
 glob="${TIMINGS_GLOB:-.test-timings/*.json}"
 cluster_re="${CLUSTER_TESTS-^TestCluster}"
+architecture_re="${ARCHITECTURE_TESTS-^TestArchitecture}"
+# The tests the shards never run: the cluster lane and the architecture lane. One regex, one -skip.
+lane_re="$cluster_re"
+if [ -n "$architecture_re" ]; then lane_re="${lane_re:+$lane_re|}$architecture_re"; fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -89,10 +96,10 @@ awk -F'\t' -v t="$threshold" 'NR == FNR { if ($2 + 0 > t + 0) slow[$1] = $2; nex
 cp "$tmp/all.txt" "$tmp/regular.txt"
 while IFS=$'\t' read -r pkg ptime; do
   [ -n "$pkg" ] || continue
-  # The cluster lane's tests are dropped here because the shards run with -skip of the same regex. If
+  # The tests of the cluster and architecture lanes are dropped here because the shards run with -skip of the same regexes. If
   # nothing is left, the package stays whole below and its shard's -skip leaves nothing to run.
   if ! go test -list '.*' "$pkg" 2> "$tmp/list.err" | grep -E '^(Test|Example|Fuzz)' \
-       | { if [ -n "$cluster_re" ]; then grep -vE "$cluster_re"; else cat; fi; } > "$tmp/tests.txt" \
+       | { if [ -n "$lane_re" ]; then grep -vE "$lane_re"; else cat; fi; } > "$tmp/tests.txt" \
      || [ ! -s "$tmp/tests.txt" ]; then
     log "cannot list tests of $pkg, keeping it whole"
     continue

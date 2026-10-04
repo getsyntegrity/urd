@@ -2,7 +2,9 @@
 
 Issue #208. Tests that enforce a dependency boundary are named `TestArchitecture*`, so a CI job can select them by
 name the way it selects `TestCluster*` (see [docs/ci.md](../ci.md)). This page is the inventory behind that
-convention. In this first step only the names change: the tests run in the same jobs, with the same flags, as before.
+convention. The names came first (#297); the `architecture` job that runs them, and the exclusion of `TestArchitecture*`
+from the shards, the race job and the modules job, came next. How the job selects them is in
+[docs/ci.md](../ci.md#the-architecture-lane).
 
 ## What counts as an architecture test
 
@@ -64,8 +66,20 @@ tests and keep their names; they are used only by the tests above.
 `publisher/kafka`, `publisher/nats`, `publisher/pulsar`, `publisher/websocket`: `TestUnitTestClosureExcludesRuntimeAndRoot`
 becomes `TestArchitectureUnitTestClosureExcludesRuntimeAndRoot` (`go list -deps -test ./...` in each module).
 
-These modules have their own `go.mod`, so a `-run`/`-skip` on the root module never reaches them. They keep running in
-the `modules` job as before. Whether that job should also separate them is decided together with the selector change.
+These modules have their own `go.mod`, so a `-run`/`-skip` on the root module never reaches them. The `architecture` job
+runs them from their own directory, and the `modules` job skips `TestArchitecture*`, so they run in exactly one lane.
+
+## Which lane runs what
+
+| Job | `TestArchitecture*` |
+|---|---|
+| `test (shard N)`, `race`, `modules (dir)` | skipped (`-skip`) |
+| `architecture` | runs them: the selected packages and the source-sensitive ones, all of them on a full run; every test the plan expected must pass |
+| `test (min)` | still runs them on the release PR and on a hotfix PR to `main`, with the minimum Go (to review) |
+
+Two packages are **source-sensitive**: `engine` and `port/adapter`. Their tests look at files the package does not
+import (`./command/...`, `./tenancy/...`, the contract packages that must not import `port/adapter`, every production
+file), so the import graph cannot tell when they have to run; a changed production Go file anywhere selects them.
 
 ## Parity
 
@@ -73,5 +87,12 @@ Before and after the rename, `go test -list . ./...` on the root module returns 
 the 19 renames above (38 diff lines, one `<` and one `>` per rename). `go test -list '^TestArchitecture' ./...` returns
 exactly the 19 new names, plus the 4 publisher tests in their modules. No test was added, removed or changed beyond its
 name, and the `specs.Describe` descriptions are unchanged. All of them pass with `-count=1` and no `-race`.
+
+Parity of what runs. Before the lane, a package the plan selected ran its architecture tests inside its shard (with
+`-race` and coverage). Now every package with architecture tests that the graph selects runs them in the `architecture`
+job instead, with the same reason, and the two source-sensitive packages run them on any production Go change besides.
+No selected test lost its lane: `go test -list` of the shards' `-skip '^TestCluster|^TestArchitecture'` plus the
+`architecture` plan covers the 848 names, and a full run lists the 23 tests (19 in `.`, 4 in the publishers) and checks
+that each one passed.
 
 Historical notes under `odd/` and `openspec/` still quote the old names on purpose: they record what was true then.
