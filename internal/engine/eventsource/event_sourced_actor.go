@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -191,6 +192,10 @@ type Actor struct {
 	directSpan           trace.Span
 	directErr            error
 	directShutdown       bool
+	// directRequest identifies the request whose write is in flight: the one
+	// persistAsync stashed, and the only one replyDirect may answer from the
+	// stash. See directRequest.
+	directRequest directRequest
 
 	// tenantAware reports whether the actor system was built from a Config
 	// with a tenancy.TenantResolver registered (extensions.TenancyMarker
@@ -271,8 +276,12 @@ func New() *Actor {
 // recovers the actor state from the events and snapshot stores. Child actors
 // are spawned in PostStart where [goakt.ReceiveContext] is available.
 func (entity *Actor) PreStart(ctx *goakt.Context) error {
-	// A restart reuses this value: drop the batch cycle the previous run left.
+	// A restart reuses this value: drop the batch cycle the previous run left,
+	// and the write it had in flight. A run that stopped while persisting left
+	// the phase and the request it was waiting on behind; the next run would
+	// stash every command forever, and could take a later request for that one.
 	entity.resetBatch()
+	entity.resetDirect()
 	entity.stopFlushTimer()
 	eventsStoreExt, err := extensions.Require[*extensions.EventsStore](ctx, extensions.EventsStoreExtensionID)
 	if err != nil {
@@ -352,6 +361,17 @@ func (entity *Actor) Receive(ctx *goakt.ReceiveContext) {
 		case phasePersisting:
 			ctx.Stash()
 		case phaseDirectReplying:
+			// Only the request whose write just finished is answered here. Any
+			// other command was already queued behind the write's confirmation,
+			// ahead of the stashed request GoAkt re-delivers at the tail of the
+			// mailbox: answering it from the stash would send its caller the
+			// current state without running the command, and run the stashed
+			// request a second time. It waits in the stash until replyDirect
+			// releases it.
+			if !entity.directRequest.isRequest(ctx) {
+				ctx.Stash()
+				return
+			}
 			entity.replyDirect(ctx)
 		default:
 			entity.processCommandAndReply(ctx, command)
@@ -1044,6 +1064,7 @@ func (entity *Actor) persistAsync(ctx *goakt.ReceiveContext, envelopes []*egopb.
 	entity.directNumEvents = len(envelopes)
 	entity.directStartTime = startTime
 	entity.directSpan = span
+	entity.directRequest = newDirectRequest(ctx)
 
 	ctx.Stash()
 
@@ -1078,31 +1099,82 @@ func (entity *Actor) handleDirectPersistResponse(ctx *goakt.ReceiveContext, resp
 	ctx.UnstashAll()
 }
 
-// replyDirect delivers the reply to the single stashed command once
-// handleDirectPersistResponse has confirmed (or failed) its persist write,
-// mirroring replyFromBatch for the batched path. Exactly one command is ever
-// stashed while phasePersisting (further commands stash behind it in
-// Receive), so there is no remaining-replies counter to drain.
+// directRequest identifies one request to the entity: the message, the context
+// of the call that sent it, and the sender. An actor cannot tell requests apart
+// by the message alone, because a caller may send the same message object more
+// than once, and two callers may share one: what separates the requests is the
+// call. GoAkt's Ask hands the actor the context of the caller's call, the
+// message as sent and the sender, and a stashed message keeps all three, so a
+// re-delivered request compares equal to itself and to no other. Each caller
+// derives its own context per call (Engine.Dispatch does), so two calls that
+// send the same message object still differ.
+type directRequest struct {
+	set     bool
+	message any
+	ctx     context.Context
+	sender  *goakt.PID
+}
+
+// newDirectRequest records the request ctx is delivering.
+func newDirectRequest(ctx *goakt.ReceiveContext) directRequest {
+	return directRequest{set: true, message: ctx.Message(), ctx: ctx.Context(), sender: ctx.Sender()}
+}
+
+// isRequest reports whether ctx is delivering the recorded request.
+func (r directRequest) isRequest(ctx *goakt.ReceiveContext) bool {
+	return r.matches(ctx.Message(), ctx.Context(), ctx.Sender())
+}
+
+// matches reports whether ctx is delivering the recorded request. A value that
+// cannot be compared cannot tell requests apart, and is taken to match, which is
+// what the actor assumed for every request before it recorded any.
+func (r directRequest) matches(message any, ctx context.Context, sender *goakt.PID) bool {
+	if !r.set {
+		return true
+	}
+	return r.sender == sender && sameValue(r.message, message) && sameValue(r.ctx, ctx)
+}
+
+// sameValue reports whether a and b are the same value, without panicking on a
+// type that cannot be compared. Values of such a type are taken to be the same.
+func sameValue(a, b any) bool {
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
+	if a == nil || !reflect.TypeOf(a).Comparable() {
+		return true
+	}
+	return a == b
+}
+
+// replyDirect delivers the reply to the stashed command whose persist write
+// handleDirectPersistResponse has confirmed (or failed), mirroring
+// replyFromBatch for the batched path. Other commands may be stashed behind it
+// (see Receive); they are not answered here, and UnstashAll below releases them
+// once the reply is out.
 //
 // A GetStateCommand that arrives while phase is phaseDirectReplying stashes
-// itself (see handleGetStateCommand) rather than reading stale state, but
-// handleDirectPersistResponse's UnstashAll already ran before that phase
-// began and won't run again for this cycle. UnstashAll here is what
-// redelivers it once phase drops back to phaseProcessing. GoAkt's own
-// unstashAll re-enqueues the stashed messages in their original order
-// ("prepends ... keeps the messages in the same order as received"), but
-// that ordering is among themselves, not relative to this actor's own
-// pending reply: a PID only ever runs one turn at a time (TrySchedule is a
-// no-op while the current turn is still Processing), so nothing this actor
-// unstashes can be dequeued and handled before the current Receive call
-// returns. We still send the reply before calling UnstashAll() so the
-// ordering is explicit in the code rather than relying on that scheduler
-// detail, and, on the error path, so the stash is drained before
-// ctx.Shutdown() tears the actor down. It is a no-op when nothing stashed
-// during the window.
+// itself (see handleGetStateCommand) rather than reading stale state, and so
+// does any command other than the one whose write just finished (see Receive
+// and directRequest). UnstashAll here is what redelivers them once phase
+// drops back to phaseProcessing.
+//
+// GoAkt's unstashAll re-delivers through the mailbox's normal enqueue, that is
+// at its tail, in the order the messages were stashed; its documentation says
+// it prepends, but it does not. So the stashed command is not necessarily the
+// next message Receive sees: a command that was already queued behind the
+// write's confirmation comes first. Treating whatever arrived first as the
+// stashed command answered that command with the current state without running
+// it, and ran the stashed command a second time later. A PID only ever runs one
+// turn at a time, so nothing this actor unstashes can be dequeued before the
+// current Receive call returns. We still send the reply before calling
+// UnstashAll() so the ordering is explicit in the code, and, on the error path,
+// so the stash is drained before ctx.Shutdown() tears the actor down. It is a
+// no-op when nothing stashed during the window.
 func (entity *Actor) replyDirect(ctx *goakt.ReceiveContext) {
 	entity.endCommandSpan(ctx.Context(), entity.directSpan, entity.directStartTime)
 	entity.directSpan = nil
+	entity.directRequest = directRequest{}
 	entity.phase = phaseProcessing
 
 	if entity.directErr != nil {
@@ -1801,6 +1873,22 @@ func (entity *Actor) stopFlushTimer() {
 		entity.flushTimer.Stop()
 		entity.flushTimer = nil
 	}
+}
+
+// resetDirect clears the state of a direct (non-batched) write in flight and
+// returns the actor to phaseProcessing. It runs in PreStart, before the first
+// turn of a run, so no Receive call reads these fields while it writes them.
+func (entity *Actor) resetDirect() {
+	entity.phase = phaseProcessing
+	entity.directPendingState = nil
+	entity.directPendingCounter = 0
+	entity.directPendingTime = time.Time{}
+	entity.directNumEvents = 0
+	entity.directStartTime = time.Time{}
+	entity.directSpan = nil
+	entity.directErr = nil
+	entity.directShutdown = false
+	entity.directRequest = directRequest{}
 }
 
 // resetBatch clears all batch accumulation state, preparing the actor for
