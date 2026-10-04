@@ -165,6 +165,7 @@ func (engine *Engine) Dispatch(ctx context.Context, entityID string, env command
 	// A resolver error blocks the command outright: no dispatch, no actor,
 	// no handler, no persistence. Legacy mode (no resolver registered) is
 	// byte-identical: this whole block is skipped and ctx is untouched.
+	actorName := entityID
 	if engine.tenantResolver != nil {
 		tenantContext, resolveErr := engine.tenantResolver.Resolve(ctx)
 		if resolveErr != nil {
@@ -176,11 +177,19 @@ func (engine *Engine) Dispatch(ctx context.Context, entityID string, env command
 			return command.Result{}, attachErr
 		}
 		ctx = attachedCtx
+
+		// The entity is addressed by (tenant, ID): the command reaches the
+		// actor of the caller's own tenant. An ID that only another tenant
+		// has spawned is not found here; it is never that tenant's actor.
+		var nameErr error
+		if actorName, nameErr = engine.actorNameFor(tenantContext, entityID); nameErr != nil {
+			return command.Result{}, nameErr
+		}
 	}
 
 	ctx = protocol.AttachCarrier(ctx, command.MarshalMetadata(env.Metadata()))
 
-	reply, sendErr := ref.noSender.SendSync(ctx, entityID, env.Payload(), timeout)
+	reply, sendErr := ref.noSender.SendSync(ctx, actorName, env.Payload(), timeout)
 	if sendErr != nil {
 		// SendSync/goakt's Ask races ctx.Done() against its own internal
 		// timer derived from the timeout argument. When ctx.Done() wins it

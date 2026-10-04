@@ -499,7 +499,7 @@ func TestEventSourcedActorTenancyGate(t *testing.T) {
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(eventStore),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, extensions.NewEntityTenantScope("acme"))
 
 			// No TenantContext attached: this is exactly what a caller that
@@ -533,7 +533,7 @@ func TestEventSourcedActorTenancyGate(t *testing.T) {
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(eventStore),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
 			reply := ask(ctx, pid, &testpb.CreateAccount{AccountBalance: 500})
@@ -630,7 +630,7 @@ func TestEventSourcedActorBatchTenantHomogeneity(t *testing.T) {
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(eventStore),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -694,7 +694,7 @@ func TestEventSourcedActorResetBatchDoesNotClearActorTenant(t *testing.T) {
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(connectedEventsStore(ctx)),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -756,7 +756,7 @@ func TestEventSourcedActorBatchTenantHomogeneity_ZeroEventCrossTenant(t *testing
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(eventStore),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -826,7 +826,7 @@ func TestEventSourcedActorBatchTenantHomogeneity_ZeroEventSameTenant(t *testing.
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(connectedEventsStore(ctx)),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
 			ctxA := attachTenant(ctx, tenantContextFor(ctx, "acme"))

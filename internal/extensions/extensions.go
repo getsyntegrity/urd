@@ -324,21 +324,34 @@ func (x *EncryptorExtension) Encryptor() encryption.Encryptor {
 // TenancyMarker signals that the actor system was built from a Config with a
 // non-nil tenancy.TenantResolver registered (tenant-aware mode).
 //
-// TenancyMarker deliberately carries no resolver and no other tenancy state:
-// actors can observe that tenant-aware mode is active by checking for this
+// TenancyMarker deliberately carries no resolver and no tenant state: actors
+// can observe that tenant-aware mode is active by checking for this
 // extension's presence, but they can never reach a TenantResolver through it.
+// The one flag it carries, QualifiedActorNames, says how the engine names
+// actors, never which tenant a caller is.
 // Resolution happens exactly once, at Engine.SendCommand, which is the only
 // place that holds the resolver; making it structurally unreachable from
 // actor code keeps Resolve from ever being re-invoked outside that trust
 // boundary.
-type TenancyMarker struct{}
+type TenancyMarker struct {
+	qualifiedActorNames bool
+}
 
 // enforce compliance with the extension.Extension interface
 var _ extension.Extension = (*TenancyMarker)(nil)
 
-// NewTenancyMarker creates a new tenancy marker extension.
-func NewTenancyMarker() *TenancyMarker {
-	return &TenancyMarker{}
+// NewTenancyMarker creates a new tenancy marker extension. qualifiedActorNames
+// is true when the engine names each actor after its tenant and entity ID
+// (actoridentity.Qualify), and false in single-tenant mode, where the actor
+// keeps the bare entity ID as its name.
+func NewTenancyMarker(qualifiedActorNames bool) *TenancyMarker {
+	return &TenancyMarker{qualifiedActorNames: qualifiedActorNames}
+}
+
+// QualifiedActorNames reports whether actors are named after their tenant and
+// entity ID. An actor checks its own name against that identity in PreStart.
+func (x *TenancyMarker) QualifiedActorNames() bool {
+	return x.qualifiedActorNames
 }
 
 // ID returns the identifier for the TenancyMarker extension.

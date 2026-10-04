@@ -23,6 +23,8 @@
 package eventstream
 
 import (
+	"sync"
+
 	"github.com/getsyntegrity/urd/internal/syncmap"
 )
 
@@ -49,6 +51,16 @@ type Stream interface {
 type EventsStream struct {
 	subscribers *syncmap.Map[string, Subscriber]
 	topics      *syncmap.Map[string, *syncmap.Map[string, Subscriber]]
+
+	// mu makes every change to the bookkeeping of subscribers and topics atomic:
+	// AddSubscriber, RemoveSubscriber, Subscribe, Unsubscribe and Close all take
+	// it, so none of them sees the maps half changed by another. Subscribe has
+	// to look the topic up and create it when it is missing, and without the
+	// lock two subscribers that arrive together at a new topic each create its
+	// map and the second replaces the first, which silently drops the first
+	// subscriber. Publish does not take it: it only reads, and the maps it
+	// reads are themselves safe for concurrent use.
+	mu sync.Mutex
 }
 
 // enforce a compilation error
@@ -64,6 +76,9 @@ func New() Stream {
 
 // AddSubscriber adds a subscriber
 func (b *EventsStream) AddSubscriber() Subscriber {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	subscriber := newSubscriber()
 	b.subscribers.Set(subscriber.ID(), subscriber)
 	return subscriber
@@ -71,12 +86,15 @@ func (b *EventsStream) AddSubscriber() Subscriber {
 
 // RemoveSubscriber removes a subscriber
 func (b *EventsStream) RemoveSubscriber(sub Subscriber) {
+	b.mu.Lock()
 	// remove subscriber to the broker.
 	//unsubscribe to all topics which s is subscribed to.
 	for _, topic := range sub.Topics() {
-		b.Unsubscribe(sub, topic)
+		b.unsubscribe(sub, topic)
 	}
 	b.subscribers.Delete(sub.ID())
+	b.mu.Unlock()
+
 	sub.Shutdown()
 }
 
@@ -103,6 +121,9 @@ func (b *EventsStream) Subscribe(subscriber Subscriber, topic string) {
 		return
 	}
 
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	subscriber.subscribe(topic)
 	if subscribers, ok := b.topics.Get(topic); ok && subscribers.Len() != 0 {
 		subscribers.Set(subscriber.ID(), subscriber)
@@ -117,6 +138,14 @@ func (b *EventsStream) Subscribe(subscriber Subscriber, topic string) {
 
 // Unsubscribe removes a subscriber from a topic
 func (b *EventsStream) Unsubscribe(subscriber Subscriber, topic string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.unsubscribe(subscriber, topic)
+}
+
+// unsubscribe removes subscriber from topic. The caller holds b.mu.
+func (b *EventsStream) unsubscribe(subscriber Subscriber, topic string) {
 	subscriber.unsubscribe(topic)
 	if subscribers, ok := b.topics.Get(topic); ok && subscribers.Len() != 0 {
 		subscribers.Delete(subscriber.ID())
@@ -130,6 +159,12 @@ func (b *EventsStream) Publish(topic string, msg any) {
 
 // Close closes the stream
 func (b *EventsStream) Close() {
+	// Close replaces the topic bookkeeping, so it takes the same lock as
+	// Subscribe and Unsubscribe: a Subscribe that overlapped it could otherwise
+	// add its subscriber to a map that Reset is about to discard.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	for _, subscriber := range b.subscribers.Values() {
 		if subscriber.Active() {
 			subscriber.Shutdown()

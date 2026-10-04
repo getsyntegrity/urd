@@ -180,7 +180,7 @@ func TestEncryptorExtension(t *testing.T) {
 func TestTenancyMarker(t *testing.T) {
 	specs.Describe(t, "NewTenancyMarker builds the tenancy marker extension", func(s *specs.Spec) {
 		s.It("exposes the tenancy extension ID", func(ctx *specs.Context) {
-			ext := NewTenancyMarker()
+			ext := NewTenancyMarker(false)
 
 			ctx.Expect(ext).To(specs.Not(specs.BeNil()))
 			ctx.Expect(ext.ID()).ToEqual(TenancyExtensionID)

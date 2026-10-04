@@ -115,13 +115,18 @@ func (engine *Engine) spawnSaga(ctx context.Context, behavior behaviorport.Saga,
 		deps = append(deps, tenantScope)
 	}
 
-	pid, err := actorSystem.Spawn(ctx, behavior.ID(),
+	actorName, nameErr := engine.spawnActorName(tenantScope, behavior.ID())
+	if nameErr != nil {
+		return nameErr
+	}
+
+	pid, err := actorSystem.Spawn(ctx, actorName,
 		actor,
 		goakt.WithLongLived(),
 		goakt.WithDependencies(deps...),
 		goakt.WithSupervisor(newSupervisor(RestartDirective)))
 	if err != nil {
-		if resolved := resolveExistingSpawn(ctx, actorSystem, behavior.ID(), tenantScope, err); resolved != err { //nolint:errorlint // identity check: detects whether resolveExistingSpawn replaced err
+		if resolved := resolveExistingSpawn(ctx, actorSystem, actorName, tenantScope, err); resolved != err { //nolint:errorlint // identity check: detects whether resolveExistingSpawn replaced err
 			return resolved
 		}
 		return fmt.Errorf("failed to start saga %s: %w", behavior.ID(), err)
@@ -170,6 +175,7 @@ func (engine *Engine) SagaStatus(ctx context.Context, sagaID string, timeout tim
 	// mirroring SendCommand. Without this, SagaActor.checkStateReadTenant
 	// would see a tenant-less ctx and reject every tenant-aware caller with
 	// ErrMissing, instead of enforcing isolation against a foreign tenant.
+	actorName := sagaID
 	if engine.tenantResolver != nil {
 		tenantContext, resolveErr := engine.tenantResolver.Resolve(ctx)
 		if resolveErr != nil {
@@ -181,9 +187,16 @@ func (engine *Engine) SagaStatus(ctx context.Context, sagaID string, timeout tim
 			return nil, attachErr
 		}
 		ctx = attachedCtx
+
+		// The saga is addressed by (tenant, ID): the caller reaches the saga
+		// of its own tenant, and never one of another tenant's.
+		var nameErr error
+		if actorName, nameErr = engine.actorNameFor(tenantContext, sagaID); nameErr != nil {
+			return nil, nameErr
+		}
 	}
 
-	reply, err := ref.noSender.SendSync(ctx, sagaID, new(egopb.GetStateCommand), timeout)
+	reply, err := ref.noSender.SendSync(ctx, actorName, new(egopb.GetStateCommand), timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get saga status for %s: %w", sagaID, err)
 	}

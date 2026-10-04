@@ -15,9 +15,9 @@ require (
 	github.com/AthenZ/athenz v1.12.45 // indirect
 	github.com/DataDog/zstd v1.5.7 // indirect
 	github.com/IBM/sarama v1.61.1 // indirect
-	github.com/RoaringBitmap/roaring/v2 v2.28.0 // indirect
+	github.com/RoaringBitmap/roaring/v2 v2.29.0 // indirect
 	github.com/Workiva/go-datastructures v1.1.7 // indirect
-	github.com/andybalholm/brotli v1.2.4 // indirect
+	github.com/andybalholm/brotli v1.2.6 // indirect
 	github.com/apache/pulsar-client-go v0.21.0 // indirect
 	github.com/ardielle/ardielle-go v1.5.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -26,10 +26,10 @@ require (
 	github.com/bytedance/sonic v1.15.4 // indirect
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
+	github.com/cenkalti/backoff/v7 v7.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/deckarep/golang-set/v2 v2.9.0 // indirect
 	github.com/eapache/go-resiliency v1.7.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -44,7 +44,7 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
 	github.com/hamba/avro/v2 v2.31.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
@@ -86,19 +86,18 @@ require (
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/theparanoids/crypki v1.21.2 // indirect
-	github.com/tidwall/btree v1.8.1 // indirect
+	github.com/tidwall/btree v1.8.2 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/redcon v1.6.4 // indirect
-	github.com/tochemey/goakt/v4 v4.5.6 // indirect
+	github.com/tochemey/goakt/v4 v4.5.7-0.20261001174708-cf9c8659f741 // indirect
 	github.com/tochemey/gopack v0.2.1 // indirect
-	github.com/tochemey/olric v0.3.21 // indirect
+	github.com/tochemey/olric v0.3.22 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.etcd.io/bbolt v1.5.0 // indirect
-	go.mongodb.org/mongo-driver v1.17.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0 // indirect
 	go.opentelemetry.io/otel v1.46.0 // indirect
@@ -123,13 +122,13 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect
-	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
+	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/apimachinery v0.37.0 // indirect
-	k8s.io/client-go v0.37.0 // indirect
+	k8s.io/apimachinery v0.37.1 // indirect
+	k8s.io/client-go v0.37.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260821135717-be32def86098 // indirect
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3 // indirect

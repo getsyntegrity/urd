@@ -280,7 +280,7 @@ func TestDurableStateActorTenancyGate(t *testing.T) {
 			durableStore := connectedDurableStore(ctx)
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewTenancyProbeDurableStateBehavior(persistenceID)
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			pid := rig.spawnForTenant(ctx, behavior, "acme")
 
 			// No TenantContext attached: mirrors a caller that bypasses
@@ -367,7 +367,7 @@ func TestDurableStateActorTenancyWritePath(t *testing.T) {
 			durableStore := connectedDurableStore(ctx)
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewTenancyProbeDurableStateBehavior(persistenceID)
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			pid := rig.spawnForTenant(ctx, behavior, "acme")
 
 			tenant := tenantContextFor(ctx, "acme")

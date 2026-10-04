@@ -75,7 +75,7 @@ func TestEventSourcedActorSpawnBindsExactTenantScope(t *testing.T) {
 			system := startEventsSystem(ctx, "TestActorSystem", 3,
 				extensions.NewEventsStore(store),
 				extensions.NewEventsStream(eventStream),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 
 			// PreStart must succeed and recover using the spawn-bound scope, not Unscoped().
 			pid, err := system.Spawn(context.Background(), behavior.ID(), New(),
@@ -119,10 +119,10 @@ func TestEventSourcedActorPreStartFailsClosedWithoutTenantScope(t *testing.T) {
 			system := startEventsSystem(ctx, "TestActorSystem", 1,
 				extensions.NewEventsStore(store),
 				extensions.NewEventsStream(eventStream),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 
 			// Deliberately no extensions.NewEntityTenantScope dependency: tenancy is
-			// active (extensions.NewTenancyMarker() above), but no scope was bound
+			// active (extensions.NewTenancyMarker(false) above), but no scope was bound
 			// for this spawn.
 			pid, err := system.Spawn(context.Background(), behavior.ID(), New(),
 				goakt.WithDependencies(behavior),
@@ -157,7 +157,7 @@ func TestEventSourcedActorLegacyModeAlwaysUsesUnscopedStore(t *testing.T) {
 			ctrl.Method("WriteEvents").Expect(mock.Any(), persistence.Unscoped(), mock.Any(), mock.Any()).Times(1).Return(nil)
 
 			eventStream := newClosingEventStream(ctx)
-			// No extensions.NewTenancyMarker() here: legacy mode, exactly like the
+			// No extensions.NewTenancyMarker(false) here: legacy mode, exactly like the
 			// pre-TENANT-003 actor system configuration.
 			system := startEventsSystem(ctx, "TestActorSystem", 3,
 				extensions.NewEventsStore(store),

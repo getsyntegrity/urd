@@ -39,14 +39,18 @@ import (
 	"github.com/getsyntegrity/urd/testkit"
 )
 
-// This file pins the spawn half of the "shared entity id across tenants"
-// contract (openspec/changes/ego-tenant-003/specs/persistence-tenant-
-// isolation/spec.md): re-spawning a live id under the SAME declared tenant
-// is idempotent, while re-spawning it under a DIFFERENT tenant is rejected
-// with ErrSpawnTenantMismatch instead of silently returning the other
-// tenant's actor. GoAkt's local Spawn returns an already-running actor's PID
-// with a nil error, so the engine checks the returned actor's own spawn
-// binding (its EntityTenantScope dependency) after Spawn returns.
+// This file pins the spawn half of the spawn-binding contract. Since
+// EGO-TENANT-009 a multi-tenant engine addresses an actor by (tenant, entity
+// ID), so the same ID under two tenants is two independent actors; that half
+// lives in engine_tenant_actor_identity_test.go. What stays here is the part
+// that still holds wherever one actor name can be claimed by two tenants:
+// re-spawning a live id under the SAME declared tenant is idempotent, while
+// re-spawning it under a DIFFERENT tenant is rejected with
+// ErrSpawnTenantMismatch instead of silently returning the other tenant's
+// actor. That is the case in single-tenant mode, which keeps the bare-ID
+// actor names it always had. GoAkt's local Spawn returns an already-running
+// actor's PID with a nil error, so the engine checks the returned actor's own
+// spawn binding (its EntityTenantScope dependency) after Spawn returns.
 
 func newRespawnTestEngine(ctx *specs.Context) *Engine {
 	bg := context.Background()
@@ -62,6 +66,20 @@ func newRespawnTestEngine(ctx *specs.Context) *Engine {
 	return engine
 }
 
+// newSingleTenantRespawnEngine starts an engine in single-tenant mode for
+// "acme": its actors keep the bare entity ID as their name, so a second tenant
+// claiming a live ID is the collision the spawn binding exists to refuse.
+func newSingleTenantRespawnEngine(ctx *specs.Context) *Engine {
+	bg := context.Background()
+	resolver, err := tenancy.WithSingleTenant("acme")
+	ctx.Expect(err).To(specs.BeNil())
+	engine := newSpecsEngine(ctx, "RespawnSingle", connectedEventsStore(ctx),
+		WithTenantResolver(resolver),
+		WithStateStore(connectedDurableStore(ctx)))
+	ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+	return engine
+}
+
 func expectSpawnTenantMismatch(ctx *specs.Context, err error) {
 	ctx.Helper()
 	ctx.Expect(err).To(specs.MatchError(ErrSpawnTenantMismatch))
@@ -71,54 +89,41 @@ func expectSpawnTenantMismatch(ctx *specs.Context, err error) {
 	ctx.Expect(err).To(specs.MatchErrorAs(&tenancyErr))
 }
 
-func TestEngineRespawnUnderAnotherTenantIsRejected(t *testing.T) {
-	specs.Describe(t, "respawning a live id under another tenant is rejected", func(s *specs.Spec) {
+func TestEngineRespawnInSingleTenantModeRejectsAnotherTenant(t *testing.T) {
+	specs.Describe(t, "respawning a live id under another tenant in single-tenant mode is rejected", func(s *specs.Spec) {
 		bg := context.Background()
-		acme := WithTenant(tenancy.TenantID("acme"))
 		globex := WithTenant(tenancy.TenantID("globex"))
-		globexCtx := context.WithValue(bg, perCallerTenantKey{}, "globex")
 
 		s.It("EventSourced entity", func(ctx *specs.Context) {
-			engine := newRespawnTestEngine(ctx)
+			engine := newSingleTenantRespawnEngine(ctx)
 			id := uuid.NewString()
-			owner := newTenancyProbeEventSourcedBehavior(id)
-			// a new actor with a valid tenant spawns
-			ctx.Expect(engine.Entity(bg, owner, acme)).To(specs.BeNil())
+			// a new actor spawns under the single tenant
+			ctx.Expect(engine.Entity(bg, newTenancyProbeEventSourcedBehavior(id))).To(specs.BeNil())
 			// a same-tenant respawn is idempotent
-			ctx.Expect(engine.Entity(bg, newTenancyProbeEventSourcedBehavior(id), acme)).To(specs.BeNil())
+			ctx.Expect(engine.Entity(bg, newTenancyProbeEventSourcedBehavior(id), WithTenant("acme"))).To(specs.BeNil())
 
 			expectSpawnTenantMismatch(ctx, engine.Entity(bg, newTenancyProbeEventSourcedBehavior(id), globex))
-
-			_, _, err := engine.SendCommand(globexCtx, id, &testpb.CreateAccount{AccountBalance: 1}, time.Minute)
-			ctx.Expect(err).To(specs.Not(specs.BeNil()))
-			// a foreign command must never reach HandleCommand
-			ctx.Expect(owner.InvocationCount()).To(specs.BeZero())
 		})
 
 		s.It("DurableStateEntity", func(ctx *specs.Context) {
-			engine := newRespawnTestEngine(ctx)
+			engine := newSingleTenantRespawnEngine(ctx)
 			id := uuid.NewString()
-			owner := newTenancyProbeDurableStateBehavior(id)
-			ctx.Expect(engine.DurableStateEntity(bg, owner, acme)).To(specs.BeNil())
-			ctx.Expect(engine.DurableStateEntity(bg, newTenancyProbeDurableStateBehavior(id), acme)).To(specs.BeNil())
+			ctx.Expect(engine.DurableStateEntity(bg, newTenancyProbeDurableStateBehavior(id))).To(specs.BeNil())
+			ctx.Expect(engine.DurableStateEntity(bg, newTenancyProbeDurableStateBehavior(id), WithTenant("acme"))).To(specs.BeNil())
 
 			expectSpawnTenantMismatch(ctx, engine.DurableStateEntity(bg, newTenancyProbeDurableStateBehavior(id), globex))
-
-			_, _, err := engine.SendCommand(globexCtx, id, &testpb.CreateAccount{AccountBalance: 1}, time.Minute)
-			ctx.Expect(err).To(specs.Not(specs.BeNil()))
-			ctx.Expect(owner.InvocationCount()).To(specs.BeZero())
 		})
 
 		s.It("Saga", func(ctx *specs.Context) {
-			engine := newRespawnTestEngine(ctx)
+			engine := newSingleTenantRespawnEngine(ctx)
 			id := "saga-" + uuid.NewString()
 			saga := func() *enginetest.CallbackSagaBehavior {
 				return &enginetest.CallbackSagaBehavior{SagaID: id, HandleEventFn: func(context.Context, Event, State) (*SagaAction, error) {
 					return &SagaAction{}, nil
 				}}
 			}
-			ctx.Expect(engine.Saga(bg, saga(), 0, acme)).To(specs.BeNil())
-			ctx.Expect(engine.Saga(bg, saga(), 0, acme)).To(specs.BeNil())
+			ctx.Expect(engine.Saga(bg, saga(), 0)).To(specs.BeNil())
+			ctx.Expect(engine.Saga(bg, saga(), 0, WithTenant("acme"))).To(specs.BeNil())
 
 			expectSpawnTenantMismatch(ctx, engine.Saga(bg, saga(), 0, globex))
 		})
@@ -126,14 +131,14 @@ func TestEngineRespawnUnderAnotherTenantIsRejected(t *testing.T) {
 }
 
 // TestEngineConcurrentCrossTenantSpawnHasExactlyOneWinner races two spawns
-// of the same entity id under different tenants. Exactly one must succeed,
-// the other must be rejected, and no command from the losing tenant may
-// reach HandleCommand.
+// of the same entity id under different tenants in single-tenant mode, where
+// both claim one actor name. Exactly one must succeed, the other must be
+// rejected, and the loser's behavior must never run.
 func TestEngineConcurrentCrossTenantSpawnHasExactlyOneWinner(t *testing.T) {
-	specs.Describe(t, "two concurrent spawns of one id under different tenants", func(s *specs.Spec) {
-		s.It("have exactly one winner and the loser's commands never reach HandleCommand", func(ctx *specs.Context) {
+	specs.Describe(t, "two concurrent spawns of one id under different tenants in single-tenant mode", func(s *specs.Spec) {
+		s.It("have exactly one winner and the loser's behavior never runs", func(ctx *specs.Context) {
 			bg := context.Background()
-			engine := newRespawnTestEngine(ctx)
+			engine := newSingleTenantRespawnEngine(ctx)
 			tenants := []string{"acme", "globex"}
 
 			for range 20 {
@@ -170,12 +175,56 @@ func TestEngineConcurrentCrossTenantSpawnHasExactlyOneWinner(t *testing.T) {
 				// exactly one tenant must win the spawn race
 				ctx.Expect(winners).To(specs.Equal(1))
 
-				loserCtx := context.WithValue(bg, perCallerTenantKey{}, tenants[loser])
-				_, _, err := engine.SendCommand(loserCtx, id, &testpb.CreateAccount{AccountBalance: 1}, time.Minute)
-				// the losing tenant's command must be rejected
-				ctx.Expect(err).To(specs.Not(specs.BeNil()))
-				// a foreign command must never reach HandleCommand
-				ctx.Expect(probes[0].InvocationCount() + probes[1].InvocationCount()).To(specs.BeZero())
+				// the single tenant's command reaches the actor only when that
+				// actor is bound to it; the loser's behavior never runs
+				_, _, _ = engine.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 1}, time.Minute)
+				ctx.Expect(probes[loser].InvocationCount()).To(specs.BeZero())
+			}
+		})
+	})
+}
+
+// TestEngineConcurrentSpawnOfOneIDUnderTwoTenantsHasTwoWinners is the
+// multi-tenant counterpart: two tenants racing for one id each get their own
+// actor, every time.
+func TestEngineConcurrentSpawnOfOneIDUnderTwoTenantsHasTwoWinners(t *testing.T) {
+	specs.Describe(t, "two concurrent spawns of one id under different tenants in a multi-tenant engine", func(s *specs.Spec) {
+		s.It("both win, and each tenant's commands reach only its own actor", func(ctx *specs.Context) {
+			bg := context.Background()
+			engine := newRespawnTestEngine(ctx)
+			tenants := []string{"acme", "globex"}
+
+			for range 20 {
+				id := uuid.NewString()
+				probes := []*tenancyProbeEventSourcedBehavior{newTenancyProbeEventSourcedBehavior(id), newTenancyProbeEventSourcedBehavior(id)}
+				errs := make([]error, len(tenants))
+
+				var ready, done sync.WaitGroup
+				start := make(chan struct{})
+				for i, tenant := range tenants {
+					ready.Add(1)
+					done.Add(1)
+					go func() {
+						defer done.Done()
+						ready.Done()
+						<-start
+						errs[i] = engine.Entity(bg, probes[i], WithTenant(tenancy.TenantID(tenant)))
+					}()
+				}
+				ready.Wait()
+				close(start)
+				done.Wait()
+
+				for i, err := range errs {
+					ctx.Expect(err).To(specs.BeNil())
+
+					callerCtx := context.WithValue(bg, perCallerTenantKey{}, tenants[i])
+					_, _, sendErr := engine.SendCommand(callerCtx, id, &testpb.CreateAccount{AccountBalance: 1}, time.Minute)
+					ctx.Expect(sendErr).To(specs.BeNil())
+				}
+				// each command ran in the behavior of its own tenant's actor
+				ctx.Expect(probes[0].InvocationCount()).To(specs.Equal(1))
+				ctx.Expect(probes[1].InvocationCount()).To(specs.Equal(1))
 			}
 		})
 	})

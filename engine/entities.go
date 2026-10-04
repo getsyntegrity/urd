@@ -132,9 +132,16 @@ func (engine *Engine) spawnEventSourced(ctx context.Context, behavior behaviorpo
 	}
 	sOptions = append(sOptions, goakt.WithDependencies(deps...))
 
-	pid, err := actorSystem.SpawnOn(ctx, behavior.ID(), new(EventSourcedActor), sOptions...)
+	// The actor is addressed by (tenant, ID), never by the bare ID, so two
+	// tenants that share an ID spawn two actors (EGO-TENANT-009).
+	actorName, nameErr := engine.spawnActorName(tenantScope, behavior.ID())
+	if nameErr != nil {
+		return nameErr
+	}
+
+	pid, err := actorSystem.SpawnOn(ctx, actorName, new(EventSourcedActor), sOptions...)
 	if err != nil {
-		return resolveExistingSpawn(ctx, actorSystem, behavior.ID(), tenantScope, err)
+		return resolveExistingSpawn(ctx, actorSystem, actorName, tenantScope, err)
 	}
 	return verifySpawnedTenant(ctx, pid, tenantScope)
 }
@@ -187,7 +194,11 @@ func (engine *Engine) EntityExists(ctx context.Context, entityID string) (bool, 
 	if ref == nil {
 		return false, ErrEngineNotStarted
 	}
-	exists, err := ref.sys.ActorExists(ctx, entityID)
+	name, err := engine.lookupActorName(ctx, entityID)
+	if err != nil {
+		return false, err
+	}
+	exists, err := ref.sys.ActorExists(ctx, name)
 	if err != nil {
 		return false, fmt.Errorf("failed to check existence of entity %s: %w", entityID, err)
 	}
@@ -276,9 +287,16 @@ func (engine *Engine) spawnDurableState(ctx context.Context, behavior behaviorpo
 	}
 	sOptions = append(sOptions, goakt.WithDependencies(deps...))
 
-	pid, err := actorSystem.SpawnOn(ctx, behavior.ID(), new(DurableStateActor), sOptions...)
+	// The actor is addressed by (tenant, ID), never by the bare ID, so two
+	// tenants that share an ID spawn two actors (EGO-TENANT-009).
+	actorName, nameErr := engine.spawnActorName(tenantScope, behavior.ID())
+	if nameErr != nil {
+		return nameErr
+	}
+
+	pid, err := actorSystem.SpawnOn(ctx, actorName, new(DurableStateActor), sOptions...)
 	if err != nil {
-		return resolveExistingSpawn(ctx, actorSystem, behavior.ID(), tenantScope, err)
+		return resolveExistingSpawn(ctx, actorSystem, actorName, tenantScope, err)
 	}
 	return verifySpawnedTenant(ctx, pid, tenantScope)
 }
