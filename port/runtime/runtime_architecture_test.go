@@ -53,10 +53,10 @@ var allowedDependencies = []string{
 	"google.golang.org/protobuf/",
 }
 
-// TestRuntimeDependsOnlyOnContracts walks the resolved import graph of
+// TestArchitectureRuntimeDependsOnlyOnContracts walks the resolved import graph of
 // port/runtime's production build with a real `go list -deps` subprocess, so
 // transitive dependencies are checked too, not only the direct imports.
-func TestRuntimeDependsOnlyOnContracts(t *testing.T) {
+func TestArchitectureRuntimeDependsOnlyOnContracts(t *testing.T) {
 	specs.Describe(t, "the production import graph of port/runtime", func(s *specs.Spec) {
 		s.It("holds only the standard library and the allowed contracts", func(ctx *specs.Context) {
 			self := goList(ctx, "list", ".")
@@ -81,11 +81,11 @@ const (
 	externalTests = "github.com/getsyntegrity/urd/port/runtime_test"
 )
 
-// TestRuntimeTestClosureExcludesGoAktAndRoot walks the test build of
+// TestArchitectureRuntimeTestClosureExcludesGoAktAndRoot walks the test build of
 // port/runtime, which includes the runtime double of double_test.go
 // (design §D7, §D9), and rejects GoAkt and the engine package in it: the double
 // implements runtime.Runtime with neither.
-func TestRuntimeTestClosureExcludesGoAktAndRoot(t *testing.T) {
+func TestArchitectureRuntimeTestClosureExcludesGoAktAndRoot(t *testing.T) {
 	specs.Describe(t, "the test build of port/runtime", func(s *specs.Spec) {
 		var pkgs []string
 		s.BeforeEach(func(ctx *specs.Context) {

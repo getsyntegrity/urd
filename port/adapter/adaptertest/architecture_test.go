@@ -45,7 +45,7 @@ const (
 //
 // The rule covers the production build only (`go list -deps .` ignores test
 // files), so this test file may use go-specs without breaking it.
-func TestAdaptertestDependsOnlyOnStdlibAndAdapter(t *testing.T) {
+func TestArchitectureAdaptertestDependsOnlyOnStdlibAndAdapter(t *testing.T) {
 	specs.Describe(t, "the import graph of port/adapter/adaptertest", func(s *specs.Spec) {
 		s.It("holds only the standard library and port/adapter besides the package itself", func(ctx *specs.Context) {
 			deps := goListDeps(ctx, ".")

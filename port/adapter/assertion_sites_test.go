@@ -58,14 +58,14 @@ var allowedAssertionSites = []string{
 	"tenancy/resolver.go:AsFixedTenantResolver",
 }
 
-// TestOptionalInterfacesAreAssertedOnlyInTheirAccessors scans every
+// TestArchitectureOptionalInterfacesAreAssertedOnlyInTheirAccessors scans every
 // production Go file of the repository, nested modules included, and
 // requires that Describer, Starter, Pinger and FixedTenantResolver are
 // type-asserted (in a type assertion or a type switch) only inside
 // adapter.Describe, adapter.StarterOf, adapter.PingerOf and
 // tenancy.AsFixedTenantResolver. The set of sites found must equal the
 // allowed set exactly, so the scan also proves it sees the four accessors.
-func TestOptionalInterfacesAreAssertedOnlyInTheirAccessors(t *testing.T) {
+func TestArchitectureOptionalInterfacesAreAssertedOnlyInTheirAccessors(t *testing.T) {
 	specs.Describe(t, "type assertions of the optional adapter interfaces in production code", func(s *specs.Spec) {
 		var sites []string
 		s.BeforeEach(func(ctx *specs.Context) {
@@ -136,13 +136,13 @@ func TestOptionalInterfacesAreAssertedOnlyInTheirAccessors(t *testing.T) {
 	})
 }
 
-// TestNoPrivateCopiesOfOptionalInterfaces requires that no production file
+// TestArchitectureNoPrivateCopiesOfOptionalInterfaces requires that no production file
 // outside port/adapter declares its own interface made only of the
 // optional methods (for example a private `pinger`): a value is then used
 // through it without any accessor, which is the scattered-assertion
 // problem in another form. Only port/adapter/adapter.go declares such
 // interfaces (Describer, Starter, Pinger).
-func TestNoPrivateCopiesOfOptionalInterfaces(t *testing.T) {
+func TestArchitectureNoPrivateCopiesOfOptionalInterfaces(t *testing.T) {
 	specs.Describe(t, "interfaces made only of the optional methods", func(s *specs.Spec) {
 		s.It("are declared only by the adapter file, never privately elsewhere", func(ctx *specs.Context) {
 			repoRoot, err := filepath.Abs(filepath.Join("..", ".."))

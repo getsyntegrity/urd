@@ -55,11 +55,11 @@ var contractPorts = map[string]map[string]string{
 	"encryption":      {"PortEncryptor": "Encryptor"},
 }
 
-// TestAdapterDependsOnlyOnStdlib walks the resolved import graph of
+// TestArchitectureAdapterDependsOnlyOnStdlib walks the resolved import graph of
 // port/adapter with a real `go list -deps` subprocess, so transitive
 // dependencies are checked too. The allowlist of non-standard-library
 // packages is empty (ego-arch-004 design §D1).
-func TestAdapterDependsOnlyOnStdlib(t *testing.T) {
+func TestArchitectureAdapterDependsOnlyOnStdlib(t *testing.T) {
 	specs.Describe(t, "the import graph of port/adapter", func(s *specs.Spec) {
 		s.It("holds only the standard library besides the package itself", func(ctx *specs.Context) {
 			deps := goList(ctx, "list", "-deps", ".")
@@ -75,7 +75,7 @@ func TestAdapterDependsOnlyOnStdlib(t *testing.T) {
 
 // Spec scenario "moving port/publishing stays cycle-free": none of the five
 // contract packages imports port/adapter, directly or transitively.
-func TestContractPackagesDoNotImportAdapter(t *testing.T) {
+func TestArchitectureContractPackagesDoNotImportAdapter(t *testing.T) {
 	pkgs := make([]string, 0, len(contractPorts))
 	for dir := range contractPorts {
 		pkgs = append(pkgs, rootModule+"/"+dir)
@@ -103,12 +103,12 @@ type portConstants struct {
 	notLiteral []string
 }
 
-// TestPortNameConstantsAreUntyped reads each contract package's port.go and
+// TestArchitecturePortNameConstantsAreUntyped reads each contract package's port.go and
 // checks that it declares exactly the expected port-name constants, that
 // each is an untyped string constant (a typed adapter.Port constant would
 // import port/adapter), that its value is "<package>.<Interface>", and
 // that the named interface exists in the package.
-func TestPortNameConstantsAreUntyped(t *testing.T) {
+func TestArchitecturePortNameConstantsAreUntyped(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
 	dirs := make([]string, 0, len(contractPorts))
 	for dir := range contractPorts {

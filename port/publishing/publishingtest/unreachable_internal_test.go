@@ -36,7 +36,7 @@ import (
 
 // This package recognizes adaptertest.ErrUnreachable by its method
 // instead of importing it. This test, which may import adaptertest
-// (TestPublishingtestDependsOnlyOnStdlibPublishingAndEgopb checks only the
+// (TestArchitecturePublishingtestDependsOnlyOnStdlibPublishingAndEgopb checks only the
 // package's non-test imports), pins that the real sentinel, wrapped the
 // way adopters wrap it, makes every check skip.
 func TestCapture_RealAdaptertestErrUnreachableSkips(t *testing.T) {

@@ -869,8 +869,8 @@ The dependencies column was computed before the migration, from static signals f
   - starts an actor system: `TestNew_G2_ActorSystemName`
   - starts an actor system through a helper: `TestApp_ValidSpecRunsAnEngine`, `TestEngine_UndeclaredFamilyReturnsTypedError`, `TestRuntime_ConsumerDrivesTheAppEndToEnd`, `TestRuntime_IsTheEngineAfterStartAndAfterStop`, `TestRuntime_NilAfterFailedStart`, `TestStart_ActorSystemStepFailsForReal`, `TestStart_AttachStepStartsAndProbesPublishersFirst`, `TestStart_FailureAtEachStepReleasesEverything`, `TestStart_PublisherFailureAtK`, `TestStart_PublisherPingFailureNamesTheAdapter`, `TestStop_AfterStopIsNoOp`, `TestStop_D7OpenQuestion_StateFlushedDuringActorShutdown`, `TestStop_OrderMatchesD7`
 - `engine` (143)
-  - runs `go list`: `TestCommandArchitecture`, `TestTenancyArchitecture`
-  - reads the repository source files: `TestKitLoggerIsTheOnlyLoggingBackend`
+  - runs `go list`: `TestArchitectureCommand`, `TestArchitectureTenancy`
+  - reads the repository source files: `TestArchitectureKitLoggerIsTheOnlyLoggingBackend`
   - starts a GoAkt cluster on loopback ports: `TestClusterEngineSingleNodeServesProjectionsAndEntities`, `TestClusterEngineStartProjectionAlreadyExists`, `TestClusterEngineNeutralBehaviors`, `TestClusterEngineRemoteEntitySpawn`, `TestClusterEngineRejectsUnplaceableBehaviors`, `TestClusterEngineRemoteSpawnTenantBinding`, `TestClusterEventPublisherHighPartitionCount`, `TestClusterNewEngineRejectsValueTypeKind`
   - starts an actor system: `TestAddPublishersRejectsDuplicateIDs`, `TestAdministrativeScopeIsNeverAnAggregateTenantScope`, `TestBatchedPreconditionMatrix_GenesisBase`, `TestConfigGoaktOptionsEncryptor`, `TestConfigGoaktOptionsNoTenancyMarkerWithTypedNilResolver`, `TestConfigGoaktOptionsNoTenancyMarkerWithoutResolver`, `TestConfigGoaktOptionsProjectionDefaultsRecovery`, `TestConfigGoaktOptionsTelemetry`, `TestConfigGoaktOptionsTenancyMarker`, `TestDurableStateActorDiscardsHandlerOutputAfterDeadlineExpiry`, `TestDurableStateCheckPreconditionsPassesYetExpectedRevisionConflicts`, `TestDurableStateConcurrentGenesisWritersYieldExactlyOneCommit`, `TestDurableStateConditionalWriteEvaluatedAgainstStorageRevision`, `TestDurableStateConflictResultShape`, `TestDurableStateExpectedRevisionEndToEndPropagation`, `TestDurableStateExpectedRevisionExactMatchCommits`, `TestDurableStateHandlerShapeUnchangedByExpectedRevision`, `TestDurableStateNoPartialCommitOnConflict`, `TestDurableStateNonAdjacentVersionIsNeverConcurrencyConflict`, `TestDurableStateStaleExpectedRevisionRejectedAtStoreNotCache`, `TestEngineActorSystemAccessor`, `TestEngineAddEventPublishers`, `TestEngineAddEventPublishersGuards`, `TestEngineAddStatePublishers`, `TestEngineAddStatePublishersGuards`, `TestEngineCommandRejectsTenantMismatchWithSpawnDeclaredTenant`, `TestEngineConfigRegistersAllExtensions`, `TestEngineDispatchClampsTimeoutToDeadline`, `TestEngineDispatchDispatchesHandleEnvelope`, `TestEngineDispatchEffectiveDeadlinePrecedence`, `TestEngineDispatchRejectsExpiredDeadlineWithoutInvokingHandler`, `TestEngineDispatchRejectsInvalidMetadataWithoutInvokingHandler`, `TestEngineDispatchRejectsZeroValueEnvelopeWithoutPanicking`, `TestEngineDurableState`, `TestEngineDurableStateRequiresStateStore`, `TestEngineEntityExists`, `TestEngineEntitySpawnRequiresExplicitTenantWhenResolverHasNoFixedTenant`, `TestEngineEntitySpawnWithExplicitTenantResolvesOnce`, `TestEngineEntitySpawnWithoutResolverStaysUnscoped`, `TestEngineEntityValueTypeBehaviorSingleNode`, `TestEngineEntityWithRetentionPolicy`, `TestEngineEraseEntity`, `TestEngineEraseEntityCannotEraseAnotherTenantsRecord`, `TestEngineEraseEntityErrors`, `TestEngineEventPublisherKeepsGoingOnPublishError`, `TestEngineEventSourced`, `TestEngineIsProjectionRunningActorOfError`, `TestEngineNotStartedGuardsDirect`, `TestEngineProjection`, `TestEngineProjectionLagClampsNegative`, `TestEngineProjectionLagErrors`, `TestEngineProjectionLagHappyPath`, `TestEngineProjectionLagWithEvents`, `TestEngineProjectionsOwnHandlers`, `TestEnginePublisherIdleCPU`, `TestEngineRebuildProjectionErrors`, `TestEngineRebuildProjectionRemoveError`, `TestEngineRebuildProjectionResetOffsetError`, `TestEngineRebuildProjectionRestartError`, `TestEngineRebuildProjectionSuccess`, `TestEngineRejectsNilBehaviorsSingleNode`, `TestEngineRespawnInLegacyModeIsUnchanged`, `TestEngineSagaHappyPath`, `TestEngineSagaSpawnError`, `TestEngineSagaStatusErrorPaths`, `TestEngineSagaStatusMapsWireStatus`, `TestEngineSagaStatusReportsLifecycleStatus`, `TestEngineSagaStatusTenantIsolation`, `TestEngineSendCommandDispatchesDurableStateHandleEnvelope`, `TestEngineSendCommandDispatchesHandleEnvelope`, `TestEngineSendCommandErrors`, `TestEngineSendCommandUnexpectedReply`, `TestEngineSendCommandWithTelemetry`, `TestEngineSpawnMethodsDomainOnlySingleNode`, `TestEngineSpawnWithMultiTenantFixedTenantResolverNeedsWithTenant`, `TestEngineSpawnsDomainOnlyBehaviorsSingleNode`, `TestEngineStartProjectionNotRegistered`, `TestEngineStartProjectionStandaloneSpawnError`, `TestEngineStartWithTelemetry`, `TestEngineStatePublisherKeepsGoingOnPublishError`, `TestEngineStopAttemptsEveryStep`, `TestEngineStopReturnsEventPublisherCloseError`, `TestEngineStopReturnsStatePublisherCloseError`, `TestEngineSubscribeBeforeStart`, `TestEngineSubscribeReceivesEventsAndStates`, `TestEngineWithSingleTenantSpawnNeedsNoWithTenant`, `TestEventPayloadCarriesShard`, `TestEventPublisherFanOutToMultipleSubscribers`, `TestEventPublisherReceivesEventsFromEntity`, `TestEventSourcedActorBatchPathDoesNotContaminateBatchStateAfterDeadlineExpiry`, `TestEventSourcedActorDirectPathDiscardsHandlerOutputAfterDeadlineExpiry`, `TestEventSourcedActorStaysConsistentAfterConflict`, `TestEventSourcedBatchedExpectedRevisionSuccessAndConflict`, `TestEventSourcedExpectedRevisionGenesisConflictsOnExistingAggregate`, `TestEventSourcedExpectedRevisionGenesisSucceedsOnNewAggregate`, `TestEventSourcedExpectedRevisionPropagatesToPersistencePrecondition`, `TestEventSourcedExpectedRevisionStaleIsConcurrencyConflict`, `TestEventSourcedExpectedRevisionSuccessMatchesCurrent`, `TestEventSourcedHandlerArgumentsNeverCarryExpectedRevision`, `TestEventSourcedIntegrationConcurrentGenesisYieldsExactlyOneCommit`, `TestEventSourcedIntegrationExactRevisionCommitsAndAdvancesStore`, `TestEventSourcedIntegrationStaleRevisionRejectedStoreUnchanged`, `TestEventSourcedLegacyCommandIsUnconditional`, `TestGoaktOptionsCarryTheResolvedLogger`, `TestLegacyCompatEventSourcedAndDurableStateNeverConflict`, `TestNewEngineAcceptsTypedNilPointerKind`, `TestNewEngineRejectsUnregistrableKindsSingleNode`, `TestNewEngineTenantResolverValidation`, `TestNewEngineValidation`, `TestProjectionActorRunnerFailure`, `TestSendCommandResolverSwapIdenticalSequence`, `TestSendCommandSingleTenantZeroPlumbing`, `TestSendCommandTenantResolution`, `TestSpawnWithoutEventsStore`, `TestStatePublisherReceivesDurableStateUpdates`, `TestTelemetryContract`, `TestTelemetryDisabled`, `TestTenantWritePathE2E`, `TestWithEntityKindsAndWithBehaviorKindsShareRegistration`, `TestWithEventStream_UsesTheGivenStream`
   - starts an actor system through a helper: `TestBatchAdmissionGateRejectsStaleRevision_ForcesEarlyFlushThenFoundsFreshBatch`, `TestBatchedExternalWriterWinsCAS_RejectsWholeBatchWithoutAdvancingCounter`, `TestBatchedPhysicalBaseAnchorsToPreBatchRevision_NotLogicalCounter`, `TestBatchedZeroEventAdmittedCommandStillPreservesLaterPrecondition`, `TestBatchedZeroEventFounderNeverOpensBatch`, `TestDispatchRejectsTenantBindingQuery`, `TestEngineConcurrentCrossTenantSpawnHasExactlyOneWinner`, `TestEngineRespawnUnderAnotherTenantIsRejected`, `TestWithEntityFamilies_Combined`, `TestWithEntityFamilies_NotDeclaredAllowsEveryFamily`, `TestWithEntityFamilies_UndeclaredFamilyIsRejected`, `TestWithEntityFamilies_UnknownBitsAreIgnored`
@@ -885,29 +885,29 @@ The dependencies column was computed before the migration, from static signals f
 - `internal/extensions` (2)
   - starts an actor system: `TestOptionalExtension`, `TestRequireExtension`
 - `internal/instrumentation` (1)
-  - runs `go list`: `TestInstrumentationStaysRuntimeNeutral`
+  - runs `go list`: `TestArchitectureInstrumentationStaysRuntimeNeutral`
 - `internal/logging` (1)
-  - runs `go list`: `TestLoggingStaysRuntimeNeutral`
+  - runs `go list`: `TestArchitectureLoggingStaysRuntimeNeutral`
 - `internal/projectionrunner` (1)
-  - runs `go list`: `TestProjectionRunnerStaysRuntimeNeutral`
+  - runs `go list`: `TestArchitectureProjectionRunnerStaysRuntimeNeutral`
 - `internal/runtimeconsumer` (1)
-  - runs `go list`: `TestProductionClosureExcludesRootAndGoAkt`
+  - runs `go list`: `TestArchitectureRuntimeConsumerProductionClosureExcludesRootAndGoAkt`
 - `migration` (3)
-  - runs `go list`: `TestProductionClosureExcludesRootAndGoAkt`
+  - runs `go list`: `TestArchitectureMigrationProductionClosureExcludesRootAndGoAkt`
   - starts an actor system: `TestScopedMigratorSnapshotRecoversThroughTenantAwareActor`, `TestTenantAdopterEndToEndRecoveryThroughRealActor`
 - `port/adapter` (5)
-  - parses the repository source files: `TestNoPrivateCopiesOfOptionalInterfaces`, `TestOptionalInterfacesAreAssertedOnlyInTheirAccessors`, `TestPortNameConstantsAreUntyped`
-  - runs `go list`: `TestAdapterDependsOnlyOnStdlib`, `TestContractPackagesDoNotImportAdapter`
+  - parses the repository source files: `TestArchitectureNoPrivateCopiesOfOptionalInterfaces`, `TestArchitectureOptionalInterfacesAreAssertedOnlyInTheirAccessors`, `TestArchitecturePortNameConstantsAreUntyped`
+  - runs `go list`: `TestArchitectureAdapterDependsOnlyOnStdlib`, `TestArchitectureContractPackagesDoNotImportAdapter`
 - `port/adapter/adaptertest` (1)
-  - runs `go list`: `TestAdaptertestDependsOnlyOnStdlibAndAdapter`
+  - runs `go list`: `TestArchitectureAdaptertestDependsOnlyOnStdlibAndAdapter`
 - `port/behavior` (1)
-  - runs `go list`: `TestBehaviorDependsOnlyOnContracts`
+  - runs `go list`: `TestArchitectureBehaviorDependsOnlyOnContracts`
 - `port/publishing` (1)
-  - runs `go list`: `TestPublishingDependsOnlyOnContracts`
+  - runs `go list`: `TestArchitecturePublishingDependsOnlyOnContracts`
 - `port/publishing/publishingtest` (1)
-  - runs `go list`: `TestPublishingtestDependsOnlyOnStdlibPublishingAndEgopb`
+  - runs `go list`: `TestArchitecturePublishingtestDependsOnlyOnStdlibPublishingAndEgopb`
 - `port/runtime` (2)
-  - runs `go list`: `TestRuntimeDependsOnlyOnContracts`, `TestRuntimeTestClosureExcludesGoAktAndRoot`
+  - runs `go list`: `TestArchitectureRuntimeDependsOnlyOnContracts`, `TestArchitectureRuntimeTestClosureExcludesGoAktAndRoot`
 
 ### Module `example/cluster`
 
@@ -918,21 +918,21 @@ The dependencies column was computed before the migration, from static signals f
 ### Module `publisher/kafka`
 
 - `publisher/kafka` (1)
-  - runs `go list`: `TestUnitTestClosureExcludesRuntimeAndRoot`
+  - runs `go list`: `TestArchitectureUnitTestClosureExcludesRuntimeAndRoot`
 
 ### Module `publisher/nats`
 
 - `publisher/nats` (1)
-  - runs `go list`: `TestUnitTestClosureExcludesRuntimeAndRoot`
+  - runs `go list`: `TestArchitectureUnitTestClosureExcludesRuntimeAndRoot`
 
 ### Module `publisher/pulsar`
 
 - `publisher/pulsar` (1)
-  - runs `go list`: `TestUnitTestClosureExcludesRuntimeAndRoot`
+  - runs `go list`: `TestArchitectureUnitTestClosureExcludesRuntimeAndRoot`
 
 ### Module `publisher/websocket`
 
 - `publisher/websocket` (6)
-  - runs `go list`: `TestUnitTestClosureExcludesRuntimeAndRoot`
+  - runs `go list`: `TestArchitectureUnitTestClosureExcludesRuntimeAndRoot`
   - runs a local HTTP test server: `TestCloseIsIdempotent`, `TestDurableStatePublisherAdapterConformance`, `TestDurableStatePublisherPublishingConformance`, `TestEventsPublisherAdapterConformance`, `TestEventsPublisherPublishingConformance`
 

@@ -42,10 +42,10 @@ var allowedDependencies = []string{
 	"google.golang.org/protobuf/",
 }
 
-// TestPublishingDependsOnlyOnContracts walks the resolved import graph of
+// TestArchitecturePublishingDependsOnlyOnContracts walks the resolved import graph of
 // port/publishing with a real `go list -deps` subprocess, so transitive
 // dependencies are checked too, not only the direct imports.
-func TestPublishingDependsOnlyOnContracts(t *testing.T) {
+func TestArchitecturePublishingDependsOnlyOnContracts(t *testing.T) {
 	specs.Describe(t, "the import graph of port/publishing", func(s *specs.Spec) {
 		s.It("holds only the standard library, egopb and the protobuf runtime", func(ctx *specs.Context) {
 			self := goList(ctx, "list", ".")

@@ -47,7 +47,7 @@ const (
 // egopb and the protobuf runtime egopb needs, and never port/adapter, so
 // the package can move with port/publishing into the ego-arch-006
 // contracts module (ego-arch-004 design §D8).
-func TestPublishingtestDependsOnlyOnStdlibPublishingAndEgopb(t *testing.T) {
+func TestArchitecturePublishingtestDependsOnlyOnStdlibPublishingAndEgopb(t *testing.T) {
 	specs.Describe(t, "the import graph of port/publishing/publishingtest", func(s *specs.Spec) {
 		var deps []string
 		s.BeforeEach(func(ctx *specs.Context) {

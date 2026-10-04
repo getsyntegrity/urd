@@ -46,10 +46,10 @@ var allowedDependencies = []string{
 	"google.golang.org/protobuf/",
 }
 
-// TestBehaviorDependsOnlyOnContracts walks the resolved import graph of
+// TestArchitectureBehaviorDependsOnlyOnContracts walks the resolved import graph of
 // port/behavior with a real `go list -deps` subprocess, so transitive
 // dependencies are checked too, not only the direct imports.
-func TestBehaviorDependsOnlyOnContracts(t *testing.T) {
+func TestArchitectureBehaviorDependsOnlyOnContracts(t *testing.T) {
 	specs.Describe(t, "the import graph of port/behavior", func(s *specs.Spec) {
 		s.It("holds only the standard library, the allowed contracts and the protobuf runtime", func(ctx *specs.Context) {
 			self := goList(ctx, "list", ".")
