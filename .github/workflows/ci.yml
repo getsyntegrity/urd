@@ -12,7 +12,8 @@
 #   test (N)    -> each shard on its own runner, in parallel; the TestCluster* tests (cluster job) and the
 #                  TestArchitecture* tests (architecture job) are skipped
 #   test-report -> merges coverage, publishes the slowest tests, stores timings for the next run
-#   test (min)  -> builds with the minimum Go (PR to develop) or runs everything (PR to main)
+#   test (min)  -> builds and vets with the minimum Go (every PR); on a PR to main it also runs the tests with
+#                  it, TestArchitecture* excluded (the architecture job runs those with the minimum Go there)
 #   modules     -> build, vet and test of every nested module (persistence/postgres, publishers, compat,
 #                  example, which also holds example/cluster); inttest and benchmark are only built and vetted here, their
 #                  tests run in their own jobs. The examples are compiled, never run
@@ -24,7 +25,8 @@
 #   architecture-> the TestArchitecture* tests (go list and source scans that enforce the dependency boundaries,
 #                  #208) of the packages the plan selected, in every module that has them, the four publishers
 #                  included; every one of them on a full run. No -race, no coverage, -count=1; fails if an
-#                  expected test did not pass (a run that executed none included)
+#                  expected test did not pass (a run that executed none included). Go: the minimum of go.mod
+#                  on a PR to main (release and hotfix, where test (min) used to run them), .go-version otherwise
 #   cluster     -> every TestCluster* test of the root module, alone (the shards skip them); same triggers as
 #                  inttest (push to develop, release PR develop -> main, manual); fails if no TestCluster* test passed
 #   race        -> the selected root packages (the whole module on a full run) under -race, TestCluster* and
@@ -67,12 +69,12 @@ env:
   TESTFLAGS: "-timeout=20m"
   # Top-level tests that start a multi-node cluster (named TestCluster*, see docs/ci.md). The test shards and
   # the race job skip them (-skip), the cluster job runs only them (-run), and test-matrix.sh leaves them
-  # out of the lists it distributes, so every test runs in exactly one lane.
+  # out of the lists it distributes. (test (min) on the release PR also runs them, with the minimum Go.)
   CLUSTER_TESTS: "^TestCluster"
   # Top-level tests that enforce a dependency boundary with `go list` or a source scan (named TestArchitecture*,
   # see docs/ci.md and docs/testing/architecture-tests.md). The shards, the race job and the modules job skip
-  # them (-skip "$CLUSTER_TESTS|$ARCHITECTURE_TESTS" or -skip "$ARCHITECTURE_TESTS"); the architecture job runs
-  # them, without -race or coverage. test (min) keeps running them with the minimum Go.
+  # them, and so does test (min) (-skip "$CLUSTER_TESTS|$ARCHITECTURE_TESTS" or -skip "$ARCHITECTURE_TESTS"); the
+  # architecture job is the only one that runs them, without -race or coverage, with the minimum Go on a PR to main.
   ARCHITECTURE_TESTS: "^TestArchitecture"
   GOTESTSUM_VERSION: "v1.13.0"
 
@@ -295,8 +297,11 @@ jobs:
 
   # Minimum version the library promises (the go directive of go.mod).
   #   PR to develop: build and vet (fast; detects use of newer stdlib API).
-  #   PR to main:    the release PR (from develop) runs ALL the tests with the minimum before publishing; a
-  #                  hotfix PR skips the TestCluster tests.
+  #   PR to main:    the release PR (from develop) runs the tests with the minimum before publishing, the
+  #                  TestCluster tests included; a hotfix PR skips the TestCluster tests. Both skip the
+  #                  TestArchitecture tests: the architecture job runs them with the same minimum Go on those two
+  #                  events (the nested publisher modules too, which this job never reached), so they are not
+  #                  run twice and the minimum-Go validation of them is kept.
   # Uses plain `go test`: gotestsum 1.13 needs Go >= 1.24 and the minimum may be lower.
   # On the release PR it does NOT skip the TestCluster tests, on purpose: it is the only job that runs them
   # with the minimum Go. (The cluster job runs them with the toolchain of .go-version.)
@@ -319,11 +324,12 @@ jobs:
           go-version: ${{ steps.min.outputs.version }}
       - run: go build ./... && go vet ./...
       # The release PR (develop -> main) runs everything with the minimum Go, TestCluster* included. A hotfix
-      # PR to main skips them, like a feature PR: the cluster lane covers them after the merge.
+      # PR to main skips them, like a feature PR: the cluster lane covers them after the merge. Neither runs
+      # TestArchitecture*: the architecture job does, with the same minimum Go.
       - if: github.base_ref == 'main' && github.head_ref == 'develop'
-        run: go test $TESTFLAGS ./...
+        run: go test $TESTFLAGS -skip "$ARCHITECTURE_TESTS" ./...
       - if: github.base_ref == 'main' && github.head_ref != 'develop'
-        run: go test $TESTFLAGS -skip "$CLUSTER_TESTS" ./...
+        run: go test $TESTFLAGS -skip "$CLUSTER_TESTS|$ARCHITECTURE_TESTS" ./...
 
   # Nested modules (benchmark, persistence/postgres, publisher/*, test/compat, example (all the examples,
   # example/cluster included), inttest) are separate Go modules: `./...` at the root does not reach them, so each one is built, vetted
@@ -474,7 +480,11 @@ jobs:
   # the import graph and, because the graph cannot see a boundary that is a new import in a package the test does
   # not import, the source-reading packages whenever a production Go file changed; every one of them on a push
   # to develop, the release PR and a manual run. The nested modules (the four publishers) run from their own
-  # directory. `go test` reports "no tests to run" as a pass, so the command checks that every test the plan
+  # directory. Go version: on a pull request to main (the release PR and a hotfix, the events where test (min)
+  # used to run these tests) the minimum of the root go.mod, with no GOTOOLCHAIN=local, so a module whose own go
+  # directive is higher (publisher/pulsar, 1.26.2) runs with the minimum it declares; on every other event the
+  # version of .go-version. Each test runs once per event, not once per Go version, and the summary names the
+  # toolchain of every module. `go test` reports "no tests to run" as a pass, so the command checks that every test the plan
   # expected has a pass event, and fails otherwise (a run that executed none included). ci-ok requires it
   # whenever the plan does: a skipped architecture job fails the gate.
   architecture:
@@ -484,7 +494,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Minimum Go from go.mod
+        id: min
+        if: github.base_ref == 'main'
+        run: echo "version=$(awk '$1 == "go" { print $2; exit }' go.mod)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/go-setup
+        with:
+          go-version: ${{ steps.min.outputs.version }}   # empty (so .go-version) when the step above was skipped
       - name: Architecture tests
         shell: bash
         env:
