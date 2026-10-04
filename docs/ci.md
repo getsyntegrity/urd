@@ -21,20 +21,56 @@ Everything is in `.github/workflows/ci.yml` and reports into one required check,
 |---|---|
 | `flow` | Rejects pull requests to `main` that do not come from `develop` or `hotfix/*`. On pull requests to `main` it also computes the version that will be published and prints it in the run summary. It fails early if the bump cannot be published, for example a major bump without `/vN` in `go.mod`. |
 | `lint` | `golangci-lint` with `.golangci.yml`. On pull requests it only blocks issues introduced by the diff (`only-new-issues`), so existing problems do not stop new work. |
-| `plan`, `test (shard N)`, `test-report` | The root module tests, split into shards by real timings from the previous run (see "Slow packages" below). Every shard skips the `TestCluster*` tests (`-skip '^TestCluster'`); they run in the `cluster` job. `test-report` merges coverage, lists the slowest tests and stores the timings for next time. Pull requests that only touch Markdown, `CHANGELOG/`, `OWNERS` or issue templates skip the tests; `ci-ok` still reports. |
+| `plan` | Decides what runs (see "Impact selection" below): on a pull request, the root packages and the nested modules the change reaches, with their consumers; on a push to `develop`, the release pull request and a manual run, everything. It prints the plan in the run summary and exposes the lanes `ci-ok` checks. A pull request that only touches documentation, templates or other files with no test impact runs no test lane; `ci-ok` still reports. |
+| `test (shard N)`, `test-report` | The selected root packages, split into shards by real timings from the previous run (see "Slow packages" below); the whole module on a full run. Every shard skips the `TestCluster*` tests (`-skip '^TestCluster'`); they run in the `cluster` job. `test-report` merges coverage, lists the slowest tests and stores the timings for next time. |
 | `test (min)` | Builds and vets with the minimum Go version declared in `go.mod`. On the `develop` to `main` release pull request it also runs every test with that version, the `TestCluster*` tests included; a hotfix pull request to `main` runs them with `-skip '^TestCluster'` (see "Test lanes"). |
-| `modules (dir)` | Urd has nested Go modules (`benchmark`, `example` (every example, `example/cluster` included), `inttest`, `persistence/postgres`, `publisher/kafka`, `publisher/nats`, `publisher/pulsar`, `publisher/websocket`, `test/compat`). `./...` at the root does not reach them, so this job builds and vets each one on every pull request with Go changes, and tests all of them except `inttest` and `benchmark`. Those two are only built and vetted here (`go vet` compiles their test files). They are heavy, because `inttest` needs Docker and the benchmarks start a real goakt actor system, so they run in their own jobs after the merge. The `example` module is compiled here too (see "Examples"). |
+| `modules (dir)` | Urd has nested Go modules (`benchmark`, `example` (every example, `example/cluster` included), `inttest`, `persistence/postgres`, `publisher/kafka`, `publisher/nats`, `publisher/pulsar`, `publisher/websocket`, `test/compat`). `./...` at the root does not reach them, so this job builds and vets the ones the plan selected (all of them on a full run), and tests all of them except `inttest` and `benchmark`. Those two are only built and vetted here (`go vet` compiles their test files). They are heavy, because `inttest` needs Docker and the benchmarks start a real goakt actor system, so they run in their own jobs after the merge. The `example` module is compiled here too (see "Examples"). |
 | `benchmark` | Runs every benchmark of the `benchmark` module once (`go test -run '^$' -bench . -benchtime=1x`, about two minutes). The module has no `Test` functions, so a plain `go test` would compile it and run nothing. The job fails if no benchmark reports a result, and writes the results to the run summary and the `benchmark-results` artifact. A manual run (`workflow_dispatch`) takes a `benchtime` input, for example `2s`, for a real measurement. The triggers are the same as `inttest`: every push to `develop`, the `develop` to `main` release pull request and manual runs. Feature and hotfix pull requests only compile it, in `modules`. A red run on `develop` follows the same rule as `inttest`: the author of the merged pull request fixes it, or reverts the merge, before the next merge. |
 | `inttest` | Runs the integration tests of the `inttest` module on real containers (see "Integration tests" below). It runs on every push to `develop` (each merge), on the `develop` to `main` release pull request and on manual runs. Feature and hotfix pull requests never run it; `ci-ok` accepts the skip. Because the release pull request requires `ci-ok`, `main` never receives a release with a red integration run. A hotfix reaches `main` without it and is covered when its `main` to `develop` sync pull request is merged and `develop` is pushed. |
 | `cluster` | Runs every multi-node `TestCluster*` test of the root module on its own (`go test -run '^TestCluster' -json ./...`). It counts the top-level `TestCluster*` tests that passed and fails if there are none, because `go test` reports "no tests to run" as a pass. The counts go to the run summary and the JSON to the `cluster-results` artifact. It runs on every push to `develop` (each merge), on the `develop` to `main` release pull request and on manual runs, like `inttest`. Feature and hotfix pull requests never run it; `ci-ok` accepts the skip, and a failure blocks `ci-ok` on the runs that do execute it (see "Test lanes"). |
-| `race` | Runs the whole root module under the race detector (`go test -race -skip '^TestCluster' ./...`). Cluster tests under `-race` are out of scope. It runs on every pull request with Go changes, like the unit shards, plus pushes to `develop`. |
+| `race` | Runs the root module under the race detector (`go test -race -skip '^TestCluster' <packages>`). The packages are the plan's: the selected ones on a pull request, `./...` on a full run. Cluster tests under `-race` are out of scope. Its triggers did not change: every pull request with Go changes, pushes to `develop` and manual runs. |
 | `unit-gate` | The unit-test rules in `docs/testing/go-specs.md` (no testify, no generated mocks, go-specs, no real resources in unit tests), plus the rule that nothing under `inttest/` skips, pends or focuses a test. |
 | `tidy` | Runs `go mod tidy` in the root module and in every nested module and fails if `go.mod` or `go.sum` change. |
 | `api` | Compares the public API with `apidiff`. Against `develop` it only warns. Against the latest tag (pull requests to `main`) it fails when the API breaks and the release is not labelled `release:major`. |
 | `vuln` | `govulncheck`. It fails only when the code calls a vulnerable function. |
-| `ci-ok` | Passes when every job above succeeded or was legitimately skipped. This is the single required status check. |
+| `ci-ok` | Compares every job with the plan. A job the plan requires must have succeeded: a skipped one fails the gate. A job the plan leaves out may be skipped. It also fails when `plan` did not succeed, when a job is cancelled or failed, and when a job is missing from the plan or the plan lists a job `ci-ok` does not wait for. This is the single required status check. |
 
-The race detector only runs in the `race` job, on the whole root module except the `TestCluster*` tests. The Go version comes from `.go-version` in every job, through the `go-setup` composite action, so nothing pins it by hand. `TEST_SHARDS`, `COVERAGE_MIN` and `TESTFLAGS` are set at the top of `ci.yml`; coverage is only reported for now (`COVERAGE_MIN` is `0`).
+The race detector only runs in the `race` job, on the root module packages the plan selects, except the `TestCluster*` tests. The Go version comes from `.go-version` in every job, through the `go-setup` composite action, so nothing pins it by hand. `TEST_SHARDS`, `COVERAGE_MIN` and `TESTFLAGS` are set at the top of `ci.yml`; coverage is only reported for now (`COVERAGE_MIN` is `0`).
+
+### Impact selection
+
+The `plan` job runs `go run ./.github/scripts/impact plan` (source in `.github/scripts/impact`, tests in the same directory, run by `go test ./.github/scripts/impact`). It needs no network and does not call `go list`: it reads the imports of every Go file, so it works offline and a test can feed it an in-memory repository.
+
+1. **Modules.** Every `go.mod` of the repository is a module, found by walking the tree; nothing lists them. Directories that start with `.` or `_`, `testdata` and `vendor` are skipped, as the go tool does.
+2. **Diff.** On a pull request, `git diff --name-status -M -z origin/<base>...<head sha>`: the three-dot form compares against the merge base, so what other pull requests merged in the meantime is not counted as this change. If the base or the head commit is missing, the job fails. A push to `develop`, the release pull request and a manual run need no diff: they validate everything.
+3. **Graph.** Packages of every module, with three kinds of import: production, test (`_test.go` in the same package) and external test (`package x_test`). A package is affected when something it builds changed: its own files, or any package it imports, directly or through others, in this module or another. Its tests also build the packages its test files import and what those import, but not the test files of any other package, so a test import counts for one hop and does not chain through the importer's own consumers. Build constraints are ignored, so the graph is a superset of what one platform compiles: it can select a package that did not need to run, never miss one that did.
+4. **Files that are not Go.** A file under a package directory (an embedded `.sql`, `testdata`) belongs to the nearest package above it. A file that belongs to no package selects its whole module and every consumer of it. `go.mod` or `go.sum` of a module selects that module the same way; for the root module that is everything built on it.
+5. **No test impact.** A short list of paths no test depends on (documentation, templates, release tooling, the deployment manifests of an example, the unit-gate files, which the `unit-gate` job always checks) is skipped. The list is explicit: a path that is in neither list is not guessed, it widens to its module.
+6. **Full scope.** These widen the unit, component and module lanes to everything: `.go-version`, `go.work`, protobuf sources and `buf` files, `ci.yml`, the `go-setup` action, `test-matrix.sh`, `count-tests.sh`, the selector itself, a new module (a `go.mod` that was added), and any deleted or renamed path other than documentation. A deleted or renamed path cannot be placed in the graph of the new tree, so it is not guessed. They never turn on the integration, cluster or benchmark lanes: those follow the event alone.
+7. **Errors.** A go.mod without a module line, two modules with the same path, a missing root `go.mod`, a Go file that does not parse, an unknown event, a diff the selector cannot read: the job fails with the reason. It never falls back to a smaller selection.
+8. **Shards.** Sharding by duration runs after the selection: `test-matrix.sh` takes the selected packages through `PACKAGES_FILE`, keeps the ones `go list ./...` knows (it says which it dropped, and fails if none is left), and drops the empty shards `gotestsum` returns when there are fewer packages than shards. A full run does not set it and plans every package.
+
+What each event runs:
+
+| Event | Unit and component shards, `race`, `modules` | `inttest`, `cluster`, `benchmark` |
+|---|---|---|
+| Pull request to `develop` | The selected packages and modules | no |
+| Hotfix pull request to `main` | The selected packages and modules | no |
+| Release pull request `develop` to `main` | Everything | yes |
+| Push to `develop` | Everything | yes |
+| `workflow_dispatch` | Everything | yes |
+
+`build`, `vet` and the minimum-Go check are not narrowed: `test (min)` builds and vets the whole root module whenever any file with test impact changed, and runs the tests only on the release pull request. A full run does not add a second, partial selection next to the full one.
+
+The plan lists every job of `ci-ok` as a lane with whether it runs and why. The table in the run summary and the `impact-plan` artifact show it: lanes, nested modules (`build and vet` or `build, vet and test`), root packages with the reason each runs (`changed: <file>`, `depends on <package> (...)`, `its tests depend on <package> (...)`), and the changed files that were ignored.
+
+`ci-ok` runs `go run ./.github/scripts/impact gate` with the results of all jobs and the lanes. The gate fails for a required job that did not succeed, and for any job that is missing from the plan or unknown to it, so adding a job without a planning rule is caught.
+
+#### Limits
+
+- The selection is by package inside the root module and by module for the nested ones: a selected nested module is built, vetted and tested as a whole.
+- A deleted or renamed path, even a test file in a package that survives, runs the full scope. Placing it in the surviving package is a possible refinement.
+- The graph follows imports. It does not know about `go:generate` outputs, runtime file reads or behavior two packages share without importing each other.
 
 ### Slow packages
 
@@ -52,13 +88,13 @@ The tests are not all run the same way. A lane is a job that runs one kind of te
 
 | Lane (job) | What runs | Feature PRs to `develop` | Push to `develop` | Release PR `develop` to `main` | Hotfix PR to `main` | `workflow_dispatch` |
 |---|---|---|---|---|---|---|
-| Unit and component shards (`test (shard N)`) | The root module, `-skip '^TestCluster'`, with coverage | yes | yes | yes | yes | yes |
+| Unit and component shards (`test (shard N)`) | The root module, `-skip '^TestCluster'`, with coverage; the selected packages on a pull request, all of them otherwise | selected | all | all | selected | all |
 | `test (min)` | Build and vet with the minimum Go; on the release PR also every test, `TestCluster*` included (a hotfix PR skips them) | build and vet only | build and vet only | everything | everything except `TestCluster*` | build and vet only |
 | `cluster` | `-run '^TestCluster' ./...` on the root module, at least one must pass | no | yes | yes | no | yes |
-| `race` | `-race`, `-skip '^TestCluster'`, `./...` on the root module | yes | yes | yes | yes | yes |
+| `race` | `-race`, `-skip '^TestCluster'`; the selected packages on a pull request, `./...` otherwise | selected | all | all | selected | all |
 | `inttest` | The `inttest` module on real containers | no | yes | yes | no | yes |
 | `benchmark` | Every benchmark of the `benchmark` module once | no | yes | yes | no | yes |
-| `modules (dir)` | Build, vet and test of each nested module (`inttest` and `benchmark`: build and vet only) | yes | yes | yes | yes | yes |
+| `modules (dir)` | Build, vet and test of each nested module (`inttest` and `benchmark`: build and vet only); the selected modules on a pull request, all of them otherwise | selected | all | all | selected | all |
 
 The `workflow_dispatch` column reads "yes" once `ci.yml` exists on the default branch, because GitHub only offers a manual run for workflows that are there.
 

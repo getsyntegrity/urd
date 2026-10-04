@@ -2,10 +2,13 @@
 # The Go version comes from .go-version (see go-setup). Nothing here pins it by hand.
 #
 # Tests in the docker/buildx style:
-#   plan        -> are tests needed? + splits the packages into shards using real timings
-#                  (.github/scripts/test-matrix.sh): regular packages go whole into TEST_SHARDS
-#                  shards; a package slower than SPLIT_THRESHOLD is split by test into several
-#                  shards, so one slow package cannot dominate the wall time
+#   plan        -> what has to run (.github/scripts/impact): on a PR to develop or a hotfix, the root packages and
+#                  the nested modules the change reaches, with their consumers, from the import graph of every
+#                  module; a push to develop, the release PR and a manual run validate everything. It writes
+#                  the plan to the job summary and the lanes ci-ok checks. Then it splits the selected
+#                  packages into shards using real timings (.github/scripts/test-matrix.sh): regular packages
+#                  go whole into TEST_SHARDS shards; a package slower than SPLIT_THRESHOLD is split by test
+#                  into several shards, so one slow package cannot dominate the wall time
 #   test (N)    -> each shard on its own runner, in parallel; the TestCluster* tests are skipped (cluster job)
 #   test-report -> merges coverage, publishes the slowest tests, stores timings for the next run
 #   test (min)  -> builds with the minimum Go (PR to develop) or runs everything (PR to main)
@@ -19,10 +22,12 @@
 #                  longer benchtime), same triggers as inttest; fails if no benchmark ran
 #   cluster     -> every TestCluster* test of the root module, alone (the shards skip them); same triggers as
 #                  inttest (push to develop, release PR develop -> main, manual); fails if no TestCluster* test passed
-#   race        -> the whole root module under -race, TestCluster* skipped; every pull request with Go
-#                  changes, like the unit shards, plus pushes to develop
+#   race        -> the selected root packages (the whole module on a full run) under -race, TestCluster*
+#                  skipped; same scope as the test shards
 #   unit-gate   -> the unit-test rules of #204 (no testify, no generated mocks, go-specs, no real resources)
 #                  plus the no-skip rule for inttest/
+#   ci-ok       -> the one required check: compares every job with the plan; a job the plan requires that did
+#                  not succeed (a skipped one included) fails it
 name: ci
 
 on:
@@ -105,31 +110,58 @@ jobs:
           only-new-issues: ${{ github.event_name == 'pull_request' }}
 
   # ── Tests ────────────────────────────────────────────────────────
+  # The plan (.github/scripts/impact, issue #209) decides what runs. For a pull request to develop or a hotfix
+  # to main it reads the files the PR changed, builds the import graph of every module (production and test
+  # imports, across modules) and selects the root packages and the nested modules the change reaches, with
+  # their consumers. A push to develop, the release PR and a manual run validate everything, with no second
+  # partial selection next to it. A change it cannot narrow (toolchain, generation, shared tooling, a new module,
+  # a deleted or renamed path) widens to the full scope, and an error of the selector fails this job; none of
+  # them can end in a green run that did less than it should. Its outputs drive the jobs below, and ci-ok
+  # compares every job result with them: a job the plan requires that did not succeed fails the gate.
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
-      go: ${{ steps.changes.outputs.go || 'true' }}
+      lanes: ${{ steps.impact.outputs.lanes }}
+      modules: ${{ steps.impact.outputs.modules }}
+      race_packages: ${{ steps.impact.outputs.race_packages }}
       matrix: ${{ steps.matrix.outputs.matrix || '{"include":[{"id":0,"packages":"./...","run":""}]}' }}
     steps:
       - uses: actions/checkout@v7
-      # PRs that only touch docs/CHANGELOG/templates do not run tests (the automatic
-      # changelog PR, for example). It is skipped at job level: ci-ok still reports.
-      - uses: dorny/paths-filter@v4
-        id: changes
-        if: github.event_name == 'pull_request'
         with:
-          predicate-quantifier: every
-          filters: |
-            go:
-              - '**'
-              - '!**/*.md'
-              - '!CHANGELOG/**'
-              - '!OWNERS'
-              - '!.github/ISSUE_TEMPLATE/**'
-      - if: steps.changes.outputs.go != 'false'
-        uses: ./.github/actions/go-setup
-      - if: steps.changes.outputs.go != 'false'
+          fetch-depth: 0     # the diff needs the merge base with the base branch
+      - uses: ./.github/actions/go-setup
+      # The files this PR changes: the three-dot diff is taken from the merge base with the base branch, not
+      # from the current tip of it, so what other PRs merged meanwhile is not counted as this PR's change.
+      - name: Files changed by the pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git rev-parse --verify --quiet "origin/$BASE^{commit}" >/dev/null || { echo "::error::base branch origin/$BASE is not available"; exit 1; }
+          git rev-parse --verify --quiet "$HEAD_SHA^{commit}" >/dev/null || { echo "::error::head commit $HEAD_SHA is not available"; exit 1; }
+          git diff --name-status -M -z "origin/$BASE...$HEAD_SHA" > "$RUNNER_TEMP/changes.z"
+          echo "Changed paths: $(tr -cd '\0' < "$RUNNER_TEMP/changes.z" | wc -c) fields"
+      - name: Impact plan
+        id: impact
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          args=(-event "$EVENT" -base-ref "$BASE" -head-ref "$HEAD"
+                -plan-out "$RUNNER_TEMP/impact-plan.json" -summary-out "$RUNNER_TEMP/impact-summary.md"
+                -packages-out "$RUNNER_TEMP/packages.txt" -github-output "$GITHUB_OUTPUT")
+          [ "$EVENT" != pull_request ] || args+=(-changes "$RUNNER_TEMP/changes.z")
+          go run ./.github/scripts/impact plan "${args[@]}" > /dev/null
+          cat "$RUNNER_TEMP/impact-summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: impact-plan
+          path: ${{ runner.temp }}/impact-plan.json
+          retention-days: 14
+      - if: fromJSON(steps.impact.outputs.lanes).test
         uses: actions/cache/restore@v6
         with:
           path: .test-timings
@@ -137,11 +169,13 @@ jobs:
           restore-keys: test-timings-
       - name: Split packages into shards
         id: matrix
-        if: steps.changes.outputs.go != 'false'
+        if: fromJSON(steps.impact.outputs.lanes).test
         run: |
           go install "gotest.tools/gotestsum@${GOTESTSUM_VERSION}"
           mkdir -p .test-timings
           echo "Timings available: $(ls .test-timings | wc -l) file(s)"
+          # A selective plan wrote the packages to run; a full one wrote nothing and every package is planned.
+          if [ -s "$RUNNER_TEMP/packages.txt" ]; then export PACKAGES_FILE="$RUNNER_TEMP/packages.txt"; fi
           matrix=$(.github/scripts/test-matrix.sh)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           {
@@ -154,7 +188,7 @@ jobs:
   test:
     name: test (shard ${{ matrix.id }})
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).test
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -190,7 +224,7 @@ jobs:
 
   test-report:
     needs: [plan, test]
-    if: ${{ !cancelled() && needs.plan.outputs.go == 'true' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes)['test-report'] }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -255,7 +289,7 @@ jobs:
   test-min:
     name: test (min)
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes)['test-min']
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -279,34 +313,23 @@ jobs:
 
   # Nested modules (benchmark, persistence/postgres, publisher/*, test/compat, example (all the examples,
   # example/cluster included), inttest) are separate Go modules: `./...` at the root does not reach them, so each one is built, vetted
-  # and tested on its own. No race detector. The examples are compiled here on every pull request with Go
-  # changes (they are never executed), so a change that breaks one fails before the merge. inttest and
-  # benchmark are built and vetted only (go vet compiles their test files): their tests are heavy (Docker,
-  # a real actor system) and run in the inttest and benchmark jobs, after the merge.
+  # and tested on its own. The plan lists them, found from their go.mod, in the modules output: on a pull
+  # request only the ones the change reaches (a module is reached when it, or a package it imports in the same
+  # or another module, changed); on a push to develop, the release PR and a manual run, all of them. No race
+  # detector. The examples are only compiled and vetted, never executed, so a change that breaks one fails
+  # before the merge. inttest and benchmark are built and vetted only (go vet compiles their test files):
+  # their tests run in the inttest and benchmark jobs, after the merge.
   modules:
     name: modules (${{ matrix.dir }})
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).modules
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      matrix:
-        dir:
-          - example
-          - persistence/postgres
-          - publisher/kafka
-          - publisher/nats
-          - publisher/pulsar
-          - publisher/websocket
-          - test/compat
-        include:
-          # Build and vet only. A string flag, because an absent matrix key is null and null == false.
-          # Their tests run after the merge, in the inttest and benchmark jobs.
-          - dir: inttest
-            vet-only: "yes"
-          - dir: benchmark
-            vet-only: "yes"
+      # Every nested module the plan selected, found from its go.mod: dir, and "yes" for the ones that only
+      # build and vet (inttest, benchmark), a string flag because an absent matrix key is null.
+      matrix: ${{ fromJSON(needs.plan.outputs.modules) }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/go-setup
@@ -328,11 +351,7 @@ jobs:
   # covered once its main -> develop sync PR is merged and develop is pushed. ci-ok accepts "skipped".
   inttest:
     needs: plan
-    if: >-
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        github.base_ref == 'main' && github.head_ref == 'develop')
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).inttest
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -350,11 +369,7 @@ jobs:
   # pass a longer benchtime for a real measurement. The step fails if no benchmark reported a result.
   benchmark:
     needs: plan
-    if: >-
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        github.base_ref == 'main' && github.head_ref == 'develop')
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).benchmark
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -400,11 +415,7 @@ jobs:
   # green). No retries: a flaky cluster test is fixed in its own PR.
   cluster:
     needs: plan
-    if: >-
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        github.base_ref == 'main' && github.head_ref == 'develop')
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).cluster
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -442,22 +453,27 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-  # The whole root module under the race detector (#206), TestCluster* skipped: they are not run under -race
-  # yet (out of scope for #206, a follow-up once the in-process suites are known to be race-free). It runs on
-  # every pull request with Go changes, like the unit shards, plus pushes to develop and manual runs. A race
+  # The root module under the race detector (#206), TestCluster* skipped: they are not run under -race
+  # yet (out of scope for #206, a follow-up once the in-process suites are known to be race-free). Its triggers
+  # are those of the unit shards; its scope is the plan's: the selected packages on a pull request, the whole
+  # module on a push to develop, the release PR and a manual run. A race
   # found here is fixed in its own pull request, never by silencing the job. No retries. A package with a
   # known race is excluded only via an explicit list here with a linked issue and exit condition, never
   # silently, never with retries. The race detector is never run locally.
   race:
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).race
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/go-setup
       - name: Race detector
-        run: go test -race -count=1 -timeout=8m -skip "$CLUSTER_TESTS" ./...
+        env:
+          PACKAGES: ${{ needs.plan.outputs.race_packages }}   # ./... on a full run, else the selected packages
+        run: |
+          # shellcheck disable=SC2086  # PACKAGES is a space-separated list
+          go test -race -count=1 -timeout=8m -skip "$CLUSTER_TESTS" $PACKAGES
 
   # Unit-test rules of #204 over every Go file of every module (docs/testing/go-specs.md, "The unit-test gate").
   # Cheap and independent of the test shards, so it runs even when the plan skips the tests.
@@ -476,7 +492,7 @@ jobs:
   # go.mod/go.sum sorted, for the root module and every nested module (a cheap job of its own).
   tidy:
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: needs.plan.result == 'success' && fromJSON(needs.plan.outputs.lanes).tidy
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -537,14 +553,21 @@ jobs:
       # Fails only if the code CALLS something vulnerable. Strict mode is in security.yml.
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-  # A new check in the future = add the job and list it here. Branch protection is not touched.
+  # The single required check. It does not accept any "skipped": it compares every job with the plan (lanes
+  # output of the plan job, rules in .github/scripts/impact/plan.go). A job the plan requires must have
+  # succeeded; a skipped one fails, so a broken condition cannot turn a missing lane green. A job the plan
+  # leaves out may be skipped. A new check in the future = add the job, list it here and give it a rule in
+  # the planner; the gate fails on a job it does not know. Branch protection is not touched.
   ci-ok:
     if: always()
     needs: [flow, lint, plan, test, test-report, test-min, modules, inttest, benchmark, cluster, race, unit-gate, tidy, api, vuln]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - env:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/go-setup
+      - name: Compare the results with the plan
+        env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' >/dev/null
+          LANES: ${{ needs.plan.outputs.lanes }}
+        run: go run ./.github/scripts/impact gate
