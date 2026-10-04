@@ -26,7 +26,7 @@ func main() {
 	case "gate":
 		err = runGate(os.Getenv("NEEDS"), os.Getenv("LANES"), os.Stdout)
 	case "architecture":
-		err = runArchitecture(os.Args[2:], os.Getenv("ARCHITECTURE"), os.Stdout, os.Stderr, execGoTest)
+		err = runArchitecture(os.Args[2:], os.Getenv("ARCHITECTURE"), os.Stdout, os.Stderr, execGoTest, execGoVersion)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

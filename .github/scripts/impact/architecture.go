@@ -16,7 +16,8 @@ import (
 
 // ArchitecturePrefix names the tests of the architecture lane (issue #208): the tests that read the resolved import
 // graph with `go list`, or scan the sources, to enforce a dependency boundary. The shards and the race job skip
-// them, the architecture job runs only them, so every test runs in exactly one lane (docs/testing/architecture-tests.md).
+// them, test (min) skips them too, and the architecture job is the only one that runs them: one run per event, with
+// the minimum Go on a pull request to main (docs/testing/architecture-tests.md).
 const ArchitecturePrefix = "TestArchitecture"
 
 // sourceSensitive are the packages whose architecture tests look at files outside their own import closure, so the
@@ -156,6 +157,23 @@ func VerifyArchitecture(group ArchitectureGroup, events []testEvent) (int, []str
 // goTest runs `go test` in dir and returns its -json output. A non-zero exit status is an error, with the output.
 type goTest func(dir string, args ...string) ([]byte, error)
 
+// goVersion reports the toolchain that runs a module's tests, as `go version` prints it from that directory. The
+// go command can switch to the toolchain a go.mod asks for, so the version of the runner is not enough to tell.
+type goVersion func(dir string) string
+
+func execGoVersion(dir string) string {
+	cmd := exec.Command("go", "version")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "unknown"
+	}
+	if f := strings.Fields(string(out)); len(f) >= 3 {
+		return f[2]
+	}
+	return "unknown"
+}
+
 func execGoTest(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("go", append([]string{"test"}, args...)...)
 	cmd.Dir = dir
@@ -167,9 +185,10 @@ func execGoTest(dir string, args ...string) ([]byte, error) {
 }
 
 // runArchitecture writes the Markdown summary to out and the error annotations to logs. It runs the planned architecture tests, one `go test` per module, and fails when any of them fails
-// or when an expected test did not pass. There is no -race and no coverage: these tests resolve the import graph
+// or when an expected test did not pass. Each module runs with the toolchain the environment gives it, and the
+// summary names it. There is no -race and no coverage: these tests resolve the import graph
 // and scan sources, work the instrumentation only slows down. -count=1 keeps a cached result from standing in.
-func runArchitecture(args []string, planJSON string, out, logs io.Writer, run goTest) error {
+func runArchitecture(args []string, planJSON string, out, logs io.Writer, run goTest, version goVersion) error {
 	fs := flag.NewFlagSet("architecture", flag.ContinueOnError)
 	outDir := fs.String("out", "", "directory for the raw `go test -json` output of every module")
 	if err := fs.Parse(args); err != nil {
@@ -188,7 +207,7 @@ func runArchitecture(args []string, planJSON string, out, logs io.Writer, run go
 		}
 	}
 
-	fmt.Fprint(out, "### Architecture tests\n\n| Module | Packages | Tests passed | Expected |\n|---|---|---|---|\n")
+	fmt.Fprint(out, "### Architecture tests\n\n| Module | Go | Packages | Tests passed | Expected |\n|---|---|---|---|---|\n")
 	var problems []string
 	for _, group := range groups {
 		pkgs, expected := make([]string, 0, len(group.Packages)), 0
@@ -209,7 +228,7 @@ func runArchitecture(args []string, planJSON string, out, logs io.Writer, run go
 		}
 		passed, bad := VerifyArchitecture(group, parseEvents(raw))
 		problems = append(problems, bad...)
-		fmt.Fprintf(out, "| `%s` | %d | %d | %d |\n", group.Dir, len(pkgs), passed, expected)
+		fmt.Fprintf(out, "| `%s` | %s | %d | %d | %d |\n", group.Dir, version(group.Dir), len(pkgs), passed, expected)
 	}
 	for _, p := range problems {
 		fmt.Fprintln(logs, "::error::"+p)
