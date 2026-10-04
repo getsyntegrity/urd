@@ -478,3 +478,94 @@ func TestEngineRestartRecoversEachTenantsOwnState(t *testing.T) {
 		})
 	})
 }
+
+func TestEngineStoppingOneTenantsActorLeavesTheOthersAlive(t *testing.T) {
+	specs.Describe(t, "stopping and respawning the actor of one tenant", func(s *specs.Spec) {
+		bg := context.Background()
+		acme := WithTenant(tenancy.TenantID("acme"))
+		globex := WithTenant(tenancy.TenantID("globex"))
+
+		// stop stops the actor named by (tenant, id) the way GoAkt addresses it:
+		// by its qualified name. The engine has no stop-by-id API, so this is
+		// the path passivation and shutdown take.
+		stop := func(ctx *specs.Context, engine *Engine, tenant, id string) {
+			ctx.Helper()
+			ctx.Expect(engine.actorSystem.Load().sys.Kill(bg, qualifiedName(ctx, tenant, id))).To(specs.BeNil())
+		}
+
+		type entityKind struct {
+			label string
+			spawn func(engine *Engine, id string, opt SpawnOption) error
+		}
+		kinds := []entityKind{
+			{"event-sourced", func(engine *Engine, id string, opt SpawnOption) error {
+				return engine.Entity(bg, NewAccountEventSourcedBehavior(id), opt)
+			}},
+			{"durable-state", func(engine *Engine, id string, opt SpawnOption) error {
+				return engine.DurableStateEntity(bg, NewAccountDurableStateBehavior(id), opt)
+			}},
+		}
+
+		for _, kind := range kinds {
+			s.It(kind.label+": the other tenant's actor stays alive, and the stopped one is respawned with its own state", func(ctx *specs.Context) {
+				engine := newIdentityEngine(ctx, "IdentityStop", connectedEventsStore(ctx), connectedDurableStore(ctx))
+				id := uuid.NewString()
+				ctx.Expect(kind.spawn(engine, id, acme)).To(specs.BeNil())
+				ctx.Expect(kind.spawn(engine, id, globex)).To(specs.BeNil())
+				for tenant, balance := range map[string]float64{"acme": 10, "globex": 20} {
+					_, _, err := engine.SendCommand(callerOf(tenant), id, &testpb.CreateAccount{AccountBalance: balance}, time.Minute)
+					ctx.Expect(err).To(specs.BeNil())
+				}
+
+				stop(ctx, engine, "acme", id)
+
+				ctx.Eventually(func() any {
+					exists, err := engine.EntityExists(callerOf("acme"), id)
+					return err == nil && !exists
+				}, specs.BeTrue(), specs.WithTimeout(30*time.Second), specs.WithInterval(100*time.Millisecond))
+				// the stopped actor is not found for its own tenant, and the command
+				// is never delivered to the other tenant's actor with the same id
+				_, _, err := engine.SendCommand(callerOf("acme"), id, &testpb.CreditAccount{AccountId: id, Balance: 1}, time.Minute)
+				ctx.Expect(err).To(specs.Not(specs.BeNil()))
+				// the other tenant's actor was not touched
+				exists, err := engine.EntityExists(callerOf("globex"), id)
+				ctx.Expect(err).To(specs.BeNil())
+				ctx.Expect(exists).To(specs.BeTrue())
+				state, _, err := engine.SendCommand(callerOf("globex"), id, &testpb.CreditAccount{AccountId: id, Balance: 1}, time.Minute)
+				ctx.Expect(err).To(specs.BeNil())
+				ctx.Expect(balanceOf(ctx, state)).To(specs.Equal(21.0))
+
+				// respawn under the same identity recovers acme's own state
+				ctx.Expect(kind.spawn(engine, id, acme)).To(specs.BeNil())
+				state, _, err = engine.SendCommand(callerOf("acme"), id, &testpb.CreditAccount{AccountId: id, Balance: 1}, time.Minute)
+				ctx.Expect(err).To(specs.BeNil())
+				ctx.Expect(balanceOf(ctx, state)).To(specs.Equal(11.0))
+			})
+		}
+
+		s.It("saga: the other tenant's saga stays alive, and the stopped one is respawned", func(ctx *specs.Context) {
+			engine := newIdentityEngine(ctx, "IdentityStopSaga", connectedEventsStore(ctx), connectedDurableStore(ctx))
+			sagaID := "saga-" + uuid.NewString()
+			newSaga := func() *enginetest.CallbackSagaBehavior {
+				return &enginetest.CallbackSagaBehavior{SagaID: sagaID}
+			}
+			ctx.Expect(engine.Saga(bg, newSaga(), 0, acme)).To(specs.BeNil())
+			ctx.Expect(engine.Saga(bg, newSaga(), 0, globex)).To(specs.BeNil())
+
+			stop(ctx, engine, "acme", sagaID)
+
+			ctx.Eventually(func() any {
+				_, err := engine.SagaStatus(callerOf("acme"), sagaID, 5*time.Second)
+				return err != nil
+			}, specs.BeTrue(), specs.WithTimeout(30*time.Second), specs.WithInterval(100*time.Millisecond))
+			info, err := engine.SagaStatus(callerOf("globex"), sagaID, 5*time.Second)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(info.ID).To(specs.Equal(sagaID))
+
+			ctx.Expect(engine.Saga(bg, newSaga(), 0, acme)).To(specs.BeNil())
+			info, err = engine.SagaStatus(callerOf("acme"), sagaID, 5*time.Second)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(info.ID).To(specs.Equal(sagaID))
+		})
+	})
+}

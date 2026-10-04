@@ -130,7 +130,10 @@ type Actor struct {
 	logger      kitlog.Logger
 	self        *goakt.PID
 
-	// stopCh is used to stop the event consumption loop
+	// stopCh stops the event consumption loop of the current incarnation. PreStart
+	// makes a new one each time the actor starts, because GoAkt builds a relocated
+	// actor from its registered type (the zero value, not New) and reuses the same
+	// value after a restart, which PostStop has already closed it for.
 	stopCh chan struct{}
 }
 
@@ -141,13 +144,13 @@ var _ goakt.Actor = (*Actor)(nil)
 // No arguments are passed in the constructor to support cluster relocation.
 // The SagaBehavior and timeout are passed via dependencies.
 func New() *Actor {
-	return &Actor{
-		stopCh: make(chan struct{}, 1),
-	}
+	return &Actor{}
 }
 
 // PreStart initializes the saga actor: loads stores, recovers state, subscribes to events.
 func (s *Actor) PreStart(ctx *goakt.Context) error {
+	// One stop channel per incarnation (see stopCh).
+	s.stopCh = make(chan struct{})
 	eventsStoreExt, err := extensions.Require[*extensions.EventsStore](ctx, extensions.EventsStoreExtensionID)
 	if err != nil {
 		return err
@@ -238,7 +241,7 @@ func (s *Actor) Receive(ctx *goakt.ReceiveContext) {
 		s.logger = goaktlog.Backend(ctx.Logger())
 		s.self = ctx.Self()
 		// Start consuming events from the stream
-		go s.consumeEvents()
+		go s.consumeEvents(s.stopCh)
 		// Schedule timeout if configured
 		if s.timeout > 0 {
 			self := ctx.Self()
@@ -273,7 +276,10 @@ func (s *Actor) Receive(ctx *goakt.ReceiveContext) {
 
 // PostStop cleans up the saga actor.
 func (s *Actor) PostStop(_ *goakt.Context) error {
-	close(s.stopCh)
+	if s.stopCh != nil {
+		close(s.stopCh)
+		s.stopCh = nil
+	}
 	if s.subscriber != nil {
 		s.subscriber.Shutdown()
 	}
@@ -399,17 +405,17 @@ func (s *Actor) recover(ctx context.Context) error {
 // Events are forwarded to the mailbox rather than processed here so that all
 // saga state stays owned by the actor's serialized message loop — processing
 // them on this goroutine would race with Receive (state queries, timeout).
-func (s *Actor) consumeEvents() {
+func (s *Actor) consumeEvents(stop <-chan struct{}) {
 	for {
 		select {
-		case <-s.stopCh:
+		case <-stop:
 			return
 		case <-s.subscriber.Ready():
 		}
 
 		for message := range s.subscriber.Iterator() {
 			select {
-			case <-s.stopCh:
+			case <-stop:
 				return
 			default:
 			}

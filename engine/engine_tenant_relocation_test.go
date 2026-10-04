@@ -24,6 +24,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"strconv"
 	"testing"
@@ -35,10 +36,68 @@ import (
 	"github.com/tochemey/goakt/v4/remote"
 	"github.com/travisjeffery/go-dynaport"
 
-	"github.com/getsyntegrity/urd/internal/engine/enginetest"
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/tenancy"
 )
+
+// creditOnCreateSaga credits by 5 every account that is created, in the tenant
+// the saga is bound to. Unlike enginetest.CallbackSagaBehavior, whose
+// callbacks are closures and do not survive serialization, its behavior is the
+// same on a node that rebuilds it from GoAkt's serialized dependency, which is
+// what a relocated saga needs. It must be registered with WithEntityKinds on
+// every node.
+type creditOnCreateSaga struct{ sagaID string }
+
+var _ SagaBehavior = (*creditOnCreateSaga)(nil)
+
+func (s *creditOnCreateSaga) ID() string { return s.sagaID }
+
+func (s *creditOnCreateSaga) InitialState() State { return new(testpb.Account) }
+
+func (s *creditOnCreateSaga) HandleEvent(_ context.Context, event Event, _ State) (*SagaAction, error) {
+	created, ok := event.(*testpb.AccountCreated)
+	if !ok {
+		return &SagaAction{}, nil
+	}
+	return &SagaAction{Commands: []SagaCommand{{
+		EntityID: created.GetAccountId(),
+		Command:  &testpb.CreditAccount{AccountId: created.GetAccountId(), Balance: 5},
+		Timeout:  5 * time.Second,
+	}}}, nil
+}
+
+func (s *creditOnCreateSaga) HandleResult(context.Context, string, State, State) (*SagaAction, error) {
+	return &SagaAction{}, nil
+}
+
+func (s *creditOnCreateSaga) HandleError(context.Context, string, error, State) (*SagaAction, error) {
+	return &SagaAction{}, nil
+}
+
+func (s *creditOnCreateSaga) ApplyEvent(_ context.Context, _ Event, state State) (State, error) {
+	return state, nil
+}
+
+func (s *creditOnCreateSaga) Compensate(context.Context, State) ([]SagaCommand, error) {
+	return nil, nil
+}
+
+func (s *creditOnCreateSaga) MarshalBinary() ([]byte, error) {
+	return json.Marshal(struct {
+		SagaID string `json:"saga_id"`
+	}{s.sagaID})
+}
+
+func (s *creditOnCreateSaga) UnmarshalBinary(data []byte) error {
+	aux := struct {
+		SagaID string `json:"saga_id"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	s.sagaID = aux.SagaID
+	return nil
+}
 
 // TestClusterEngineRelocatedActorRecoversItsOwnTenant proves how an actor that
 // GoAkt relocates to another node gets its tenant back before it reads a
@@ -68,7 +127,7 @@ func TestClusterEngineRelocatedActorRecoversItsOwnTenant(t *testing.T) {
 				cfg := NewConfig(events,
 					WithLogger(DiscardLogger),
 					WithStateStore(states),
-					WithEntityKinds(new(AccountEventSourcedBehavior), new(AccountDurableStateBehavior), new(enginetest.CallbackSagaBehavior)),
+					WithEntityKinds(new(AccountEventSourcedBehavior), new(AccountDurableStateBehavior), new(creditOnCreateSaga)),
 					WithTenantResolver(perCallerTenantResolver{}),
 				)
 
@@ -136,9 +195,6 @@ func TestClusterEngineRelocatedActorRecoversItsOwnTenant(t *testing.T) {
 				{"durable-state", func(tenant, id string) error {
 					return engine1.DurableStateEntity(bg, NewAccountDurableStateBehavior(id), relocatable(tenant)...)
 				}},
-				{"saga", func(tenant, id string) error {
-					return engine1.Saga(bg, &enginetest.CallbackSagaBehavior{SagaID: id}, 0, relocatable(tenant)...)
-				}},
 			}
 			tenants := map[string]float64{"acme": 10, "globex": 20}
 
@@ -147,9 +203,6 @@ func TestClusterEngineRelocatedActorRecoversItsOwnTenant(t *testing.T) {
 			onNode2 := 0
 			for _, kind := range kinds {
 				ids[kind.label] = uuid.NewString()
-				if kind.label == "saga" {
-					ids[kind.label] = "saga-" + ids[kind.label]
-				}
 				for tenant := range tenants {
 					ctx.Expect(kind.spawn(tenant, ids[kind.label])).To(specs.BeNil())
 				}
@@ -183,6 +236,17 @@ func TestClusterEngineRelocatedActorRecoversItsOwnTenant(t *testing.T) {
 			// the node that is about to leave
 			ctx.Expect(onNode2).To(specs.BeGreaterThan(0))
 
+			// A saga is spawned where Engine.Saga is called, so spawn the two
+			// sagas, which share one ID, from node2: they are hosted by the node
+			// that is about to leave, which is what makes them relocate.
+			sagaID := "saga-" + uuid.NewString()
+			for tenant := range tenants {
+				ctx.Expect(engine2.Saga(bg, &creditOnCreateSaga{sagaID: sagaID}, 0, WithTenant(tenancy.TenantID(tenant)))).To(specs.BeNil())
+				pid, lookupErr := sys2.ActorOf(bg, qualifiedName(ctx, tenant, sagaID))
+				ctx.Expect(lookupErr).To(specs.BeNil())
+				ctx.Expect(pid.IsRemote()).To(specs.BeFalse())
+			}
+
 			// node2 leaves: GoAkt relocates what it hosts to node1
 			ctx.Expect(engine2.Stop(bg)).To(specs.BeNil())
 			ctx.Expect(sys2.Stop(bg)).To(specs.BeNil())
@@ -201,19 +265,40 @@ func TestClusterEngineRelocatedActorRecoversItsOwnTenant(t *testing.T) {
 				}
 			}
 
-			// a relocated saga restarts under its own tenant, and only that
-			// tenant reads it
+			// Each relocated saga restarts on node1 under its own (tenant, id): the
+			// tenant it carried is the one its name derives, so only that tenant
+			// reads it. Before the relocation the saga was hosted by node2, so a
+			// status read from node1 could not succeed.
 			for tenant := range tenants {
 				ctx.Eventually(func() any {
-					info, statusErr := engine1.SagaStatus(callerOf(tenant), ids["saga"], 5*time.Second)
+					info, statusErr := engine1.SagaStatus(callerOf(tenant), sagaID, 5*time.Second)
 					if statusErr != nil {
 						return statusErr
 					}
 					return info.ID
-				}, specs.Equal(ids["saga"]), specs.WithTimeout(60*time.Second), specs.WithInterval(500*time.Millisecond))
+				}, specs.Equal(sagaID), specs.WithTimeout(60*time.Second), specs.WithInterval(500*time.Millisecond))
 			}
-			_, statusErr := engine1.SagaStatus(callerOf("initech"), ids["saga"], 5*time.Second)
+			_, statusErr := engine1.SagaStatus(callerOf("initech"), sagaID, 5*time.Second)
 			ctx.Expect(statusErr).To(specs.Not(specs.BeNil()))
+
+			// ... and it commands the entities of its own tenant, not of the other
+			// tenant that shares every ID: each saga credits the account of its
+			// own tenant, once.
+			accountID := uuid.NewString()
+			for tenant, balance := range map[string]float64{"acme": 100, "globex": 200} {
+				ctx.Expect(engine1.Entity(bg, NewAccountEventSourcedBehavior(accountID), WithTenant(tenancy.TenantID(tenant)))).To(specs.BeNil())
+				_, _, sendErr := engine1.SendCommand(callerOf(tenant), accountID, &testpb.CreateAccount{AccountBalance: balance}, time.Minute)
+				ctx.Expect(sendErr).To(specs.BeNil())
+			}
+			for tenant, want := range map[string]float64{"acme": 105, "globex": 205} {
+				ctx.Eventually(func() any {
+					state, _, sendErr := engine1.SendCommand(callerOf(tenant), accountID, &testpb.CreditAccount{AccountId: accountID, Balance: 0}, time.Minute)
+					if sendErr != nil {
+						return sendErr
+					}
+					return balanceOf(ctx, state)
+				}, specs.Equal(want), specs.WithTimeout(60*time.Second), specs.WithInterval(500*time.Millisecond))
+			}
 		})
 	})
 }
