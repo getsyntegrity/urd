@@ -47,11 +47,9 @@ import (
 //
 // The two records below share the SAME persistenceID but live under two
 // different tenant scopes at the store layer — the composite (scope,
-// persistenceID) key testkit.EventStore uses internally — simulating what
-// the "Known limitation" section of design.md documents: two tenants can
-// collide on the same logical id at the storage layer even though the
-// actor system itself would only ever let one of them claim a live actor
-// for that id.
+// persistenceID) key testkit.EventStore uses internally — simulating
+// two tenants that use the same logical id: since EGO-TENANT-009 each gets
+// its own live actor, and the records stay apart at the storage layer.
 func TestEngineEraseEntityCannotEraseAnotherTenantsRecord(t *testing.T) {
 	specs.Describe(t, "EraseEntity confines its delete to the caller's own tenant scope", func(s *specs.Spec) {
 		s.It("erases the caller's record and leaves another tenant's record at the same persistenceID", func(ctx *specs.Context) {

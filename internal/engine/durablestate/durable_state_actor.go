@@ -96,21 +96,18 @@ type Actor struct {
 	// extensions.EntityTenantScope dependency Engine.DurableStateEntity
 	// injects when tenantAware is true.
 	//
-	// # Known limitation: shared actor name across tenants
+	// # Actor identity across tenants
 	//
-	// Identical to EventSourcedActor.scope's doc comment: a GoAkt actor's
-	// name is the caller-supplied entityID and is NOT tenant-qualified, so
-	// two tenants using the same entityID still map to the SAME actor
-	// instance. Whichever tenant's spawn reaches PreStart first binds scope
-	// (and actorTenant); a later spawn attempt for the same entityID under a
-	// different tenant is rejected with ErrSpawnTenantMismatch
-	// (engine.go's verifySpawnedTenant), and a later command from a different
-	// tenant against an already-running instance is denied by the existing
-	// actorTenant cross-check in processCommand. Fail-closed and leak-free,
-	// but the second tenant cannot use that entity id at all — a functional
-	// limitation, not a security hole. Follow-up: tenant-qualified actor
-	// identity (see openspec/changes/ego-tenant-003/design.md's "Known
-	// limitation" section); not implemented here.
+	// In a multi-tenant engine the actor's name is qualified with its tenant
+	// (actoridentity.Qualify), so two tenants that share an entityID are two
+	// actors with two scopes and two actorTenant values; neither can reach or
+	// lock out the other (EGO-TENANT-009). PreStart checks that its name is
+	// the one its tenant and ID derive before it reads a store, and the
+	// persistence ID stays the entityID the behavior declares. An engine with
+	// exactly one tenant, or none, keeps the bare entityID as the actor's
+	// name, where a spawn under another tenant is still ErrSpawnTenantMismatch
+	// (engine's verifySpawnedTenant) and the actorTenant cross-check stays as
+	// an additional defense.
 	scope persistence.Scope
 }
 
@@ -151,8 +148,6 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 	// Kill. Reading shardNumber in PostStop (via persistStateAndPublish) while
 	// it was still being written from the dispatcher's PostStart handling was
 	// a genuine data race caught by -race.
-	entity.shardNumber = ctx.ActorSystem().Partition(entity.persistenceID)
-
 	for _, dependency := range ctx.Dependencies() {
 		if dependency != nil {
 			if behavior, ok := extensions.BehaviorFrom[behaviorport.DurableState](dependency); ok {
@@ -161,6 +156,11 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 			}
 		}
 	}
+
+	if err := entity.bindIdentity(ctx); err != nil {
+		return err
+	}
+	entity.shardNumber = ctx.ActorSystem().Partition(entity.persistenceID)
 
 	telemetryExt, err := extensions.Optional[*extensions.TelemetryExtension](ctx, extensions.TelemetryExtensionID)
 	if err != nil {
@@ -189,6 +189,22 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 	entity.metrics.EntityStarted(ctx.Context())
 
 	return nil
+}
+
+// bindIdentity makes the behavior's ID the persistence ID, and in a
+// tenant-aware engine proves, before any store read, that this actor's name is
+// the one its tenant and that ID derive (EGO-TENANT-009). The actor's name is
+// only its address: in a multi-tenant engine it is qualified with the tenant,
+// and the records keep the ID the behavior declares.
+func (entity *Actor) bindIdentity(ctx *goakt.Context) error {
+	if entity.behavior == nil {
+		return nil
+	}
+	entity.persistenceID = entity.behavior.ID()
+	if !entity.tenantAware {
+		return nil
+	}
+	return extensions.VerifyActorIdentity(ctx, string(entity.scope.TenantID()), entity.persistenceID)
 }
 
 // Receive processes any message dropped into the actor mailbox.

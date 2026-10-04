@@ -202,7 +202,7 @@ func spawnSequenceRig(ctx *specs.Context, tenant string, writeErr error) *sequen
 	}
 	deps := []extension.Dependency{behavior, entityCfg}
 	if tenant != "" {
-		exts = append(exts, extensions.NewTenancyMarker())
+		exts = append(exts, extensions.NewTenancyMarker(false))
 		deps = append(deps, extensions.NewEntityTenantScope(tenant))
 	}
 

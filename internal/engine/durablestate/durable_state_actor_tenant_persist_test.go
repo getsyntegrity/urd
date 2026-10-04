@@ -261,7 +261,7 @@ func TestDurableStateActorProcessCommandRejectsCrossTenant(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewTenancyProbeDurableStateBehavior(persistenceID)
 
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			pid := rig.spawnForTenant(ctx, behavior, "acme")
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -388,7 +388,7 @@ func TestDurableStateActorPostStopTenantPersist(t *testing.T) {
 			// PostStop must not persist: a WriteState here fails the case.
 			ctrl.Method("WriteState").Expect(mock.Any(), mock.Any(), mock.Any(), mock.Any()).Never()
 
-			rig := startActorRig(ctx, enginetest.NewStateStoreMock(ctrl), extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, enginetest.NewStateStoreMock(ctrl), extensions.NewTenancyMarker(false))
 			pid := rig.spawnForTenant(ctx, behavior, "acme")
 
 			// Kill returns after PostStop ran, so the Never expectation above
@@ -404,7 +404,7 @@ func TestDurableStateActorPostStopTenantPersist(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewTenancyProbeDurableStateBehavior(persistenceID)
 
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			pid := rig.spawnForTenant(ctx, behavior, "acme")
 
 			reply := ask(ctx, attachedTo(ctx, tenantA), pid, &testpb.CreateAccount{AccountBalance: 500})
@@ -463,7 +463,7 @@ func TestDurableStateActorPostStopTenantPersist(t *testing.T) {
 			// completed, so no WriteState may happen.
 			ctrl.Method("WriteState").Expect(mock.Any(), mock.Any(), mock.Any(), mock.Any()).Never()
 
-			rig := startActorRig(ctx, enginetest.NewStateStoreMock(ctrl), extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, enginetest.NewStateStoreMock(ctrl), extensions.NewTenancyMarker(false))
 			// Spawn returns only after PreStart gave up, so there is nothing
 			// left to wait for: PreStart must fail closed on invalid persisted
 			// tenant metadata.
@@ -490,7 +490,7 @@ func TestDurableStateActorGetStateCommandTenancyGate(t *testing.T) {
 			durableStore := connectedDurableStore(ctx)
 			behavior := enginetest.NewTenancyProbeDurableStateBehavior(uuid.NewString())
 
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			pid = rig.spawnForTenant(ctx, behavior, "acme")
 
 			tenantA = tenantContextFor(ctx, "acme")
@@ -563,7 +563,7 @@ func TestDurableStateActorFailedFirstCommandDoesNotAppropriateActor(t *testing.T
 			persistenceID := uuid.NewString()
 			behavior := newFlakyFirstCommandDurableStateBehavior(persistenceID)
 
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			pid := rig.spawnForTenant(ctx, behavior, "acme")
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -704,7 +704,7 @@ func TestDurableStateActorRecoverFromStoreLegacyVersionZeroGenesis(t *testing.T)
 			behavior := enginetest.NewTenancyProbeDurableStateBehavior(persistenceID)
 			ctx.Expect(durableStore.WriteState(bg, persistence.Unscoped(), newLegacyRecord(ctx, 0), persistence.Unconditional())).To(specs.BeNil())
 
-			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker())
+			rig := startActorRig(ctx, durableStore, extensions.NewTenancyMarker(false))
 			// recovering a legacy version-0 record must not block Spawn/PreStart
 			// in tenant-aware mode
 			pid := rig.spawnForTenant(ctx, behavior, "acme")

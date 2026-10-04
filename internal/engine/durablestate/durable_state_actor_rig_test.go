@@ -70,7 +70,7 @@ type actorRig struct {
 }
 
 // startActorRig starts an actor system whose durable state store is store. extra
-// carries the extensions a case adds, for example extensions.NewTenancyMarker().
+// carries the extensions a case adds, for example extensions.NewTenancyMarker(false).
 func startActorRig(ctx *specs.Context, store persistence.StateStore, extra ...extension.Extension) *actorRig {
 	bg := context.Background()
 	stream := eventstream.New()

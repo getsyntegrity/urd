@@ -37,6 +37,7 @@ import (
 	"github.com/getsyntegrity/urd/command"
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
+	"github.com/getsyntegrity/urd/internal/actoridentity"
 	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	"github.com/getsyntegrity/urd/internal/extensions"
 	"github.com/getsyntegrity/urd/internal/goaktlog"
@@ -61,7 +62,10 @@ type Actor struct {
 	eventsCounter uint64
 	status        runtimeport.SagaStatus
 	sagaID        string
-	timeout       time.Duration
+	// qualifiedNames is true when the engine addresses actors by (tenant,
+	// ID): the saga then reaches the entities it commands in its own tenant.
+	qualifiedNames bool
+	timeout        time.Duration
 
 	// tenantAware records whether this saga instance runs under a tenancy
 	// resolver (presence-only signal via extensions.TenancyExtensionID, set
@@ -97,16 +101,18 @@ type Actor struct {
 	// simply never fires anymore for a tenant-aware saga, since spawn itself
 	// is now the durable source of truth for which tenant owns this sagaID.
 	//
-	// # Known limitation: shared actor name across tenants
+	// # Actor identity across tenants
 	//
-	// Identical to EventSourcedActor.scope's doc comment: a GoAkt actor's
-	// name is the caller-supplied sagaID and is NOT tenant-qualified, so two
-	// tenants using the same sagaID still map to the SAME actor instance.
-	// Fail-closed and leak-free once spawned, but the second tenant cannot
-	// use that saga id at all — a functional limitation, not a security
-	// hole. Follow-up: tenant-qualified actor identity (see
-	// openspec/changes/ego-tenant-003/design.md's "Known limitation"
-	// section); not implemented here.
+	// In a multi-tenant engine the actor's name is qualified with its tenant
+	// (actoridentity.Qualify), so two tenants that share an sagaID are two
+	// actors with two scopes and two actorTenant values; neither can reach or
+	// lock out the other (EGO-TENANT-009). PreStart checks that its name is
+	// the one its tenant and ID derive before it reads a store, and the
+	// persistence ID stays the sagaID the behavior declares. An engine with
+	// exactly one tenant, or none, keeps the bare sagaID as the actor's
+	// name, where a spawn under another tenant is still ErrSpawnTenantMismatch
+	// (engine's verifySpawnedTenant) and the actorTenant cross-check stays as
+	// an additional defense.
 	scope persistence.Scope
 
 	// rootMetadata is this saga instance's own root command.Metadata (#60,
@@ -156,18 +162,10 @@ func (s *Actor) PreStart(ctx *goakt.Context) error {
 	// Presence-only signal, set before recover() so replay validation (SG5)
 	// gates on the same tenantAware value the live path uses (SG4).
 	s.tenantAware = ctx.Extension(extensions.TenancyExtensionID) != nil
+	s.qualifiedNames = extensions.QualifiedActorNames(ctx)
 
 	if err := s.resolveScope(ctx.Dependencies()); err != nil {
 		return err
-	}
-
-	rootOp, err := command.NewOperationID(s.sagaID)
-	if err != nil {
-		return fmt.Errorf("saga: invalid saga id for root command metadata: %w", err)
-	}
-	s.rootMetadata, err = command.NewMetadata(rootOp)
-	if err != nil {
-		return fmt.Errorf("saga: failed to build root command metadata: %w", err)
 	}
 
 	for _, dependency := range ctx.Dependencies() {
@@ -186,6 +184,27 @@ func (s *Actor) PreStart(ctx *goakt.Context) error {
 
 	if s.behavior == nil {
 		return fmt.Errorf("saga behavior is required")
+	}
+
+	// The actor's name is only its address: in a multi-tenant engine it is
+	// qualified with the tenant, and the saga ID the records and the root
+	// metadata carry stays the ID the behavior declares (EGO-TENANT-009).
+	// Before any store read, prove the name is the one this saga's tenant and
+	// ID derive.
+	s.sagaID = s.behavior.ID()
+	if s.tenantAware {
+		if err := extensions.VerifyActorIdentity(ctx, string(s.scope.TenantID()), s.sagaID); err != nil {
+			return err
+		}
+	}
+
+	rootOp, err := command.NewOperationID(s.sagaID)
+	if err != nil {
+		return fmt.Errorf("saga: invalid saga id for root command metadata: %w", err)
+	}
+	s.rootMetadata, err = command.NewMetadata(rootOp)
+	if err != nil {
+		return fmt.Errorf("saga: failed to build root command metadata: %w", err)
 	}
 
 	if err := s.eventsStore.Ping(ctx.Context()); err != nil {
@@ -774,6 +793,18 @@ func effectiveCommandTimeout(configured time.Duration) time.Duration {
 	return timeout
 }
 
+// targetActorName returns the actor name of entityID, an entity of this saga's
+// own tenant. In a multi-tenant engine that is the name qualified with the
+// saga's tenant, so a saga only ever commands the entities of the tenant it is
+// bound to, even when another tenant has an entity with the same ID. Otherwise
+// it is entityID itself.
+func (s *Actor) targetActorName(entityID string) (string, error) {
+	if !s.qualifiedNames {
+		return entityID, nil
+	}
+	return actoridentity.Qualify(string(s.scope.TenantID()), entityID)
+}
+
 // sendCommand sends a command to an entity and handles the result. ctx
 // carries the saga's tenant identity (attached by the caller) through the
 // dispatch to entity B, so the receiving entity's own T4-A gate observes the
@@ -784,7 +815,11 @@ func (s *Actor) sendCommand(ctx context.Context, cmd sagaCommand) {
 	timeout := effectiveCommandTimeout(cmd.Timeout)
 
 	noSender := s.actorSystem.NoSender()
-	reply, err := noSender.SendSync(s.attachCommandMetadata(ctx, cmd.Metadata), cmd.EntityID, cmd.Command, timeout)
+	target, err := s.targetActorName(cmd.EntityID)
+	var reply any
+	if err == nil {
+		reply, err = noSender.SendSync(s.attachCommandMetadata(ctx, cmd.Metadata), target, cmd.Command, timeout)
+	}
 	if err != nil {
 		action, handleErr := s.behavior.HandleError(ctx, cmd.EntityID, err, s.currentState)
 		if handleErr != nil {
@@ -837,7 +872,11 @@ func (s *Actor) compensate(ctx context.Context, logger kitlog.Logger, actorSyste
 		timeout := effectiveCommandTimeout(cmd.Timeout)
 
 		noSender := actorSystem.NoSender()
-		if _, err := noSender.SendSync(s.attachCommandMetadata(ctx, cmd.Metadata), cmd.EntityID, cmd.Command, timeout); err != nil {
+		target, err := s.targetActorName(cmd.EntityID)
+		if err == nil {
+			_, err = noSender.SendSync(s.attachCommandMetadata(ctx, cmd.Metadata), target, cmd.Command, timeout)
+		}
+		if err != nil {
 			logger.Error("saga: compensation command failed", "saga_id", s.sagaID, "entity_id", cmd.EntityID, "error", err)
 			s.status = runtimeport.SagaFailed
 			return

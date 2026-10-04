@@ -858,12 +858,12 @@ func TestSagaFailsClosed(t *testing.T) {
 			targetID := uuid.NewString()
 			store := newTestkitStore(ctx)
 
-			// extensions.NewTenancyMarker() puts the actor system in tenant-aware
+			// extensions.NewTenancyMarker(false) puts the actor system in tenant-aware
 			// mode, exactly as Engine.NewEngine does when a resolver is
 			// registered via WithTenantResolver. No resolver is registered here
 			// at all: the saga must never be able to reach one (see structural
 			// invariant), and this test does not need one to prove the gate.
-			rig := newSagaRig(ctx, store, extensions.NewTenancyMarker())
+			rig := newSagaRig(ctx, store, extensions.NewTenancyMarker(false))
 
 			// The saga's real target: a genuine tenant-aware eventsource.Actor,
 			// not a stub. If the gate ever regressed and let a saga-dispatched
@@ -874,7 +874,7 @@ func TestSagaFailsClosed(t *testing.T) {
 			// extensions.EntityTenantScope dependency itself — exactly what
 			// Engine.Entity injects when given engine.WithTenant (TENANT-003 T4,
 			// corrected). Without it, tenancy being active
-			// (extensions.NewTenancyMarker() above) makes the target's own
+			// (extensions.NewTenancyMarker(false) above) makes the target's own
 			// PreStart fail closed with extensions.ErrEntityTenantScopeMissing before this
 			// test ever reaches the saga-dispatch gate it means to prove.
 			targetProbe := enginetest.NewTenancyProbeEventSourcedBehavior(targetID)

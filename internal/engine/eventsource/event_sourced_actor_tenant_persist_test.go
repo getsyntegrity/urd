@@ -511,7 +511,7 @@ func TestEventSourcedActorProcessCommandAndReplyRejectsCrossTenant(t *testing.T)
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(connectedEventsStore(ctx)),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, extensions.NewEntityTenantScope("acme"))
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -548,7 +548,7 @@ func TestEventSourcedActorGetStateCommandRejectsCrossTenant(t *testing.T) {
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(connectedEventsStore(ctx)),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, extensions.NewEntityTenantScope("acme"))
 
 			tenantA := tenantContextFor(ctx, "acme")
@@ -582,7 +582,7 @@ func TestEventSourcedActorGetStateCommandRequiresTenantWhenTenantAware(t *testin
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(connectedEventsStore(ctx)),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, extensions.NewEntityTenantScope("acme"))
 
 			stateReplyOf(ctx, askWith(ctx, attachTenant(ctx, tenantContextFor(ctx, "acme")), pid, &testpb.CreateAccount{AccountBalance: 500}))
@@ -608,7 +608,7 @@ func TestEventSourcedActorTenantIdentitySurvivesRestart(t *testing.T) {
 
 			rig := startActorRig(ctx,
 				extensions.NewEventsStore(connectedEventsStore(ctx)),
-				extensions.NewTenancyMarker())
+				extensions.NewTenancyMarker(false))
 
 			tenantA := tenantContextFor(ctx, "acme")
 			tenantB := tenantContextFor(ctx, "globex")

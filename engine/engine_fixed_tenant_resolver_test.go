@@ -73,14 +73,18 @@ func TestEngineSpawnWithMultiTenantFixedTenantResolverNeedsWithTenant(t *testing
 			entityID := uuid.NewString()
 			ctx.Expect(engine.Entity(bg, newTenancyProbeEventSourcedBehavior(entityID))).To(specs.MatchError(ErrSpawnTenantUndetermined))
 
-			// no actor may be spawned when the tenant cannot be determined
-			exists, err := engine.EntityExists(bg, entityID)
-			ctx.Expect(err).To(specs.BeNil())
-			ctx.Expect(exists).To(specs.BeFalse())
 			// the engine must ask the resolver for its fixed tenant
 			ctx.Expect(resolver.asked.Load()).To(specs.BeGreaterThan(int32(0)))
 			// the engine must never call Resolve at spawn
 			ctx.Expect(resolver.resolved.Load()).To(specs.BeZero())
+
+			// no actor may be spawned when the tenant cannot be determined.
+			// EntityExists is a lookup, not a spawn: it resolves the caller's
+			// tenant once to name the actor it looks for, so it comes after
+			// the spawn-time assertion above.
+			exists, err := engine.EntityExists(bg, entityID)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(exists).To(specs.BeFalse())
 
 			// With WithTenant the same resolver spawns: the fixed tenant is only
 			// the fallback.

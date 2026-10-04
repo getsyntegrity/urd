@@ -28,6 +28,8 @@ import (
 
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/extension"
+
+	"github.com/getsyntegrity/urd/internal/actoridentity"
 )
 
 // ErrMissingRequiredExtensions reports that an actor could not find an
@@ -118,4 +120,30 @@ func BehaviorFrom[T any](dependency extension.Dependency) (T, bool) {
 	}
 	b, ok := dependency.(T)
 	return b, ok
+}
+
+// VerifyActorIdentity checks, in an actor's PreStart and before it reads any
+// store, that the actor's name is the one its tenant and business ID derive
+// (actoridentity.Qualify). It is a no-op when the engine does not qualify
+// actor names: legacy and single-tenant engines name the actor after the bare
+// ID, which cannot disagree with anything.
+//
+// The tenant comes from the EntityTenantScope dependency, which GoAkt
+// serializes with the actor, so an actor relocated to another node rebuilds
+// the same (tenant, ID) identity there and proves it against its own name. An
+// actor whose name and carried tenant disagree fails closed here instead of
+// recovering another tenant's records.
+func VerifyActorIdentity(ctx *goakt.Context, tenantID, businessID string) error {
+	if !QualifiedActorNames(ctx) {
+		return nil
+	}
+	return actoridentity.Verify(ctx.ActorName(), tenantID, businessID)
+}
+
+// QualifiedActorNames reports whether the engine names actors after their
+// tenant and business ID (see TenancyMarker.QualifiedActorNames). It is false
+// when tenancy is inactive.
+func QualifiedActorNames(ctx *goakt.Context) bool {
+	marker, ok := ctx.Extension(TenancyExtensionID).(*TenancyMarker)
+	return ok && marker != nil && marker.QualifiedActorNames()
 }

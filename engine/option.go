@@ -186,7 +186,7 @@ func (c *Config) GoaktOptions() []goakt.Option {
 	}
 
 	if c.tenantResolver != nil {
-		opts = append(opts, goakt.WithExtensions(extensions.NewTenancyMarker()))
+		opts = append(opts, goakt.WithExtensions(extensions.NewTenancyMarker(qualifiesActorNames(c.tenantResolver))))
 	}
 
 	return opts

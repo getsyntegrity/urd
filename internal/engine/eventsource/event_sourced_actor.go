@@ -243,26 +243,18 @@ type Actor struct {
 	// than re-derived there, since those are separate actors that never
 	// see PreStart's dependencies.
 	//
-	// # Known limitation: shared actor name across tenants
+	// # Actor identity across tenants
 	//
-	// A GoAkt actor's name is the caller-supplied entityID and is NOT
-	// tenant-qualified (see engine.go's Entity/DurableStateEntity/Saga).
-	// Two tenants using the same entityID therefore still map to the SAME
-	// actor instance: whichever tenant's spawn reaches PreStart first
-	// binds scope (and actorTenant, see resolveScope), and every later
-	// spawn attempt or command for that same entityID under a DIFFERENT
-	// tenant is denied — a spawn under a different tenant is rejected by
-	// Engine.Entity with ErrSpawnTenantMismatch after comparing the
-	// returned actor's own spawn binding (engine.go's verifySpawnedTenant),
-	// and a command against an already-running instance is denied by the
-	// existing actorTenant cross-check in processCommandAndReply/
-	// processAndBatch. This is fail-closed and leak-free — no cross-tenant
-	// read or write ever happens — but it means the second tenant cannot
-	// use that entity id at all under the current identity scheme. This is
-	// a functional limitation, not a security hole. Follow-up:
-	// tenant-qualified actor identity is explicitly not implemented by
-	// TENANT-003 (see openspec/changes/ego-tenant-003/design.md's "Known
-	// limitation" section).
+	// In a multi-tenant engine the actor's name is qualified with its tenant
+	// (actoridentity.Qualify), so two tenants that share an entityID are two
+	// actors with two scopes and two actorTenant values; neither can reach or
+	// lock out the other (EGO-TENANT-009). PreStart checks that its name is
+	// the one its tenant and ID derive before it reads a store, and the
+	// persistence ID stays the entityID the behavior declares. An engine with
+	// exactly one tenant, or none, keeps the bare entityID as the actor's
+	// name, where a spawn under another tenant is still ErrSpawnTenantMismatch
+	// (engine's verifySpawnedTenant) and the actorTenant cross-check stays as
+	// an additional defense.
 	scope persistence.Scope
 }
 
@@ -308,6 +300,10 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 		return err
 	}
 	entity.setConfig(ctx)
+
+	if err := entity.bindIdentity(ctx); err != nil {
+		return err
+	}
 
 	if err := entity.validateAndRecover(ctx); err != nil {
 		return err
@@ -418,6 +414,26 @@ func (entity *Actor) loadOptionalExtensions(ctx *goakt.Context) error {
 	}
 
 	return nil
+}
+
+// bindIdentity makes the behavior's ID the persistence ID, and in a
+// tenant-aware engine proves, before any store read, that this actor's name is
+// the one its tenant and that ID derive (EGO-TENANT-009).
+//
+// The actor's name is only its address. In a multi-tenant engine it is
+// qualified with the tenant, so it is no longer the entity's ID, and the
+// records the actor reads and writes keep the ID the behavior declares. Until
+// the behavior is found the persistence ID stays the actor's name, which is
+// the ID itself in legacy and single-tenant engines.
+func (entity *Actor) bindIdentity(ctx *goakt.Context) error {
+	if entity.behavior == nil {
+		return nil
+	}
+	entity.persistenceID = entity.behavior.ID()
+	if !entity.tenantAware {
+		return nil
+	}
+	return extensions.VerifyActorIdentity(ctx, string(entity.scope.TenantID()), entity.persistenceID)
 }
 
 // setConfig reads the behavior and entity configuration from the
