@@ -67,15 +67,30 @@ tests and keep their names; they are used only by the tests above.
 becomes `TestArchitectureUnitTestClosureExcludesRuntimeAndRoot` (`go list -deps -test ./...` in each module).
 
 These modules have their own `go.mod`, so a `-run`/`-skip` on the root module never reaches them. The `architecture` job
-runs them from their own directory, and the `modules` job skips `TestArchitecture*`, so they run in exactly one lane.
+runs them from their own directory, and the `modules` job skips `TestArchitecture*`, so the `architecture` job is the
+only one that runs them. On the release pull request it runs them with the minimum Go, which `test (min)` never did for
+nested modules.
 
 ## Which lane runs what
 
 | Job | `TestArchitecture*` |
 |---|---|
-| `test (shard N)`, `race`, `modules (dir)` | skipped (`-skip`) |
+| `test (shard N)`, `race`, `modules (dir)`, `test (min)` | skipped (`-skip`) |
 | `architecture` | runs them: the selected packages and the source-sensitive ones, all of them on a full run; every test the plan expected must pass |
-| `test (min)` | still runs them on the release PR and on a hotfix PR to `main`, with the minimum Go (to review) |
+
+The Go version of the `architecture` job depends on the event:
+
+| Event | Go | Tests |
+|---|---|---|
+| Feature PR | `.go-version` | the selected ones |
+| Push to `develop`, manual run | `.go-version` | all 23 |
+| Release PR `develop` to `main` | the minimum of `go.mod` | all 23, the four publishers included |
+| Hotfix PR to `main` | the minimum of `go.mod` | the selected ones |
+
+The minimum is the `go` directive of the root `go.mod`; a nested module with a higher directive (`publisher/pulsar`,
+`1.26.2`) runs with its own, and the job summary names the toolchain of every module. This keeps what `test (min)` used
+to validate on the release and hotfix PRs: the minimum-Go run of the architecture tests, now once and in one job. See
+[docs/ci.md](../ci.md#which-go-version-runs-the-architecture-tests) for what it no longer does.
 
 Two packages are **source-sensitive**: `engine` and `port/adapter`. Their tests look at files the package does not
 import (`./command/...`, `./tenancy/...`, the contract packages that must not import `port/adapter`, every production
@@ -91,7 +106,7 @@ name, and the `specs.Describe` descriptions are unchanged. All of them pass with
 Parity of what runs. Before the lane, a package the plan selected ran its architecture tests inside its shard (with
 `-race` and coverage). Now every package with architecture tests that the graph selects runs them in the `architecture`
 job instead, with the same reason, and the two source-sensitive packages run them on any production Go change besides.
-No selected test lost its lane: `go test -list` of the shards' `-skip '^TestCluster|^TestArchitecture'` plus the
+The only job that executes a test of this lane is `architecture`; the others skip it by name. No selected test lost its lane: `go test -list` of the shards' `-skip '^TestCluster|^TestArchitecture'` plus the
 `architecture` plan covers the 848 names, and a full run lists the 23 tests (19 in `.`, 4 in the publishers) and checks
 that each one passed.
 

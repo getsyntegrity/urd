@@ -189,6 +189,7 @@ func TestVerifyArchitecture(t *testing.T) {
 func TestRunArchitecture(t *testing.T) {
 	plan := `[{"dir":".","packages":[{"importPath":"p/a","tests":["TestArchitectureOne"],"reason":"r"}]},` +
 		`{"dir":"publisher/kafka","packages":[{"importPath":"p/k","tests":["TestArchitectureTwo"],"reason":"r"}]}]`
+	version := func(dir string) string { return "go-" + dir }
 	events := func(pkg, test string) []byte {
 		return []byte(`{"Action":"run","Package":"` + pkg + `","Test":"` + test + `"}` + "\n" +
 			`{"Action":"pass","Package":"` + pkg + `","Test":"` + test + `"}` + "\n")
@@ -206,15 +207,28 @@ func TestRunArchitecture(t *testing.T) {
 				return events("p/k", "TestArchitectureTwo"), nil
 			}
 			var out, logs bytes.Buffer
-			ctx.Expect(runArchitecture(nil, plan, &out, &logs, run)).To(specs.BeNil())
+			ctx.Expect(runArchitecture(nil, plan, &out, &logs, run, version)).To(specs.BeNil())
 			ctx.Expect(dirs).To(specs.Equal([]string{".", "publisher/kafka"}))
 			ctx.Expect(calls[0]).To(specs.Equal([]string{"-count=1", "-timeout=8m", "-run", "^TestArchitecture", "-json", "p/a"}))
 			for _, c := range calls {
 				ctx.Expect(strings.Contains(strings.Join(c, " "), "-race")).To(specs.BeFalse())
 				ctx.Expect(strings.Contains(strings.Join(c, " "), "cover")).To(specs.BeFalse())
 			}
-			ctx.Expect(strings.Contains(out.String(), "| `publisher/kafka` | 1 | 1 | 1 |")).To(specs.BeTrue())
+			ctx.Expect(strings.Contains(out.String(), "| `publisher/kafka` | go-publisher/kafka | 1 | 1 | 1 |")).To(specs.BeTrue())
 			ctx.Expect(logs.String()).To(specs.BeEmpty())
+		})
+
+		s.It("names in the summary the Go toolchain each module ran with", func(ctx *specs.Context) {
+			run := func(dir string, args ...string) ([]byte, error) {
+				if dir == "." {
+					return events("p/a", "TestArchitectureOne"), nil
+				}
+				return events("p/k", "TestArchitectureTwo"), nil
+			}
+			var out bytes.Buffer
+			ctx.Expect(runArchitecture(nil, plan, &out, &bytes.Buffer{}, run, version)).To(specs.BeNil())
+			ctx.Expect(strings.Contains(out.String(), "| `.` | go-. | 1 | 1 | 1 |")).To(specs.BeTrue())
+			ctx.Expect(strings.Contains(out.String(), "| Module | Go | Packages |")).To(specs.BeTrue())
 		})
 
 		s.It("fails when go test exits with an error, and still checks the other modules", func(ctx *specs.Context) {
@@ -225,10 +239,10 @@ func TestRunArchitecture(t *testing.T) {
 				return events("p/k", "TestArchitectureTwo"), nil
 			}
 			var out, logs bytes.Buffer
-			err := runArchitecture(nil, plan, &out, &logs, run)
+			err := runArchitecture(nil, plan, &out, &logs, run, version)
 			ctx.Expect(err == nil).To(specs.BeFalse())
 			ctx.Expect(strings.Contains(logs.String(), "::error::.: go test failed: exit status 1")).To(specs.BeTrue())
-			ctx.Expect(strings.Contains(out.String(), "| `publisher/kafka` | 1 | 1 | 1 |")).To(specs.BeTrue())
+			ctx.Expect(strings.Contains(out.String(), "| `publisher/kafka` | go-publisher/kafka | 1 | 1 | 1 |")).To(specs.BeTrue())
 		})
 
 		s.It("fails when go test succeeds but ran none of the expected tests", func(ctx *specs.Context) {
@@ -236,17 +250,17 @@ func TestRunArchitecture(t *testing.T) {
 				return []byte(`{"Action":"output","Package":"p/a","Output":"testing: warning: no tests to run\n"}` + "\n"), nil
 			}
 			var out, logs bytes.Buffer
-			ctx.Expect(runArchitecture(nil, plan, &out, &logs, run) == nil).To(specs.BeFalse())
+			ctx.Expect(runArchitecture(nil, plan, &out, &logs, run, version) == nil).To(specs.BeFalse())
 			ctx.Expect(strings.Contains(logs.String(), "none of the 1 expected architecture tests passed")).To(specs.BeTrue())
 		})
 
 		s.It("fails on an empty plan, because the lane only runs when the plan selected a test", func(ctx *specs.Context) {
-			err := runArchitecture(nil, "[]", &bytes.Buffer{}, &bytes.Buffer{}, nil)
+			err := runArchitecture(nil, "[]", &bytes.Buffer{}, &bytes.Buffer{}, nil, version)
 			ctx.Expect(err == nil).To(specs.BeFalse())
 		})
 
 		s.It("fails when the plan is not a plan", func(ctx *specs.Context) {
-			err := runArchitecture(nil, "", &bytes.Buffer{}, &bytes.Buffer{}, nil)
+			err := runArchitecture(nil, "", &bytes.Buffer{}, &bytes.Buffer{}, nil, version)
 			ctx.Expect(err == nil).To(specs.BeFalse())
 		})
 	})
