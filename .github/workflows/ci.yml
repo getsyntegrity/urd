@@ -17,8 +17,8 @@
 #                  never on feature or hotfix PRs
 #   benchmark   -> every benchmark of the benchmark module once (-benchtime=1x; a manual run can choose a
 #                  longer benchtime), same triggers as inttest; fails if no benchmark ran
-#   cluster     -> every TestCluster* test of the root module, alone (the shards skip them); every pull request
-#                  with Go changes, like the unit shards, plus pushes to develop; fails if no TestCluster* test passed
+#   cluster     -> every TestCluster* test of the root module, alone (the shards skip them); same triggers as
+#                  inttest (push to develop, release PR develop -> main, manual); fails if no TestCluster* test passed
 #   race        -> the whole root module under -race, TestCluster* skipped; every pull request with Go
 #                  changes, like the unit shards, plus pushes to develop
 #   unit-gate   -> the unit-test rules of #204 (no testify, no generated mocks, go-specs, no real resources)
@@ -247,11 +247,11 @@ jobs:
 
   # Minimum version the library promises (the go directive of go.mod).
   #   PR to develop: build and vet (fast; detects use of newer stdlib API).
-  #   PR to main:    runs ALL the tests with the minimum before publishing.
+  #   PR to main:    the release PR (from develop) runs ALL the tests with the minimum before publishing; a
+  #                  hotfix PR skips the TestCluster tests.
   # Uses plain `go test`: gotestsum 1.13 needs Go >= 1.24 and the minimum may be lower.
-  # It does NOT skip the TestCluster tests, on purpose: it is the only job that runs them with the minimum
-  # Go. (The cluster job also runs on every PR with Go changes, hotfix PRs included, but with the toolchain
-  # of .go-version.) It keeps running everything.
+  # On the release PR it does NOT skip the TestCluster tests, on purpose: it is the only job that runs them
+  # with the minimum Go. (The cluster job runs them with the toolchain of .go-version.)
   test-min:
     name: test (min)
     needs: plan
@@ -270,8 +270,12 @@ jobs:
         with:
           go-version: ${{ steps.min.outputs.version }}
       - run: go build ./... && go vet ./...
-      - if: github.base_ref == 'main'
+      # The release PR (develop -> main) runs everything with the minimum Go, TestCluster* included. A hotfix
+      # PR to main skips them, like a feature PR: the cluster lane covers them after the merge.
+      - if: github.base_ref == 'main' && github.head_ref == 'develop'
         run: go test $TESTFLAGS ./...
+      - if: github.base_ref == 'main' && github.head_ref != 'develop'
+        run: go test $TESTFLAGS -skip "$CLUSTER_TESTS" ./...
 
   # Nested modules (benchmark, persistence/postgres, publisher/*, test/compat, example (all the examples,
   # example/cluster included), inttest) are separate Go modules: `./...` at the root does not reach them, so each one is built, vetted
@@ -385,8 +389,10 @@ jobs:
 
   # The multi-node cluster tests: every top-level test named TestCluster* in the root module. They start real
   # clustered actor systems on loopback ports, so the test shards skip them (-skip) and they run here, alone.
-  # They run on every pull request with Go changes, like the unit shards, plus pushes to develop and manual
-  # runs: they are in-process (no Docker) and every PR ran them before the lanes existed. The command takes
+  # They follow the inttest rule: they run on every push to develop (the result of each merge), on the
+  # develop -> main release PR (so main never receives a red cluster run, through ci-ok) and on manual runs.
+  # Feature and hotfix PRs never run them; a hotfix is covered once its main -> develop sync PR is merged and
+  # develop is pushed. They are in-process (no Docker). ci-ok accepts "skipped". The command takes
   # ./... on purpose. A hardcoded package list would let a new TestCluster* in another package be skipped by
   # the shards and never run here, and the zero-pass guard would not notice while other packages still pass.
   # `go test` reports "no tests to run" as a pass, so the step counts the top-level TestCluster* pass events in
@@ -394,7 +400,11 @@ jobs:
   # green). No retries: a flaky cluster test is fixed in its own PR.
   cluster:
     needs: plan
-    if: needs.plan.outputs.go == 'true'
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        github.base_ref == 'main' && github.head_ref == 'develop')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
