@@ -554,10 +554,15 @@ func TestEngineStoppingOneTenantsActorLeavesTheOthersAlive(t *testing.T) {
 
 			stop(ctx, engine, "acme", sagaID)
 
+			// wait for the actor to be gone from the system, not merely failing a
+			// query: while it stops it is still registered, and a respawn would
+			// find that dying instance
 			ctx.Eventually(func() any {
-				_, err := engine.SagaStatus(callerOf("acme"), sagaID, 5*time.Second)
-				return err != nil
+				exists, err := engine.EntityExists(callerOf("acme"), sagaID)
+				return err == nil && !exists
 			}, specs.BeTrue(), specs.WithTimeout(30*time.Second), specs.WithInterval(100*time.Millisecond))
+			_, statusErr := engine.SagaStatus(callerOf("acme"), sagaID, 5*time.Second)
+			ctx.Expect(statusErr).To(specs.Not(specs.BeNil()))
 			info, err := engine.SagaStatus(callerOf("globex"), sagaID, 5*time.Second)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(info.ID).To(specs.Equal(sagaID))

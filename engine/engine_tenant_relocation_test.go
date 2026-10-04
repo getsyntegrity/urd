@@ -291,13 +291,21 @@ func TestClusterEngineRelocatedActorRecoversItsOwnTenant(t *testing.T) {
 				ctx.Expect(sendErr).To(specs.BeNil())
 			}
 			for tenant, want := range map[string]float64{"acme": 105, "globex": 205} {
+				// The journal of each tenant's account is exactly its create and its
+				// credit: a command that ran twice or not at all leaves a different
+				// count. It is read from the store, not by sending commands, which
+				// would add events of their own.
 				ctx.Eventually(func() any {
-					state, _, sendErr := engine1.SendCommand(callerOf(tenant), accountID, &testpb.CreditAccount{AccountId: accountID, Balance: 0}, time.Minute)
-					if sendErr != nil {
-						return sendErr
+					latest, getErr := events.GetLatestEvent(bg, tenantScopeOf(ctx, tenant), accountID)
+					if getErr != nil || latest == nil {
+						return uint64(0)
 					}
-					return balanceOf(ctx, state)
-				}, specs.Equal(want), specs.WithTimeout(60*time.Second), specs.WithInterval(500*time.Millisecond))
+					return latest.GetSequenceNumber()
+				}, specs.Equal(uint64(2)), specs.WithTimeout(60*time.Second), specs.WithInterval(100*time.Millisecond))
+
+				state, _, sendErr := engine1.SendCommand(callerOf(tenant), accountID, &testpb.CreditAccount{AccountId: accountID, Balance: 0}, time.Minute)
+				ctx.Expect(sendErr).To(specs.BeNil())
+				ctx.Expect(balanceOf(ctx, state)).To(specs.Equal(want))
 			}
 		})
 	})

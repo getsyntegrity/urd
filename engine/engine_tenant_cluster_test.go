@@ -126,19 +126,27 @@ func TestClusterEngineRemoteSpawnTenantBinding(t *testing.T) {
 				return context.WithValue(bg, perCallerTenantKey{}, tenant)
 			}
 
+			// RoundRobin placement draws from one counter that every node shares and
+			// that every SpawnOn advances. Spawning the acme entities back to back
+			// from one node makes them alternate between the two members, so some
+			// land on node2 whatever the counter started at. Interleaving another
+			// spawn per entity could make the number of draws per entity even, and
+			// every acme entity would then land on the same node.
+			entityIDs := make([]string, 8)
 			remoteSeen := 0
-			for range 8 {
-				entityID := uuid.NewString()
+			for i := range entityIDs {
+				entityIDs[i] = uuid.NewString()
 				// a valid tenant-aware spawn must succeed wherever it is placed
-				ctx.Expect(engine1.Entity(bg, NewAccountEventSourcedBehavior(entityID), acme)).To(specs.BeNil())
+				ctx.Expect(engine1.Entity(bg, NewAccountEventSourcedBehavior(entityIDs[i]), acme)).To(specs.BeNil())
 
-				acmeName := qualifiedName(ctx, "acme", entityID)
-				pid, err := sys1.ActorOf(bg, acmeName)
+				pid, err := sys1.ActorOf(bg, qualifiedName(ctx, "acme", entityIDs[i]))
 				ctx.Expect(err).To(specs.BeNil())
 				if pid.IsRemote() {
 					remoteSeen++
 				}
+			}
 
+			for _, entityID := range entityIDs {
 				for _, node := range []struct {
 					name   string
 					engine *Engine
@@ -150,7 +158,7 @@ func TestClusterEngineRemoteSpawnTenantBinding(t *testing.T) {
 				}
 
 				// the two actors are distinct, and only qualified names exist
-				_, err = sys1.ActorOf(bg, qualifiedName(ctx, "globex", entityID))
+				_, err := sys1.ActorOf(bg, qualifiedName(ctx, "globex", entityID))
 				ctx.Expect(err).To(specs.BeNil())
 				_, err = sys1.ActorOf(bg, entityID)
 				ctx.Expect(err).To(specs.Not(specs.BeNil()))
@@ -169,7 +177,7 @@ func TestClusterEngineRemoteSpawnTenantBinding(t *testing.T) {
 				// a tenant commands its own actor through the node that hosts it:
 				// the command is addressed by (tenant, id), so each tenant's
 				// state is its own. (Carrying the caller's tenant identity over
-				// a remote hop is a separate, earlier gap: see the PR notes.)
+				// a remote hop is a separate, earlier gap: see #305.)
 				for tenant, balance := range map[string]float64{"acme": 10, "globex": 20} {
 					for _, node := range []struct {
 						sys    goakt.ActorSystem
