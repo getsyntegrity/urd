@@ -25,6 +25,7 @@ package saga
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -130,11 +131,29 @@ type Actor struct {
 	logger      kitlog.Logger
 	self        *goakt.PID
 
-	// stopCh stops the event consumption loop of the current incarnation. PreStart
-	// makes a new one each time the actor starts, because GoAkt builds a relocated
-	// actor from its registered type (the zero value, not New) and reuses the same
-	// value after a restart, which PostStop has already closed it for.
-	stopCh chan struct{}
+	// stop ends the event consumption loop of the current incarnation. PreStart
+	// makes a new one each time the actor starts, because GoAkt builds a
+	// relocated actor from its registered type (the zero value, not New) and
+	// reuses the same value after a restart. PostStop only reads the field, so
+	// it cannot race with Receive, which reads it when it starts the loop; only
+	// PreStart writes it, before the incarnation processes its first message.
+	stop *stopSignal
+}
+
+// stopSignal ends the event consumption loop of one incarnation of the actor.
+// Closing it more than once is safe: a stopped actor that stops again, as when
+// a start fails after PreStart began, must not panic.
+type stopSignal struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func newStopSignal() *stopSignal {
+	return &stopSignal{ch: make(chan struct{})}
+}
+
+func (x *stopSignal) close() {
+	x.once.Do(func() { close(x.ch) })
 }
 
 // implements the goakt.Actor interface
@@ -149,8 +168,8 @@ func New() *Actor {
 
 // PreStart initializes the saga actor: loads stores, recovers state, subscribes to events.
 func (s *Actor) PreStart(ctx *goakt.Context) error {
-	// One stop channel per incarnation (see stopCh).
-	s.stopCh = make(chan struct{})
+	// One stop signal per incarnation (see stop).
+	s.stop = newStopSignal()
 	eventsStoreExt, err := extensions.Require[*extensions.EventsStore](ctx, extensions.EventsStoreExtensionID)
 	if err != nil {
 		return err
@@ -241,7 +260,7 @@ func (s *Actor) Receive(ctx *goakt.ReceiveContext) {
 		s.logger = goaktlog.Backend(ctx.Logger())
 		s.self = ctx.Self()
 		// Start consuming events from the stream
-		go s.consumeEvents(s.stopCh)
+		go s.consumeEvents(s.stop.ch, s.subscriber)
 		// Schedule timeout if configured
 		if s.timeout > 0 {
 			self := ctx.Self()
@@ -276,9 +295,8 @@ func (s *Actor) Receive(ctx *goakt.ReceiveContext) {
 
 // PostStop cleans up the saga actor.
 func (s *Actor) PostStop(_ *goakt.Context) error {
-	if s.stopCh != nil {
-		close(s.stopCh)
-		s.stopCh = nil
+	if s.stop != nil {
+		s.stop.close()
 	}
 	if s.subscriber != nil {
 		s.subscriber.Shutdown()
@@ -405,15 +423,22 @@ func (s *Actor) recover(ctx context.Context) error {
 // Events are forwarded to the mailbox rather than processed here so that all
 // saga state stays owned by the actor's serialized message loop — processing
 // them on this goroutine would race with Receive (state queries, timeout).
-func (s *Actor) consumeEvents(stop <-chan struct{}) {
+//
+// stop and subscriber belong to the incarnation of the actor that started this
+// goroutine, and it reads nothing else that PreStart replaces. A restart makes
+// the next incarnation a new stop signal and a new subscriber on the same Actor
+// value while this goroutine may still be running; reading either from the
+// actor would let it end the new incarnation's loop, or take events from its
+// subscriber and drop them.
+func (s *Actor) consumeEvents(stop <-chan struct{}, subscriber eventstream.Subscriber) {
 	for {
 		select {
 		case <-stop:
 			return
-		case <-s.subscriber.Ready():
+		case <-subscriber.Ready():
 		}
 
-		for message := range s.subscriber.Iterator() {
+		for message := range subscriber.Iterator() {
 			select {
 			case <-stop:
 				return
