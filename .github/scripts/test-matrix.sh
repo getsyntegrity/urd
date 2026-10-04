@@ -21,6 +21,9 @@
 #                    The shards run with -skip of this regex, so a split package never distributes these
 #                    tests: they are dropped from the list, and "every listed test lands in exactly one
 #                    shard" covers exactly the tests the shards run. An empty value disables the filter.
+#   PACKAGES_FILE    optional file with the import paths the impact selector chose (one per line). The
+#                    script keeps only those of `go list ./...`; without it every package of the module
+#                    is planned. A selection that leaves no package is an error, never an empty matrix.
 # Requires: go, jq, gotestsum (for the regular packages).
 set -euo pipefail
 
@@ -67,6 +70,15 @@ else
 fi
 
 go list ./... > "$tmp/all.txt"
+if [ -n "${PACKAGES_FILE:-}" ]; then
+  [ -s "$PACKAGES_FILE" ] || { log "PACKAGES_FILE $PACKAGES_FILE is missing or empty"; exit 1; }
+  # A selected path that go list does not know (a package with no file for this platform) cannot run
+  # here. It is reported, and the run fails only when nothing is left to run.
+  grep -vxFf "$tmp/all.txt" "$PACKAGES_FILE" | sed 's/^/unknown to go list, not run: /' >&2 || true
+  grep -xFf "$PACKAGES_FILE" "$tmp/all.txt" > "$tmp/selected.txt" || true
+  [ -s "$tmp/selected.txt" ] || { log "none of the selected packages is known to go list"; exit 1; }
+  mv "$tmp/selected.txt" "$tmp/all.txt"
+fi
 
 # Split candidates: package time > threshold.
 awk -F'\t' -v t="$threshold" 'NR == FNR { if ($2 + 0 > t + 0) slow[$1] = $2; next }
@@ -133,4 +145,6 @@ while IFS=$'\t' read -r pkg _ load names; do
     '{packages: $p, run: $r, estimatedRuntime: $e}'
 done < "$tmp/bins.tsv" >> "$tmp/entries.ndjson"
 
-jq -cs '{include: (to_entries | map({id: .key} + .value))}' "$tmp/entries.ndjson"
+# With fewer packages than shards (a selected run), ci-matrix returns shards with no packages. `go test` with
+# no package would run the current directory, so they are dropped, and the ids stay consecutive.
+jq -cs '{include: (map(select(.packages != "")) | to_entries | map({id: .key} + .value))}' "$tmp/entries.ndjson"
