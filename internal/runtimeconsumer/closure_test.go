@@ -100,13 +100,13 @@ func firstPartyDeps(deps []string) []string {
 	return own
 }
 
-// TestProductionClosureExcludesRootAndGoAkt is #147's closure criterion
+// TestArchitectureRuntimeConsumerProductionClosureExcludesRootAndGoAkt is #147's closure criterion
 // (ego-runtime-001 §D8): the consumer's production build reaches only
 // port/runtime, port/behavior and contracts — every first-party package in
 // it must be on allowedFirstParty — and never the engine package or any
 // GoAkt package. Only the production build is checked; the end-to-end test
 // that needs GoAkt lives in compose/goakt.
-func TestProductionClosureExcludesRootAndGoAkt(t *testing.T) {
+func TestArchitectureRuntimeConsumerProductionClosureExcludesRootAndGoAkt(t *testing.T) {
 	specs.Describe(t, "the production closure of runtimeconsumer", func(s *specs.Spec) {
 		var deps []string
 		s.BeforeEach(func(ctx *specs.Context) { deps = productionDeps(ctx) })

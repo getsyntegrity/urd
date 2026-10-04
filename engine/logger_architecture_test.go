@@ -103,12 +103,12 @@ func isScannedGoSource(path string) bool {
 	}
 }
 
-// TestKitLoggerIsTheOnlyLoggingBackend guards the logging boundary. No
+// TestArchitectureKitLoggerIsTheOnlyLoggingBackend guards the logging boundary. No
 // first-party production file may construct a concrete third-party logger, and
 // none but the seam file may reach for GoAkt's logging API or the standard
 // library's, because the only supported way to log is through the kit-logger
 // Logger the application passes to WithLogger.
-func TestKitLoggerIsTheOnlyLoggingBackend(t *testing.T) {
+func TestArchitectureKitLoggerIsTheOnlyLoggingBackend(t *testing.T) {
 	specs.Describe(t, "first-party production code logs only through kit-logger", func(s *specs.Spec) {
 		s.It("has no concrete logger and no parallel logging backend outside the seam", func(ctx *specs.Context) {
 			root := architectureModuleRoot(ctx.T)

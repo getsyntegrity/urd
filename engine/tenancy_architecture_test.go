@@ -34,7 +34,7 @@ import (
 	"github.com/getsyntegrity/go-specs/specs"
 )
 
-// TestTenancyArchitecture enforces design.md's ratified "Import-graph
+// TestArchitectureTenancy enforces design.md's ratified "Import-graph
 // tooling" decision (EGO-TENANT-001): the tenancy core package MUST NOT
 // acquire a dependency on GoAkt, net/http, JWT libraries, Ory libraries,
 // any transport adapter, or any application/runtime package of this repo
@@ -55,7 +55,7 @@ import (
 // dotted first segment (a registrable domain, e.g. "github.com",
 // "go.uber.org"), while no package in the Go standard library ever does
 // (e.g. "context", "net/http", "unicode/utf8").
-func TestTenancyArchitecture(t *testing.T) {
+func TestArchitectureTenancy(t *testing.T) {
 	specs.Describe(t, "the tenancy core package depends only on the Go standard library", func(s *specs.Spec) {
 		s.It("has no external dependency, direct or transitive", func(ctx *specs.Context) {
 			goBin, err := tenancyArchitectureGoBinary()

@@ -374,11 +374,11 @@ func TestInstallPropagator(t *testing.T) {
 	})
 }
 
-// TestInstrumentationStaysRuntimeNeutral guards the package boundary: the
+// TestArchitectureInstrumentationStaysRuntimeNeutral guards the package boundary: the
 // telemetry contract must never pull in the engine, the GoAkt adapter's
 // internals or GoAkt itself. the former architecture checker only sees direct imports, so this
 // asserts the transitive closure via go list -deps.
-func TestInstrumentationStaysRuntimeNeutral(t *testing.T) {
+func TestArchitectureInstrumentationStaysRuntimeNeutral(t *testing.T) {
 	specs.Describe(t, "the import graph of internal/instrumentation", func(s *specs.Spec) {
 		s.It("reaches neither GoAkt, the engine nor the GoAkt adapter internals", func(ctx *specs.Context) {
 			goBin, err := exec.LookPath("go")

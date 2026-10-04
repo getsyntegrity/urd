@@ -1729,10 +1729,10 @@ func TestProjectionRunnerDefaultLogger(t *testing.T) {
 	})
 }
 
-// TestProjectionRunnerStaysRuntimeNeutral checks the transitive dependency
+// TestArchitectureProjectionRunnerStaysRuntimeNeutral checks the transitive dependency
 // closure, which the former architecture checker does not see: projection execution must not reach
 // the actor runtime that hosts it.
-func TestProjectionRunnerStaysRuntimeNeutral(t *testing.T) {
+func TestArchitectureProjectionRunnerStaysRuntimeNeutral(t *testing.T) {
 	specs.Describe(t, "the import graph of internal/projectionrunner", func(s *specs.Spec) {
 		s.It("reaches neither GoAkt, the engine nor the GoAkt adapter internals", func(ctx *specs.Context) {
 			goBin, err := exec.LookPath("go")

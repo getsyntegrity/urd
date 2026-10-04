@@ -27,7 +27,7 @@
 // directly, so this package is the single seam where GoAkt's printf-style
 // logging API is translated into structured kit-logger records. It is the
 // only first-party package allowed to import github.com/tochemey/goakt/v4/log
-// (see TestKitLoggerIsTheOnlyLoggingBackend in package engine).
+// (see TestArchitectureKitLoggerIsTheOnlyLoggingBackend in package engine).
 //
 // It is GoAkt-specific on purpose: the runtime-neutral logger resolution —
 // the process-wide default and the nil and typed-nil fallback — stays in

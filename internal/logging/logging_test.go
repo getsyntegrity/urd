@@ -66,11 +66,11 @@ func TestResolveLogger(t *testing.T) {
 	})
 }
 
-// TestLoggingStaysRuntimeNeutral guards the reason this package exists:
+// TestArchitectureLoggingStaysRuntimeNeutral guards the reason this package exists:
 // migration resolves its logger here precisely because the dependency
 // closure carries no actor runtime. The architecture-checker rules only see direct
 // imports, so this asserts the transitive closure via go list -deps.
-func TestLoggingStaysRuntimeNeutral(t *testing.T) {
+func TestArchitectureLoggingStaysRuntimeNeutral(t *testing.T) {
 	specs.Describe(t, "the import graph of internal/logging", func(s *specs.Spec) {
 		s.It("reaches neither GoAkt nor the GoAkt logging seam", func(ctx *specs.Context) {
 			goBin, err := exec.LookPath("go")

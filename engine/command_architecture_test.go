@@ -39,13 +39,13 @@ var commandArchitectureAllowedModules = []string{
 	"github.com/getsyntegrity/urd/tenancy",
 }
 
-// TestCommandArchitecture enforces design.md's import allowlist for
+// TestArchitectureCommand enforces design.md's import allowlist for
 // command/ (EGO-WRITE-003): stdlib, google.golang.org/protobuf and
 // tenancy only — no GoAkt, no engine, no transport or auth
-// library. It mirrors TestTenancyArchitecture's mechanism (a real `go
+// library. It mirrors TestArchitectureTenancy's mechanism (a real `go
 // list -deps ./command/...` subprocess, not a source-text scan) so it
 // also catches transitive dependencies.
-func TestCommandArchitecture(t *testing.T) {
+func TestArchitectureCommand(t *testing.T) {
 	specs.Describe(t, "Command Architecture", func(s *specs.Spec) {
 		s.It("holds", func(sc *specs.Context) {
 			t := sc.T

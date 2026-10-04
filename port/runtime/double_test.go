@@ -41,7 +41,7 @@ import (
 )
 
 // The contract is implementable without GoAkt and without package engine:
-// TestRuntimeTestClosureExcludesGoAktAndRoot checks that this file's package
+// TestArchitectureRuntimeTestClosureExcludesGoAktAndRoot checks that this file's package
 // depends on neither.
 var _ runtime.Runtime = (*double)(nil)
 

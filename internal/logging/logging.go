@@ -29,7 +29,7 @@
 // this slice (#147, ego-arch-001 §3, S4-1) — can resolve a usable logger
 // without importing package engine, whose dependency closure includes the
 // GoAkt runtime. This package imports only kit-logger and the standard
-// library, so its own closure carries neither; TestLoggingStaysRuntimeNeutral
+// library, so its own closure carries neither; TestArchitectureLoggingStaysRuntimeNeutral
 // guards that. The adapter that implements GoAkt's log.Logger lives in
 // internal/goaktlog, which depends on this package and never the reverse.
 //

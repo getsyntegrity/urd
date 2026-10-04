@@ -80,7 +80,7 @@ func closureViolation(dep string) string {
 	}
 }
 
-// TestUnitTestClosureExcludesRuntimeAndRoot guards the regression tracked by
+// TestArchitectureUnitTestClosureExcludesRuntimeAndRoot guards the regression tracked by
 // #122: this module's unit-test closure must never again pull in the GoAkt
 // runtime or the engine package, and, since ego-arch-004 (design §D7),
 // the composition root. The historical alias/sentinel
@@ -90,7 +90,7 @@ func closureViolation(dep string) string {
 // so this command stays clean. The child `go list` runs under
 // hermeticGoEnv() so a stray root go.work file or an inherited GOFLAGS can
 // never change the result, independently of the CI job's own GOWORK=off.
-func TestUnitTestClosureExcludesRuntimeAndRoot(t *testing.T) {
+func TestArchitectureUnitTestClosureExcludesRuntimeAndRoot(t *testing.T) {
 	specs.Describe(t, "the unit-test closure of this module", func(s *specs.Spec) {
 		var deps []string
 		s.BeforeEach(func(ctx *specs.Context) {
