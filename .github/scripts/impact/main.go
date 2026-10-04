@@ -11,7 +11,8 @@ import (
 
 const usage = `usage:
   impact plan -event E -base-ref B -head-ref H [-changes FILE] [-root DIR] [-plan-out F] [-summary-out F] [-packages-out F] [-github-output F]
-  impact gate   (reads the NEEDS and LANES environment variables)`
+  impact gate   (reads the NEEDS and LANES environment variables)
+  impact architecture [-out DIR]   (runs the architecture plan of the ARCHITECTURE environment variable)`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -24,6 +25,8 @@ func main() {
 		err = runPlan(os.Args[2:], os.Stdout)
 	case "gate":
 		err = runGate(os.Getenv("NEEDS"), os.Getenv("LANES"), os.Stdout)
+	case "architecture":
+		err = runArchitecture(os.Args[2:], os.Getenv("ARCHITECTURE"), os.Stdout, os.Stderr, execGoTest)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -44,7 +47,7 @@ func runPlan(args []string, out io.Writer) error {
 	planOut := fs.String("plan-out", "", "write the plan as JSON")
 	summaryOut := fs.String("summary-out", "", "write the readable plan (Markdown)")
 	packagesOut := fs.String("packages-out", "", "write the selected root packages, one import path per line")
-	githubOutput := fs.String("github-output", "", "append the workflow outputs (lanes, modules, race_packages) to this file")
+	githubOutput := fs.String("github-output", "", "append the workflow outputs (lanes, modules, race_packages, architecture) to this file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -110,11 +113,15 @@ func appendOutputs(file string, plan *Plan) error {
 	if err != nil {
 		return err
 	}
+	architecture, err := plan.ArchitectureJSON()
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(file, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(f, "lanes=%s\nmodules=%s\nrace_packages=%s\n", lanes, modules, plan.RacePackages())
+	_, err = fmt.Fprintf(f, "lanes=%s\nmodules=%s\nrace_packages=%s\narchitecture=%s\n", lanes, modules, plan.RacePackages(), architecture)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

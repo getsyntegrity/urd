@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -37,6 +38,8 @@ type Package struct {
 	Imports      []string
 	TestImports  []string // imports of the _test.go files that are in the package itself
 	XTestImports []string // imports of the _test.go files of the external test package (package x_test)
+	// ArchitectureTests are the top-level tests named TestArchitecture* of the package, internal or external, sorted.
+	ArchitectureTests []string
 }
 
 // Graph is every module and package of the repository, and the lookups the selector needs.
@@ -72,6 +75,7 @@ func LoadGraph(fsys fs.FS) (*Graph, error) {
 		sort.Strings(p.Imports)
 		sort.Strings(p.TestImports)
 		sort.Strings(p.XTestImports)
+		sort.Strings(p.ArchitectureTests)
 	}
 	return g, nil
 }
@@ -165,7 +169,13 @@ func (g *Graph) addFile(fsys fs.FS, m Module, file string) error {
 	if err != nil {
 		return err
 	}
-	f, err := parser.ParseFile(token.NewFileSet(), file, src, parser.ImportsOnly)
+	isTest := strings.HasSuffix(file, "_test.go")
+	// A test file is parsed whole, to find the architecture tests it declares; the others only for their imports.
+	mode := parser.ImportsOnly
+	if isTest {
+		mode = parser.SkipObjectResolution
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), file, src, mode)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", file, err)
 	}
@@ -184,7 +194,6 @@ func (g *Graph) addFile(fsys fs.FS, m Module, file string) error {
 		g.Packages[importPath] = pkg
 		g.byDir[dir] = pkg
 	}
-	isTest := strings.HasSuffix(file, "_test.go")
 	for _, spec := range f.Imports {
 		imp := strings.Trim(spec.Path.Value, "\"`")
 		switch {
@@ -194,6 +203,14 @@ func (g *Graph) addFile(fsys fs.FS, m Module, file string) error {
 			pkg.XTestImports = appendUnique(pkg.XTestImports, imp)
 		default:
 			pkg.TestImports = appendUnique(pkg.TestImports, imp)
+		}
+	}
+	if isTest {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, ArchitecturePrefix) {
+				pkg.ArchitectureTests = appendUnique(pkg.ArchitectureTests, fn.Name.Name)
+			}
 		}
 	}
 	return nil

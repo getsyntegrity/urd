@@ -9,26 +9,27 @@ import (
 
 // Lane names are the job ids of ci.yml, so the gate can match a plan entry to a job result by name.
 const (
-	laneFlow       = "flow"
-	laneLint       = "lint"
-	laneTest       = "test"
-	laneTestReport = "test-report"
-	laneTestMin    = "test-min"
-	laneModules    = "modules"
-	laneInttest    = "inttest"
-	laneBenchmark  = "benchmark"
-	laneCluster    = "cluster"
-	laneRace       = "race"
-	laneUnitGate   = "unit-gate"
-	laneTidy       = "tidy"
-	laneAPI        = "api"
-	laneVuln       = "vuln"
+	laneFlow         = "flow"
+	laneLint         = "lint"
+	laneTest         = "test"
+	laneTestReport   = "test-report"
+	laneTestMin      = "test-min"
+	laneModules      = "modules"
+	laneInttest      = "inttest"
+	laneBenchmark    = "benchmark"
+	laneCluster      = "cluster"
+	laneArchitecture = "architecture"
+	laneRace         = "race"
+	laneUnitGate     = "unit-gate"
+	laneTidy         = "tidy"
+	laneAPI          = "api"
+	laneVuln         = "vuln"
 )
 
 // allLanes is every job ci-ok waits for, except plan. The gate refuses a plan that leaves one out, so a job added
 // to ci-ok needs without a planning rule fails instead of being accepted whatever it reports.
 var allLanes = []string{laneFlow, laneLint, laneTest, laneTestReport, laneTestMin, laneModules, laneInttest,
-	laneBenchmark, laneCluster, laneRace, laneUnitGate, laneTidy, laneAPI, laneVuln}
+	laneBenchmark, laneCluster, laneArchitecture, laneRace, laneUnitGate, laneTidy, laneAPI, laneVuln}
 
 // vetOnlyModules are the modules whose own tests run in a dedicated lane (inttest, benchmark), so the modules job
 // only builds and vets them.
@@ -99,6 +100,7 @@ type Plan struct {
 	Reason       string              `json:"reason"`
 	Modules      []ModulePlan        `json:"modules"`      // nested modules; the root module is RootPackages
 	RootPackages []PackagePlan       `json:"rootPackages"` // the packages of the root module to run
+	Architecture []ArchitectureGroup `json:"architecture"` // the architecture tests to run, per module
 	Lanes        map[string]LanePlan `json:"lanes"`
 	Ignored      []Ignored           `json:"ignored"`
 }
@@ -112,7 +114,7 @@ func BuildPlan(ev Event, g *Graph, changes []Change) (*Plan, error) {
 	}
 	// Empty slices, not nil ones, so the JSON plan reads [] and not null for a plan with nothing in a section.
 	plan := &Plan{Event: ev.Name, Kind: kind, Lanes: map[string]LanePlan{},
-		Modules: []ModulePlan{}, RootPackages: []PackagePlan{}, Ignored: []Ignored{}}
+		Modules: []ModulePlan{}, RootPackages: []PackagePlan{}, Architecture: []ArchitectureGroup{}, Ignored: []Ignored{}}
 
 	var sel *Selection
 	switch {
@@ -146,6 +148,7 @@ func BuildPlan(ev Event, g *Graph, changes []Change) (*Plan, error) {
 			}
 		}
 	}
+	plan.planArchitecture(g, sel, changes)
 	plan.planLanes(ev)
 	return plan, nil
 }
@@ -201,6 +204,15 @@ func (p *Plan) planLanes(ev Event) {
 
 	modRun := len(p.Modules) > 0
 	p.lane(laneModules, modRun, ifElse(modRun, fmt.Sprintf("%d nested module(s) to build and vet", len(p.Modules)), "no nested module is affected"))
+
+	archTests := 0
+	for _, group := range p.Architecture {
+		for _, pkg := range group.Packages {
+			archTests += len(pkg.Tests)
+		}
+	}
+	p.lane(laneArchitecture, archTests > 0, ifElse(archTests > 0,
+		fmt.Sprintf("%d architecture test(s) to run", archTests), "no architecture test is selected"))
 
 	heavy := ev.fullByEvent()
 	heavyWhy := ifElse(heavy, describeKind(ev.Kind())+" runs it", fmt.Sprintf("never runs on a %s pull request", ev.Kind()))
@@ -294,6 +306,22 @@ func (p *Plan) Summary() string {
 		b.WriteString("| Module | Runs | Why |\n|---|---|---|\n")
 		for _, m := range p.Modules {
 			fmt.Fprintf(&b, "| `%s` | %s | %s |\n", m.Dir, ifElse(m.VetOnly, "build and vet", "build, vet and test"), m.Reason)
+		}
+	}
+
+	archPkgs := 0
+	for _, group := range p.Architecture {
+		archPkgs += len(group.Packages)
+	}
+	fmt.Fprintf(&b, "\n#### Architecture tests (%d packages)\n\n", archPkgs)
+	if archPkgs == 0 {
+		b.WriteString("None.\n")
+	} else {
+		b.WriteString("| Module | Package | Tests | Why |\n|---|---|---|---|\n")
+		for _, group := range p.Architecture {
+			for _, pkg := range group.Packages {
+				fmt.Fprintf(&b, "| `%s` | `%s` | %d | %s |\n", group.Dir, pkg.ImportPath, len(pkg.Tests), pkg.Reason)
+			}
 		}
 	}
 
