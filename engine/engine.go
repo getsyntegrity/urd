@@ -93,6 +93,10 @@ type Engine struct {
 	// uses its fixed tenant when a spawn names none (spawn_tenancy.go).
 	tenantResolver tenancy.TenantResolver
 
+	// projectionScopes maps each registered projection name to the effective
+	// persistence scope NewEngine resolved for it. Read-only after NewEngine.
+	projectionScopes map[string]persistence.Scope
+
 	// entityFamilies is the set declared with WithEntityFamilies; zero means
 	// nothing was declared and every family may be spawned. Set once by
 	// NewEngine and never changed.
@@ -157,6 +161,14 @@ func NewEngine(actorSys goakt.ActorSystem, config *Config) (*Engine, error) {
 		return nil, ErrAmbiguousTenantResolver
 	}
 
+	// Projection scopes are validated against the final tenancy mode, after
+	// every option has been applied, so the result does not depend on the
+	// order of WithProjection and WithTenantResolver.
+	resolvedProjections, err := config.resolveProjections()
+	if err != nil {
+		return nil, err
+	}
+
 	if err := validateActorSystemExtensions(actorSys, config); err != nil {
 		return nil, err
 	}
@@ -187,21 +199,22 @@ func NewEngine(actorSys goakt.ActorSystem, config *Config) (*Engine, error) {
 	}
 
 	e := &Engine{
-		name:            actorSys.Name(),
-		eventsStore:     config.eventsStore,
-		stateStore:      config.stateStore,
-		offsetStore:     config.offsetStore,
-		snapshotStore:   config.snapshotStore,
-		logger:          config.logger,
-		eventStream:     config.eventStream,
-		eventAdapters:   config.eventAdapters,
-		telemetry:       config.telemetry,
-		encryptor:       config.encryptor,
-		schemaMigration: config.schemaMigration,
-		tenantResolver:  config.tenantResolver,
-		entityFamilies:  config.entityFamilies,
-		eventsStreams:   syncmap.New[string, *eventsStream](),
-		statesStreams:   syncmap.New[string, *statesStream](),
+		name:             actorSys.Name(),
+		eventsStore:      config.eventsStore,
+		stateStore:       config.stateStore,
+		offsetStore:      config.offsetStore,
+		snapshotStore:    config.snapshotStore,
+		logger:           config.logger,
+		eventStream:      config.eventStream,
+		eventAdapters:    config.eventAdapters,
+		telemetry:        config.telemetry,
+		encryptor:        config.encryptor,
+		schemaMigration:  config.schemaMigration,
+		tenantResolver:   config.tenantResolver,
+		projectionScopes: projectionScopesOf(resolvedProjections),
+		entityFamilies:   config.entityFamilies,
+		eventsStreams:    syncmap.New[string, *eventsStream](),
+		statesStreams:    syncmap.New[string, *statesStream](),
 	}
 	e.actorSystem.Store(&actorSystemRef{
 		sys:      actorSys,

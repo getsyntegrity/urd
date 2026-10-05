@@ -55,7 +55,7 @@ func startProjectionSystemG4(ctx *specs.Context, name string, eventsStore persis
 			extensions.NewEventsStore(eventsStore),
 			extensions.NewOffsetStore(offsetStore),
 			extensions.NewProjectionExtension(map[string]*projection.Options{
-				name: {Handler: handler, BufferSize: 500, PullInterval: 100 * time.Millisecond, Recovery: projection.NewRecovery()},
+				name: {Handler: handler, BufferSize: 500, PullInterval: 100 * time.Millisecond, Recovery: projection.NewRecovery(), Scope: unscopedPtr()},
 			})),
 		goakt.WithActorInitMaxRetries(3))
 	ctx.Expect(err).To(specs.BeNil())
@@ -197,10 +197,10 @@ type flakyEventsStore struct {
 	failures *atomic.Int32
 }
 
-func (x *flakyEventsStore) ShardOffsets(ctx context.Context) (map[uint64]int64, error) {
+func (x *flakyEventsStore) ShardOffsets(ctx context.Context, scope persistence.Scope) (map[uint64]int64, error) {
 	if x.failures.Sub(1) >= 0 {
 		return nil, errors.New("shard offsets round trip failed")
 	}
 
-	return x.EventsStore.ShardOffsets(ctx)
+	return x.EventsStore.ShardOffsets(ctx, scope)
 }

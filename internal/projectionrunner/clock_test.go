@@ -123,7 +123,7 @@ func clockedStores(ctx *specs.Context, pulls *atomic.Int32, shardOffsets func() 
 
 	eventsCtrl := mock.NewController(ctx)
 	eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-	eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).AtLeast(1).
+	eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).AtLeast(1).
 		Do(func([]any) []any { pulls.Inc(); return shardOffsets() })
 
 	return enginetest.NewEventsStoreMock(eventsCtrl), enginetest.NewOffsetStoreMock(offsetCtrl)
@@ -151,7 +151,7 @@ func seededShard(ctx *specs.Context, name string, shard uint64, committed, event
 		Timestamp:      eventTimestamp,
 		Shard:          shard,
 	}}
-	ctx.Expect(events.WriteEvents(bg, persistence.Unscoped(), journal, persistence.Unconditional())).To(specs.BeNil())
+	ctx.Expect(events.WriteEvents(bg, runnerTestScope, journal, persistence.Unconditional())).To(specs.BeNil())
 
 	return events, offsets
 }
@@ -192,11 +192,11 @@ func TestWithClock(t *testing.T) {
 			ctx.Expect(r.clock).To(specs.Equal(manual))
 		})
 		s.It("defaults New to the real clock", func(ctx *specs.Context) {
-			runner := New("clock-default", nil, nil, nil)
+			runner := New("clock-default", nil, nil, nil, WithScope(runnerTestScope))
 			ctx.Expect(runner.clock).To(specs.Equal(realClock{}))
 		})
 		s.It("keeps the real clock when WithClock is given nil", func(ctx *specs.Context) {
-			runner := New("clock-nil", nil, nil, nil, WithClock(nil))
+			runner := New("clock-nil", nil, nil, nil, WithScope(runnerTestScope), WithClock(nil))
 			ctx.Expect(runner.clock).To(specs.Equal(realClock{}))
 		})
 		s.It("has a real clock that tells the wall time and fires its timers", func(ctx *specs.Context) {
@@ -230,7 +230,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			clk := newManualClock()
 			pulls := atomic.NewInt32(0)
 			eventsStore, offsetStore := clockedStores(ctx, pulls, func() []any { return []any{nil, nil} })
-			runner := New("clock-pull", projection.NewDiscardHandler(), eventsStore, offsetStore,
+			runner := New("clock-pull", projection.NewDiscardHandler(), eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -261,7 +261,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			clk := newManualClock()
 			pulls := atomic.NewInt32(0)
 			eventsStore, offsetStore := clockedStores(ctx, pulls, func() []any { return []any{nil, nil} })
-			runner := New("clock-nudge", projection.NewDiscardHandler(), eventsStore, offsetStore,
+			runner := New("clock-nudge", projection.NewDiscardHandler(), eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -300,7 +300,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			clk := newManualClock()
 			pulls := atomic.NewInt32(0)
 			eventsStore, offsetStore := clockedStores(ctx, pulls, func() []any { return []any{nil, errFailed} })
-			runner := New("clock-backoff", projection.NewDiscardHandler(), eventsStore, offsetStore,
+			runner := New("clock-backoff", projection.NewDiscardHandler(), eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -335,7 +335,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
 
-			runner := New("clock-ping", projection.NewDiscardHandler(), enginetest.NewEventsStoreMock(eventsCtrl), enginetest.NewOffsetStoreMock(offsetCtrl),
+			runner := New("clock-ping", projection.NewDiscardHandler(), enginetest.NewEventsStoreMock(eventsCtrl), enginetest.NewOffsetStoreMock(offsetCtrl), WithScope(runnerTestScope),
 				WithClock(clk))
 
 			ctx.Expect(startOnClock(ctx, runner, clk)).To(haveMessage("failed to start the projection: fail ping"))
@@ -351,7 +351,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			eventsStore, offsetStore := seededShard(ctx, name, shard, 0, eventTimestamp)
 
 			attempts := atomic.NewInt32(0)
-			runner := New(name, failingHandler{attempts}, eventsStore, offsetStore,
+			runner := New(name, failingHandler{attempts}, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk),
 				WithRecoveryStrategy(projection.NewRecovery(
 					projection.WithRecoveryPolicy(projection.RetryAndSkip),
@@ -386,7 +386,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			eventTimestamp := clk.Now().Add(time.Second).UnixNano()
 			eventsStore, offsetStore := seededShard(ctx, name, shard, 0, eventTimestamp)
 
-			runner := New(name, projection.NewDiscardHandler(), eventsStore, offsetStore,
+			runner := New(name, projection.NewDiscardHandler(), eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk))
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
 			runner.Run(bg, nil)

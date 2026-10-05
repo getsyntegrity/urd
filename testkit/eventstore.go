@@ -449,9 +449,17 @@ func (x *EventStore) PersistenceIDs(_ context.Context, scope persistence.Scope, 
 	return persistenceIDs, nextPageToken, nil
 }
 
-func (x *EventStore) GetShardEvents(_ context.Context, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+// GetShardEvents implements persistence.EventsStore for the events of scope
+// only. An invalid scope returns persistence.ErrInvalidScope.
+func (x *EventStore) GetShardEvents(_ context.Context, scope persistence.Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+	if !scope.Valid() {
+		return nil, 0, persistence.ErrInvalidScope
+	}
 	var shardEvents []*egopb.Event
-	x.db.Range(func(_ any, value any) bool {
+	x.db.Range(func(key any, value any) bool {
+		if key.(eventStoreKey).scope != scope {
+			return true
+		}
 		log := value.(*eventLog)
 		for _, event := range log.events {
 			if event.GetShard() == shardNumber {
@@ -468,27 +476,46 @@ func (x *EventStore) GetShardEvents(_ context.Context, shardNumber uint64, offse
 	var events []*egopb.Event
 	for _, event := range shardEvents {
 		if event.GetTimestamp() > offset {
-			if len(events) <= int(limit) {
-				events = append(events, event)
-			}
+			events = append(events, event)
 		}
 	}
 
-	if len(events) == 0 {
+	if len(events) == 0 || limit == 0 {
 		return nil, 0, nil
 	}
 
-	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].GetTimestamp() <= events[j].GetTimestamp()
+	// The map iteration order above is random, so the order must be total:
+	// timestamp first, then persistence ID and sequence number as tie-breakers.
+	// The limit applies to the sorted result, as in the Postgres store.
+	sort.Slice(events, func(i, j int) bool {
+		a, b := events[i], events[j]
+		if a.GetTimestamp() != b.GetTimestamp() {
+			return a.GetTimestamp() < b.GetTimestamp()
+		}
+		if a.GetPersistenceId() != b.GetPersistenceId() {
+			return a.GetPersistenceId() < b.GetPersistenceId()
+		}
+		return a.GetSequenceNumber() < b.GetSequenceNumber()
 	})
+	if uint64(len(events)) > limit {
+		events = events[:limit]
+	}
 
 	nextOffset := events[len(events)-1].GetTimestamp()
 	return events, nextOffset, nil
 }
 
-func (x *EventStore) ShardOffsets(context.Context) (map[uint64]int64, error) {
+// ShardOffsets implements persistence.EventsStore for the events of scope
+// only. An invalid scope returns persistence.ErrInvalidScope.
+func (x *EventStore) ShardOffsets(_ context.Context, scope persistence.Scope) (map[uint64]int64, error) {
+	if !scope.Valid() {
+		return nil, persistence.ErrInvalidScope
+	}
 	offsets := make(map[uint64]int64)
-	x.db.Range(func(_ any, value any) bool {
+	x.db.Range(func(key any, value any) bool {
+		if key.(eventStoreKey).scope != scope {
+			return true
+		}
 		log := value.(*eventLog)
 		for _, event := range log.events {
 			if event.GetTimestamp() > offsets[event.GetShard()] {

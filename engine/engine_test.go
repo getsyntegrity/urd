@@ -1583,6 +1583,7 @@ func TestEngineProjectionLagHappyPath(t *testing.T) {
 			engine := newTestEngine(t, "Sample", store,
 				WithLogger(DiscardLogger),
 				WithOffsetStore(offsetStore),
+				WithProjection("any", &projection.Options{Handler: projection.NewDiscardHandler()}),
 			)
 			sc.Expect(engine.Start(ctx)).To(specs.BeNil())
 
@@ -2053,6 +2054,8 @@ func TestEngineProjectionLagClampsNegative(t *testing.T) {
 			engine := newTestEngine(t, "Sample", store,
 				WithLogger(DiscardLogger),
 				WithOffsetStore(offsetStore),
+				// ProjectionLag reads the scope the engine resolved at registration.
+				WithProjection("future-projection", &projection.Options{Handler: projection.NewDiscardHandler()}),
 			)
 			sc.Expect(engine.Start(ctx)).To(specs.BeNil())
 
@@ -2067,7 +2070,7 @@ func TestEngineProjectionLagClampsNegative(t *testing.T) {
 
 			// Discover the populated shards and stamp a future offset on each so
 			// currOffset > latestTimestamp and the clamp branch fires.
-			shardOffsets, err := store.ShardOffsets(ctx)
+			shardOffsets, err := store.ShardOffsets(ctx, persistence.Unscoped())
 			sc.Expect(err).To(specs.BeNil())
 			sc.Expect(shardOffsets).To(specs.Not(specs.BeEmpty()))
 
@@ -2360,8 +2363,20 @@ func synthEngineWithStores(eventsStore persistence.EventsStore, snapStore persis
 		statesStreams: syncmap.New[string, *statesStream](),
 	}
 	e.started.Store(true)
+	e.projectionScopes = map[string]persistence.Scope{"any": lagTestScope}
 	return e
 }
+
+// lagTestScope is the scope the synthetic engine resolved for the projection
+// "any". It is a tenant scope, not Unscoped(), so a ProjectionLag that read
+// without its scope would not match the mock expectations.
+var lagTestScope = func() persistence.Scope {
+	scope, err := persistence.NewTenantScope("acme")
+	if err != nil {
+		panic(err)
+	}
+	return scope
+}()
 
 // TestEngineEraseEntityStoreErrors covers the three error wraps in
 // EraseEntity's full-erase block (lines 906-918): GetLatestEvent failure,
@@ -2425,7 +2440,7 @@ func TestEngineProjectionLagStoreErrors(t *testing.T) {
 
 		s.It("ShardOffsets failure", func(ctx *specs.Context) {
 			ctrl := mock.NewController(ctx)
-			ctrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64(nil), errors.New("shards down"))
+			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64(nil), errors.New("shards down"))
 			// no GetCurrentOffset expectation: the offset store must not be read once the shards failed
 
 			engine := synthEngineWithStores(enginetest.NewEventsStoreMock(ctrl), nil, enginetest.NewOffsetStoreMock(ctrl))
@@ -2437,7 +2452,7 @@ func TestEngineProjectionLagStoreErrors(t *testing.T) {
 
 		s.It("GetCurrentOffset failure", func(ctx *specs.Context) {
 			ctrl := mock.NewController(ctx)
-			ctrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{1: 100}, nil)
+			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64{1: 100}, nil)
 			ctrl.Method("GetCurrentOffset").
 				Expect(mock.Any(), mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
 				Return(nil, errors.New("offset down"))
@@ -2458,7 +2473,7 @@ func TestEngineProjectionLagComputation(t *testing.T) {
 	specs.Describe(t, "ProjectionLag is the shard's latest event timestamp minus the projection's committed offset", func(s *specs.Spec) {
 		s.It("reports 1500 - 500 as a lag of 1000 for the shard", func(ctx *specs.Context) {
 			ctrl := mock.NewController(ctx)
-			ctrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{7: 1500}, nil)
+			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64{7: 1500}, nil)
 			ctrl.Method("GetCurrentOffset").
 				Expect(mock.Any(), mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
 				Return(&egopb.Offset{Value: 500}, nil)
@@ -2730,6 +2745,7 @@ func TestEngineProjectionLagWithEvents(t *testing.T) {
 			engine := newTestEngine(t, "Sample", store,
 				WithLogger(DiscardLogger),
 				WithOffsetStore(offsetStore),
+				WithProjection("any", &projection.Options{Handler: projection.NewDiscardHandler()}),
 			)
 			sc.Expect(engine.Start(ctx)).To(specs.BeNil())
 
@@ -2748,6 +2764,36 @@ func TestEngineProjectionLagWithEvents(t *testing.T) {
 			for _, lag := range lags {
 				sc.Expect(int64(lag)).To(specs.BeGreaterThanOrEqual(int64(0)))
 			}
+		})
+	})
+}
+
+// TestEngineProjectionLagIsScoped pins that lag is computed for the scope the
+// engine resolved at registration, and that an unknown projection has none.
+func TestEngineProjectionLagIsScoped(t *testing.T) {
+	specs.Describe(t, "ProjectionLag reads the registered scope", func(s *specs.Spec) {
+		s.It("reads the shards of the projection's own scope", func(ctx *specs.Context) {
+			ctrl := mock.NewController(ctx)
+			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64{3: 900}, nil)
+			ctrl.Method("GetCurrentOffset").
+				Expect(mock.Any(), mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
+				Return(&egopb.Offset{Value: 400}, nil)
+
+			engine := synthEngineWithStores(enginetest.NewEventsStoreMock(ctrl), nil, enginetest.NewOffsetStoreMock(ctrl))
+			lags, err := engine.ProjectionLag(context.Background(), "any")
+			ctx.Expect(err).To(specs.BeNil())
+			specs.ExpectT(ctx, lags[3]).ToEqual(time.Duration(500))
+		})
+
+		s.It("fails closed for a projection that was never registered, without reading any store", func(ctx *specs.Context) {
+			// no expectations: a read of the events or offset store fails the test
+			ctrl := mock.NewController(ctx)
+			engine := synthEngineWithStores(enginetest.NewEventsStoreMock(ctrl), nil, enginetest.NewOffsetStoreMock(ctrl))
+
+			lags, err := engine.ProjectionLag(context.Background(), "unknown")
+
+			ctx.Expect(err).To(specs.MatchError(ErrProjectionNotRegistered))
+			ctx.Expect(lags).To(specs.BeNil())
 		})
 	})
 }

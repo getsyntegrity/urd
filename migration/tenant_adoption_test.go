@@ -2461,12 +2461,12 @@ func (m eventsStoreMock) PersistenceIDs(ctx context.Context, scope persistence.S
 	r := m.c.Method("PersistenceIDs").Call(ctx, scope, pageSize, pageToken)
 	return mock.Value[[]string](r, 0), mock.Value[string](r, 1), r.Err(2)
 }
-func (m eventsStoreMock) GetShardEvents(ctx context.Context, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
-	r := m.c.Method("GetShardEvents").Call(ctx, shardNumber, offset, limit)
+func (m eventsStoreMock) GetShardEvents(ctx context.Context, scope persistence.Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+	r := m.c.Method("GetShardEvents").Call(ctx, scope, shardNumber, offset, limit)
 	return mock.Value[[]*egopb.Event](r, 0), mock.Value[int64](r, 1), r.Err(2)
 }
-func (m eventsStoreMock) ShardOffsets(ctx context.Context) (map[uint64]int64, error) {
-	r := m.c.Method("ShardOffsets").Call(ctx)
+func (m eventsStoreMock) ShardOffsets(ctx context.Context, scope persistence.Scope) (map[uint64]int64, error) {
+	r := m.c.Method("ShardOffsets").Call(ctx, scope)
 	return mock.Value[map[uint64]int64](r, 0), r.Err(1)
 }
 
