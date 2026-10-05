@@ -47,3 +47,9 @@ See `spec.md`.
 | T2 Tests first, then implementation | AC-1..AC-6 |
 
 Questions Q1-Q6: see `openspec/changes/ego-read-001/proposal.md`.
+
+## Temporary wake-up from #94
+
+#93 also removes the temporary projection wake-up (R6, AC-7..AC-9, task T3
+in `spec.md`) once the runner has an explicit scope and a scoped
+subscription. #93 stays BLOCKED until the owner approves #71.

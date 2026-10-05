@@ -52,3 +52,9 @@ failover (READ-006/007/008), adapters (READ-014), canonical envelope
 |---|---|
 | T1 Owner review of the contract and Q1-Q6 | R1, R2, R3, R4 |
 | T2 After approval, cut implementation as a separate change | none authorized here |
+
+## Cross-reference
+
+`ego-tenant-004` R6 removes the temporary projection wake-up from #94 once
+the runner has an explicit scope and a scoped subscription. It depends on R4
+(consumption bound to one scope) here.
