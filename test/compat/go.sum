@@ -241,6 +241,8 @@ github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
+github.com/pablogore/goakt/v4 v4.5.7-0.20261005195759-c51a72dca92f h1:/QWN7sZ4JaMSt7fIDU83OCgYPFgsT5oUktqY78CYqOo=
+github.com/pablogore/goakt/v4 v4.5.7-0.20261005195759-c51a72dca92f/go.mod h1:9p45hSRx8P6k42Nu6UiPTTrrfZWOc+9iyPxi5BazdQ4=
 github.com/pablogore/kit-logger v0.1.2-0.20260912231430-17d1a6eacc85 h1:Gj4A97fD08dB2GuLLWY32lutKeBkeuZwtICE4ceXz5o=
 github.com/pablogore/kit-logger v0.1.2-0.20260912231430-17d1a6eacc85/go.mod h1:T+V/0QImgdZdUU+Spul7i4zVc168p0M5WDv+yCaIhnU=
 github.com/philhofer/fwd v1.1.1/go.mod h1:gk3iGcWd9+svBvR0sR+KPcfE+RNWozjowpeBVG3ZVNU=
@@ -312,8 +314,6 @@ github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRU
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
-github.com/tochemey/goakt/v4 v4.5.7-0.20261001174708-cf9c8659f741 h1:p7PaLE7QREQ4EwthOZqDFHYd2ZRz4+WrjfmeWZQp/Rg=
-github.com/tochemey/goakt/v4 v4.5.7-0.20261001174708-cf9c8659f741/go.mod h1:9p45hSRx8P6k42Nu6UiPTTrrfZWOc+9iyPxi5BazdQ4=
 github.com/tochemey/gopack v0.2.1 h1:WWXVwAE53Wt4yzY51fk0t+BrLn5ihnKCriG3zhmgYQ8=
 github.com/tochemey/gopack v0.2.1/go.mod h1:jqSr6gmih+Ne4PSbStMoeRkzsIQh58bt2JujufBXdms=
 github.com/tochemey/olric v0.3.22 h1:0jvoxpE6jUkJzYxHVTOvbsu7gN2YW4q8YyR9wki9b1I=
