@@ -379,7 +379,19 @@ jobs:
       - uses: ./.github/actions/go-setup
       - name: Integration tests
         working-directory: inttest
-        run: go test -count=1 -timeout=15m ./...
+        shell: bash
+        # One run: the -json stream goes to the inttest-results artifact and to the log, and pipefail keeps the
+        # exit status of go test. Per-test events are what shows each test ran and passed rather than skipped.
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout=15m -json ./... | tee "$RUNNER_TEMP/inttest.json"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: inttest-results
+          path: ${{ runner.temp }}/inttest.json
+          retention-days: 14
+          if-no-files-found: ignore
 
   # The benchmarks of the benchmark module. The module has no Test functions, only Benchmark ones, which
   # start a real in-process goakt actor system, so plain `go test` would compile them and run nothing.
