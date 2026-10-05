@@ -66,6 +66,7 @@ import (
 	"sync/atomic"
 
 	actor "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/remote"
 
 	"github.com/getsyntegrity/urd/compose"
 	"github.com/getsyntegrity/urd/compose/internal/adapters"
@@ -301,6 +302,11 @@ func (a *App) startActorSystem(ctx context.Context) error {
 		actorOpts = append(actorOpts, actor.WithCluster(a.opts.cluster.WithKinds(engine.ClusterKinds()...)))
 	}
 	actorOpts = append(actorOpts, a.opts.actorOptions...)
+	if r := a.opts.remoting; r != nil {
+		// Last, so that WithRemoting wins over an actor.WithRemote passed through
+		// WithActorSystemOptions (see WithRemoting).
+		actorOpts = append(actorOpts, actor.WithRemote(remotingConfig(config, r)))
+	}
 
 	sys, err := actor.NewActorSystem(a.spec.Name, actorOpts...)
 	if err != nil {
@@ -483,4 +489,13 @@ func (a *App) cleanupContext(ctx context.Context) (context.Context, context.Canc
 		timeout = lifecycle.DefaultShutdownTimeout
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+// remotingConfig builds the remoting configuration of WithRemoting. The
+// engine's own options come after the caller's, so the tenant propagator of a
+// tenant-aware engine replaces any remote.WithContextPropagator the caller
+// passed (GoAkt keeps the last one).
+func remotingConfig(config *engine.Config, r *remotingSpec) *remote.Config {
+	opts := append(append([]remote.Option{}, r.opts...), config.RemoteOptions()...)
+	return remote.NewConfig(r.host, r.port, opts...)
 }
