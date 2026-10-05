@@ -26,10 +26,11 @@
 //
 // It executes only invariants whose mechanisms already exist on develop: the tenant-qualified actor identity
 // (#97) and the tenant-scoped events store (#92), driven through engine.Engine over persistence/postgres. It
-// does NOT show end-to-end tenant isolation: the read-side and remote-addressing boundaries have no tenant
-// mechanism yet, and the publication boundary has only a partial one (see the notes under the pending table),
-// so they are recorded below and have no test here. A row of the pending table becomes a test in the PR that
-// delivers what it needs, and the row moves to the executed table in that same PR.
+// does NOT show end-to-end tenant isolation. The read-side boundary has no tenant mechanism yet. The
+// publication boundary (#316, #317) and the remote-addressing boundary (#314) each have a partial one, proven
+// elsewhere by tests this package does not run (see the notes under the pending table). All of them are
+// recorded below and have no test here. A row of the pending table becomes a test in the PR that delivers what
+// it needs, and the row moves to the executed table in that same PR.
 //
 // # Executed invariants
 //
@@ -50,13 +51,13 @@
 // # Pending invariants (not yet implemented, no test, nothing skipped)
 //
 //	ID  Invariant                                                                  Blocked by
-//	R1  A remote command from a non-hosting node keeps the tenant and persists     #305
+//	R1  A remote command from a non-hosting node keeps the tenant and persists     #305/#314 merged; pending here (see below)
 //	    under the right scope
-//	R2  An absent, altered, mismatched or unauthorized remote identity is          #305 (administrative part: #96)
-//	    rejected fail-closed
-//	R3  SagaStatus and saga to entity commands keep the identity across nodes      #305
-//	R4  Relocation keeps the tenant when the same ID lives in two tenants          #305 (remote hop)
-//	R5  Legacy and single-tenant remote commands work unchanged                    #305
+//	R2  An absent, altered, mismatched or unauthorized remote identity is          #305/#314 merged; pending here (see below)
+//	    rejected fail-closed                                                       (administrative part: #96)
+//	R3  SagaStatus and saga to entity commands keep the identity across nodes      #305/#314 merged; pending here (see below)
+//	R4  Relocation keeps the tenant when the same ID lives in two tenants          #305/#314 merged; pending here (see below)
+//	R5  Legacy and single-tenant remote commands work unchanged                    #305/#314 merged; pending here (see below)
 //	D1  Checkpoints and offsets of one projection name in two tenants do not       #93 (contract also needs #71)
 //	    collide
 //	D2  A tenant-aware read-side never consumes another tenant's events            #93
@@ -91,8 +92,34 @@
 //   - the tenant journal and read-side side of the same flow (what a subscriber reads back, offsets) is #93, and
 //     D1 to D4 also wait on #71.
 //
-// R1 to R5 are not tests of this package: they will be TestCluster* tests of the root module, because the
-// cluster lane runs only those. A Postgres-backed cluster composition, if it is still wanted, comes after them.
+// R1 to R5 are still pending here: #305 is delivered by #314, and merging it does not make them conformance of
+// this package.
+//
+// What #314 provides today (engine/tenant_propagator.go), proven in the root module cluster lane and not run
+// by this package (none of it is counted as conformance of R1 to R5 here):
+//
+//   - a command from the node that does not host the actor reaches the actor of the caller's own tenant, with
+//     that tenant's scope on what it persists, for two tenants sharing an entity ID, and an absent or altered
+//     identity is rejected (engine: TestClusterTenantRemoteCommands);
+//   - SagaStatus from the non-host node and a saga commanding, across nodes, the entity of its own tenant
+//     (TestClusterTenantRemoteSaga);
+//   - relocation with the remote hop (TestClusterTenantRemoteRelocation);
+//   - single-tenant and legacy engines unchanged across nodes (TestClusterTenantRemoteSingleTenantAndLegacy);
+//   - the wire format and the receiving side's handling of hostile input, by unit tests
+//     (TestTenantPropagatorRoundTrip, TestTenantPropagatorRejectsHostileInput) and the remoting options a
+//     tenant-aware engine hands to the transport (TestConfigRemoteOptions).
+//
+// What is still not satisfied for the cross-boundary invariants:
+//
+//   - the cluster tests use two in-process nodes that share ONE in-process event stream and store, so the nodes
+//     are not independent processes and no Postgres journal is shared between them;
+//   - there is no mutual TLS: the identity on the wire is a claim of the sending node, and a cluster without
+//     mTLS trusts every peer that can reach its remoting port;
+//   - an administrative scope is rejected at the sender in a cluster test, and at the receiver only by a unit
+//     test (TestTenantPropagatorRejectsHostileInput), not by a cluster test; its semantics are #96;
+//   - R1 to R5 against the Postgres-backed engine in a cluster, with nodes as independent processes, do not
+//     exist. They stay recorded here as pending, and would be TestCluster* tests of the root module (the
+//     cluster lane runs only those) or a flow of this module that starts real nodes.
 //
 // # Rules every test here follows
 //
