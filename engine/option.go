@@ -56,7 +56,7 @@ type Config struct {
 	offsetStore   offsetstore.OffsetStore
 	snapshotStore persistence.SnapshotStore
 	logger        kitlog.Logger
-	projections   map[string]*projection.Options
+	projections   []projectionRegistration
 	eventAdapters []eventadapter.EventAdapter
 	telemetry     *Telemetry
 	encryptor     encryption.Encryptor
@@ -155,17 +155,13 @@ func (c *Config) GoaktOptions() []goakt.Option {
 	}
 
 	if len(c.projections) > 0 {
-		// Normalize into copies so defaulting Recovery never mutates the
-		// caller-owned Options values.
-		projections := make(map[string]*projection.Options, len(c.projections))
-		for name, options := range c.projections {
-			normalized := *options
-			if normalized.Recovery == nil {
-				normalized.Recovery = projection.NewRecovery()
-			}
-			projections[name] = &normalized
+		// resolveProjections normalizes into copies so defaulting Recovery never
+		// mutates the caller-owned Options values. An invalid registration is
+		// reported by NewEngine, which validates before anything starts, so the
+		// extension is simply left out here.
+		if projections, err := c.resolveProjections(); err == nil {
+			opts = append(opts, goakt.WithExtensions(extensions.NewProjectionExtension(projections)))
 		}
-		opts = append(opts, goakt.WithExtensions(extensions.NewProjectionExtension(projections)))
 	}
 
 	if c.snapshotStore != nil {
@@ -269,7 +265,15 @@ func WithOffsetStore(offsetStore offsetstore.OffsetStore) Option {
 // The name is the projection's unique identifier — the same name is later
 // passed to Engine.StartProjection to start it, and it keys the projection's
 // committed offsets in the offset store. Registering the same name twice
-// overwrites the earlier registration.
+// under the same effective scope is rejected by NewEngine with
+// ErrProjectionDuplicate.
+//
+// The projection's scope comes from options.Scope (see projection.Options): the
+// registry identity is (scope, name), checked by NewEngine against the
+// engine's tenancy mode independently of the order of the options. The same
+// name under different scopes is a distinct registration, but start, stop and
+// addressing still resolve by name alone, so NewEngine rejects such a name with
+// ErrProjectionNameAmbiguous until scoped addressing exists.
 //
 // The supplied projection.Options carries the projection handler and
 // runtime knobs:
@@ -294,10 +298,7 @@ func WithProjection(name string, options *projection.Options) Option {
 		if options == nil {
 			return
 		}
-		if c.projections == nil {
-			c.projections = make(map[string]*projection.Options)
-		}
-		c.projections[name] = options
+		c.projections = append(c.projections, newProjectionRegistration(name, options))
 	})
 }
 
