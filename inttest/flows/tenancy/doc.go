@@ -26,9 +26,10 @@
 //
 // It executes only invariants whose mechanisms already exist on develop: the tenant-qualified actor identity
 // (#97) and the tenant-scoped events store (#92), driven through engine.Engine over persistence/postgres. It
-// does NOT show end-to-end tenant isolation: the read-side, publication and remote-addressing boundaries have
-// no tenant mechanism yet, so they are recorded below and have no test. A row of the pending table becomes a
-// test in the PR that delivers its mechanism, and the row moves to the executed table in that same PR.
+// does NOT show end-to-end tenant isolation: the read-side and remote-addressing boundaries have no tenant
+// mechanism yet, and the publication boundary has only a partial one (see the notes under the pending table),
+// so they are recorded below and have no test here. A row of the pending table becomes a test in the PR that
+// delivers what it needs, and the row moves to the executed table in that same PR.
 //
 // # Executed invariants
 //
@@ -61,10 +62,34 @@
 //	D2  A tenant-aware read-side never consumes another tenant's events            #93
 //	D3  Restart or resume keeps the read-side's tenant scope and offset            #93
 //	D4  A single-tenant read-side needs no extra plumbing                          #93
-//	P1  The publication boundary receives an explicit tenant scope                 #94 (needs PUB-001)
-//	P2  A subscriber of one tenant never receives another tenant's events          #94
-//	P3  Isolation does not rely on a topic naming convention                       #94
-//	P4  Single-tenant publication needs no plumbing                                #94
+//	P1  The publication boundary receives an explicit tenant scope                 #94 (partly pending, see below)
+//	P2  A subscriber of one tenant never receives another tenant's events          #94 (partly pending, see below)
+//	P3  Isolation does not rely on a topic naming convention                       #94 (partly pending, see below)
+//	P4  Single-tenant publication needs no plumbing                                #94 (partly pending, see below)
+//
+// P1 to P4 are still pending: #94 is only partly delivered, and merging #316 and #317 does not satisfy them.
+//
+// What #316 and #317 provide today, at package and engine level, with fake publishers and in-process
+// subscribers (none of it is run by this package, and none of it is counted as conformance of P1 to P4):
+//
+//   - a tenant-scoped event stream (eventstream: TestScopedStream, TestScope, TestVerifyScope);
+//   - per-tenant registration and subscription on the engine, AddEventPublishersForTenant,
+//     AddStatePublishersForTenant and SubscribeForTenant, with typed errors ErrPublicationTenantUndetermined,
+//     ErrInvalidPublicationTenant and ErrPublicationTenantMismatch (engine: TestPerTenantRegistrationIsolatesTwoTenants,
+//     TestPerTenantRegistrationValidation, TestPublicationTenantIsolation);
+//   - fixed-tenant and single-tenant engines delivering only their tenant's messages, with that tenant in the
+//     context, and the unscoped case staying zero-plumbing (the same engine tests);
+//   - the publisher contract check PT-4 in port/publishing/publishingtest (TestCapture_PT4), which runs only
+//     for a target that sets WithScope and ScopeOf.
+//
+// What is still not satisfied for the cross-boundary invariants:
+//
+//   - PT-4 is exercised only by fakes. No real publisher (publisher/kafka, nats, pulsar, websocket) implements
+//     WithScope or ScopeOf, so how a scope reaches a backend, and broker neutrality, are not demonstrated;
+//   - publication is not shown across processes: there is no distributed publication test, and the per-tenant
+//     API is used in no cluster test;
+//   - the tenant journal and read-side side of the same flow (what a subscriber reads back, offsets) is #93, and
+//     D1 to D4 also wait on #71.
 //
 // R1 to R5 are not tests of this package: they will be TestCluster* tests of the root module, because the
 // cluster lane runs only those. A Postgres-backed cluster composition, if it is still wanted, comes after them.
