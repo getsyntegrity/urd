@@ -30,9 +30,9 @@ import (
 	"github.com/travisjeffery/go-dynaport"
 )
 
-// TestWithRemoting_StartsRemotingWithTheEngineOptions: an App built with
+// TestClusterWithRemotingStartsRemoting: an App built with
 // WithRemoting starts an actor system that serves remoting on the given port.
-func TestWithRemoting_StartsRemotingWithTheEngineOptions(t *testing.T) {
+func TestClusterWithRemotingStartsRemoting(t *testing.T) {
 	specs.Describe(t, "WithRemoting", func(s *specs.Spec) {
 		s.It("starts the actor system with remoting enabled", func(ctx *specs.Context) {
 			bg := context.Background()
