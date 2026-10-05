@@ -166,7 +166,7 @@ func TestBatchedReplyGoesToTheRequestItWasComputedFor(t *testing.T) {
 			gate.open()
 
 			// C, queued ahead of them, is not theirs to answer: both get the error,
-			// not a state and not silence. What becomes of C is #307.
+			// not a state and not silence. C is answered too: see TestPendingRequestsAreAnsweredWhenTheWriteFails.
 			for _, call := range []*backgroundAsk{a, b} {
 				reply := call.await(ctx)
 				failure, ok := reply.GetReply().(*egopb.CommandReply_ErrorReply)
