@@ -25,10 +25,12 @@ package eventsource
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	kitlog "github.com/pablogore/kit-logger/pkg/logger"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
@@ -71,6 +73,8 @@ type eventsWriterActor struct {
 	eventsStore  persistence.EventsStore
 	eventsStream eventstream.Stream
 	logger       kitlog.Logger
+	meter        metric.Meter
+	metricsOnce  sync.Once
 	metrics      *instrumentation.Instruments
 }
 
@@ -102,7 +106,10 @@ func (a *eventsWriterActor) PreStart(ctx *goakt.Context) error {
 		return err
 	}
 	if telemetryExt != nil {
-		a.metrics = instrumentation.New(telemetryExt.Meter())
+		// The instruments are created on the first rejected publication, not
+		// here: an event-writer is spawned per entity and registering the
+		// whole catalog again for each one is pinned telemetry behavior.
+		a.meter = telemetryExt.Meter()
 	}
 	return nil
 }
@@ -139,7 +146,7 @@ func (a *eventsWriterActor) handlePersistEvents(ctx *goakt.ReceiveContext, req *
 		// events are already persisted, so a rejected publication is dropped,
 		// logged and counted, never delivered, and never fails the write.
 		if err := protocol.PublishScoped(a.eventsStream, req.scope, req.topic, envelope, envelope.GetTenantMetadata()); err != nil {
-			a.metrics.PublicationRejected(ctx.Context())
+			a.rejected().PublicationRejected(ctx.Context())
 			a.logger.ErrorContext(ctx.Context(), "event not published: tenant identity check failed",
 				"persistence_id", envelope.GetPersistenceId(),
 				"sequence_number", envelope.GetSequenceNumber(),
@@ -149,6 +156,12 @@ func (a *eventsWriterActor) handlePersistEvents(ctx *goakt.ReceiveContext, req *
 	}
 
 	ctx.Response(&persistEventsResponse{})
+}
+
+// rejected returns the instruments, creating them on first use.
+func (a *eventsWriterActor) rejected() *instrumentation.Instruments {
+	a.metricsOnce.Do(func() { a.metrics = instrumentation.New(a.meter) })
+	return a.metrics
 }
 
 // askEventsWriter sends envelopes to the events writer over a plain goakt.Ask call — safe
