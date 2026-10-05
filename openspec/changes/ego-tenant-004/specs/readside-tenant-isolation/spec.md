@@ -11,7 +11,7 @@ table or migration.
 
 R1. Progress of a processor MUST be independent per tenant scope.
 R2. A processor bound to a tenant MUST receive only that tenant's events.
-R3. A processor MUST stay bound to its scope across restart.
+R3. A processor MUST stay bound to its scope across restart; nothing may change the scope of an instance already registered or active. The same name under two scopes is two instances, not a change.
 R4. A tenant-aware engine MUST fail closed when a processor's scope cannot be determined.
 R5. Single-tenant and no-tenancy use MUST need no extra application plumbing (an omitted scope is resolved automatically; an explicit invalid one is still rejected) and MUST keep prior progress.
 R6. Once the runner has an explicit scope and a scoped subscription, the temporary projection wake-up introduced by #94 MUST be removed, and no public path MAY receive it.
@@ -24,7 +24,7 @@ R6. Once the runner has an explicit scope and a scoped subscription, the tempora
 | AC-2 | R2 | Processor for A over a journal holding A and B events: the handler sees only A's; B's events do not alter A's progress. |
 | AC-3 | R1, R3 | A and B at different progress, both restarted: each resumes from its own progress; resetting A leaves B unchanged. |
 | AC-4 | R1, R2 | `Unscoped()` and a tenant named "unscoped" do not share progress or events. |
-| AC-5 | R4 | Scope omitted and undeterminable on a tenant-aware engine, or explicitly declared invalid on ANY engine, including legacy and fixed single-tenant: start fails, nothing is read or recorded, no fallback to `Unscoped()` or to the fixed tenant. |
+| AC-5 | R4 | Scope omitted and undeterminable on a tenant-aware engine; explicitly declared invalid on ANY engine, including legacy and fixed single-tenant; explicit `Unscoped()` on any tenant-aware engine; or an explicit scope different from a fixed single-tenant resolver's tenant (the last two PROPOSED in SPEC-READ-001): start fails, nothing is read or recorded, no fallback to `Unscoped()` or to the fixed tenant. |
 | AC-6 | R5 | No-tenancy and fixed single-tenant engines run with the scope OMITTED (bound to `Unscoped()` and to the fixed tenant respectively), and progress made before the change is still honoured. |
 | AC-7 | R6 | Tenant-aware engine, projection bound to tenant A, wake topic absent: it advances on A's scoped publication, reading A's own journal and not an unscoped one. |
 | AC-8 | R6 | Same setup: a publication scoped to tenant B does not advance A's projection. |

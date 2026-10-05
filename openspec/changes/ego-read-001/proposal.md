@@ -49,7 +49,7 @@ READY, and neither means verified, #71 delivered or #93 delivered.
 | Q | Question | Proposed resolution |
 |---|---|---|
 | Q1 | "ReadSideProcessor": vocabulary or alias type? | Vocabulary for the existing projection. No alias and no new abstraction. |
-| Q2 | Where is the scope declared? | In `projection.Options`, during registration. Immutable once registered and for the whole run. (Representation: see "Omitted versus invalid" below.) |
+| Q2 | Where is the scope declared? | In `projection.Options`, during registration: `Scope *persistence.Scope` (PROPOSED API, see "Omitted versus invalid" below). Registration validates and copies the value. Immutable once registered and for the whole run. |
 | Q3 | Per-tenant fan-out inside one processor? | Out of this cut: one instance per (scope, name). |
 | Q4 | Do signature changes to existing ports pass the api-check? | Keep public signatures where possible; each port change is evaluated in #93, not decided here. |
 | Q5 | Migration number and ownership | Designed in #93 after reviewing the data and the adapters. No number and no schema are fixed here. |
@@ -57,26 +57,38 @@ READY, and neither means verified, #71 delivered or #93 delivered.
 
 ### Omitted versus invalid
 
-The contract must tell two inputs apart, and the earlier text did not:
+The contract must tell two inputs apart:
 
-- **Omitted scope** (the application declared nothing). It MAY be resolved
-  automatically where no declaration is needed: an engine without tenancy
-  binds `Unscoped()`, and an engine with a fixed single-tenant resolver binds
-  that tenant. A tenant-aware engine without a fixed tenant refuses to start
-  (R3).
-- **Explicit invalid scope** (the application declared a scope that is not
-  valid). It MUST be rejected in every
-  mode, including a legacy engine and a fixed single-tenant engine. It must
-  never fall back to `Unscoped()` or to the fixed tenant.
+- **Omitted scope** (the application declared nothing). Resolved as follows:
+  an engine without tenancy binds `Unscoped()`; an engine with a fixed
+  single-tenant resolver binds that tenant; a tenant-aware engine without a
+  fixed tenant refuses to start (R3), with no fallback.
+- **Explicit scope** (the application declared one). An invalid scope is
+  rejected in every mode, including a legacy engine and a fixed single-tenant
+  engine, and never falls back to `Unscoped()` or to the fixed tenant. On any
+  tenant-aware engine an explicit `Unscoped()` is rejected, with no fallback.
+  On an engine with a fixed single-tenant resolver, an explicit scope that
+  differs from that tenant is rejected.
 
-Observation, not a decision: `persistence.Scope` is a struct with unexported
-fields, so its zero value is the only invalid one. If `projection.Options`
-carried a plain `Scope` value, an omitted scope and an explicit invalid one
-would be the same zero value and could not be told apart. The declaration has
-to make presence observable somehow; how is a public API decision for the
-owner under the Public API gate and is NOT chosen or approved here. The
-acceptance criteria below are written so they hold for any representation. How an explicit valid scope that differs from a
-fixed single-tenant resolver's tenant is handled is also not decided here.
+**Proposed API representation (NOT approved; Public API gate PENDING):**
+`Scope *persistence.Scope` in `projection.Options`.
+
+- `nil` means the scope is omitted.
+- A non-nil pointer to an invalid scope (`persistence.Scope` has unexported
+  fields, so its zero value is the only invalid one) is an explicit invalid
+  scope and is rejected.
+- At registration the value is validated and COPIED. The pointer is not kept
+  as the processor identity: assigning to the pointed-to variable after
+  registration does not change the effective scope (AC-R3-6).
+
+Rationale: with a plain `Scope` value, an omitted scope and an explicit
+invalid one would be the same zero value and could not be told apart. The
+pointer makes presence observable without a new type. This is a proposal from
+the review of this PR; it needs the owner's approval before anything is
+implemented.
+
+Still open: how an explicit valid tenant scope is handled on an engine
+without tenancy (not decided here).
 
 ### What approving this does not prove
 
