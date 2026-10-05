@@ -30,6 +30,11 @@
 //   - PT-2: ID() is non-empty and stable across calls.
 //   - PT-3: a published message reaches the caller-supplied observer
 //     (EventsTarget.Received, StateTarget.Received).
+//   - PT-4 (EGO-TENANT-005): a publisher handed a context that carries a
+//     tenant scope delivers the message attributed to that tenant, and to no
+//     other. It runs only when the target sets both WithScope and ScopeOf; with
+//     either unset it is omitted, never reported, so existing adopters see no
+//     new result.
 //
 // # Skipped and not exercised
 //
@@ -70,6 +75,14 @@ type EventsTarget struct {
 	// equal to want, and returns nil, or returns an error when ctx ends
 	// first (PT-3).
 	Received func(ctx context.Context, t *testing.T, want *egopb.Event) error
+	// WithScope optionally returns parent carrying the tenant scope the way
+	// the engine hands it to a publisher (for Urd, a tenancy.Attach'ed
+	// context). It keeps this package free of the tenancy dependency (PT-4).
+	WithScope func(parent context.Context, tenant string) (context.Context, error)
+	// ScopeOf optionally reports the tenant the backend recorded for want
+	// (for example a header or a topic suffix), "" when it recorded none, or
+	// an error when ctx ends first (PT-4).
+	ScopeOf func(ctx context.Context, t *testing.T, want *egopb.Event) (string, error)
 }
 
 // StateTarget describes a durable state publisher under test.
@@ -81,6 +94,10 @@ type StateTarget struct {
 	// equal to want, and returns nil, or returns an error when ctx ends
 	// first (PT-3).
 	Received func(ctx context.Context, t *testing.T, want *egopb.DurableState) error
+	// WithScope is the StateTarget counterpart of EventsTarget.WithScope.
+	WithScope func(parent context.Context, tenant string) (context.Context, error)
+	// ScopeOf is the StateTarget counterpart of EventsTarget.ScopeOf.
+	ScopeOf func(ctx context.Context, t *testing.T, want *egopb.DurableState) (string, error)
 }
 
 // RunEvents runs PT-1…PT-3 against an events publisher, each exercised
@@ -115,6 +132,8 @@ type publisher[M any] interface {
 type suite[M any] struct {
 	newPublisher func(t *testing.T) (publisher[M], error)
 	received     func(ctx context.Context, t *testing.T, want M) error
+	withScope    func(parent context.Context, tenant string) (context.Context, error)
+	scopeOf      func(ctx context.Context, t *testing.T, want M) (string, error)
 	sample       func(id string) M
 }
 
@@ -123,7 +142,9 @@ func eventsSuite(target EventsTarget) suite[*egopb.Event] {
 		sample: func(id string) *egopb.Event {
 			return &egopb.Event{PersistenceId: id, SequenceNumber: 1, Timestamp: time.Now().UnixMilli()}
 		},
-		received: target.Received,
+		received:  target.Received,
+		withScope: target.WithScope,
+		scopeOf:   target.ScopeOf,
 	}
 	if target.New != nil {
 		s.newPublisher = func(t *testing.T) (publisher[*egopb.Event], error) {
@@ -139,7 +160,9 @@ func stateSuite(target StateTarget) suite[*egopb.DurableState] {
 		sample: func(id string) *egopb.DurableState {
 			return &egopb.DurableState{PersistenceId: id, VersionNumber: 1, Timestamp: time.Now().UnixMilli()}
 		},
-		received: target.Received,
+		received:  target.Received,
+		withScope: target.WithScope,
+		scopeOf:   target.ScopeOf,
 	}
 	if target.New != nil {
 		s.newPublisher = func(t *testing.T) (publisher[*egopb.DurableState], error) {
@@ -161,7 +184,10 @@ type tb interface {
 }
 
 type check[M any] struct {
-	name         string
+	name string
+	// applies, when set and false, omits the check altogether: no subtest and
+	// no Result (PT-4, so adopters written before it see an unchanged result set).
+	applies      func(s suite[M]) bool
 	notExercised func(s suite[M]) string
 	run          func(s suite[M], t tb, ft *testing.T)
 }
@@ -216,6 +242,35 @@ func checksFor[M any]() []check[M] {
 				t.Errorf("the published message did not reach the observer: %v", err)
 			}
 		}},
+		{name: "PT-4", applies: func(s suite[M]) bool { return s.withScope != nil && s.scopeOf != nil },
+			run: func(s suite[M], t tb, ft *testing.T) {
+				p := s.mustNew(t, ft)
+				defer closeQuietly(p)
+				for _, tenant := range []string{"tenant-a", "tenant-b"} {
+					pubCtx, err := s.withScope(context.Background(), tenant)
+					if err != nil {
+						t.Fatalf("WithScope(%q) = %v, want nil", tenant, err)
+					}
+					want := s.sample(uniqueID())
+					ok, err := bounded(func(context.Context) error { return p.Publish(pubCtx, want) })
+					switch {
+					case !ok:
+						t.Fatalf("Publish for %q did not return within %v", tenant, opTimeout+grace)
+					case err != nil:
+						t.Fatalf("Publish for %q = %v, want nil", tenant, err)
+					}
+					var got string
+					ok, err = bounded(func(ctx context.Context) (e error) { got, e = s.scopeOf(ctx, ft, want); return e })
+					switch {
+					case !ok:
+						t.Fatalf("ScopeOf did not return within %v", opTimeout+grace)
+					case err != nil:
+						t.Errorf("the backend did not record a scope for the message published for %q: %v", tenant, err)
+					case got != tenant:
+						t.Errorf("the message published for %q was recorded for scope %q: the publisher must carry the scope of the context it is handed, and no other", tenant, got)
+					}
+				}
+			}},
 	}
 }
 
@@ -235,6 +290,9 @@ func run[M any](t *testing.T, s suite[M]) []Result {
 	checks := checksFor[M]()
 	results := make([]Result, 0, len(checks))
 	for _, c := range checks {
+		if c.applies != nil && !c.applies(s) {
+			continue
+		}
 		if c.notExercised != nil {
 			if reason := c.notExercised(s); reason != "" {
 				t.Logf("%s: not exercised: %s", c.name, reason)
@@ -379,6 +437,9 @@ func captureState(t *testing.T, target StateTarget) []Result {
 func capture[M any](t *testing.T, s suite[M]) []Result {
 	var out []Result
 	for _, c := range checksFor[M]() {
+		if c.applies != nil && !c.applies(s) {
+			continue
+		}
 		if s.newPublisher == nil {
 			out = append(out, Result{Check: c.name, Outcome: Failed, Detail: "New is nil"})
 			continue

@@ -76,6 +76,28 @@ var (
 	// was not applied at construction time. Actors that cannot find an
 	// extension they require in PreStart wrap this same value.
 	ErrMissingRequiredExtensions = extensions.ErrMissingRequiredExtensions
+	// ErrPublicationTenantUndetermined is returned by AddEventPublishers,
+	// AddStatePublishers and Subscribe when tenancy is active (a
+	// tenancy.TenantResolver is registered via WithTenantResolver) but the
+	// resolver exposes no fixed tenant (tenancy.FixedTenantResolver), so the
+	// engine cannot tell which tenant's events the publisher or subscriber is
+	// for. Registration fails closed and registers nothing: the engine never
+	// subscribes to every tenant, and has no administrative bypass for it
+	// (EGO-TENANT-005, #96). A resolver whose FixedTenant() reports a tenant, as
+	// tenancy.WithSingleTenant's does, makes registration succeed for that
+	// tenant. A per-tenant registration API is an open owner decision.
+	ErrPublicationTenantUndetermined = errors.New("urd: publication tenant undetermined: a tenant-aware engine needs a fixed tenant to register a publisher or subscriber")
+	// ErrInvalidPublicationTenant is returned by AddEventPublishersForTenant,
+	// AddStatePublishersForTenant and SubscribeForTenant when the tenant id is
+	// empty or fails tenancy.NewTenantID; the error also matches the tenancy
+	// error. Nothing is registered (EGO-TENANT-005).
+	ErrInvalidPublicationTenant = errors.New("urd: invalid publication tenant")
+	// ErrPublicationTenantMismatch is returned by AddEventPublishersForTenant,
+	// AddStatePublishersForTenant and SubscribeForTenant when the engine cannot
+	// honor a registration for that tenant: it has no tenant resolver (its
+	// traffic is unscoped, so a tenant registration could never receive any), or
+	// its resolver fixes a different tenant. Nothing is registered.
+	ErrPublicationTenantMismatch = errors.New("urd: publication tenant does not match the engine")
 	// ErrSpawnTenantUndetermined is returned by Entity, DurableStateEntity,
 	// and Saga when tenancy is active (a tenancy.TenantResolver is
 	// registered via WithTenantResolver) but the engine cannot determine
