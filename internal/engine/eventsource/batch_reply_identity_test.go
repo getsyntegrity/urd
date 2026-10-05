@@ -74,10 +74,14 @@ func (r *actorRig) spawnQueuedBehindConfirmation(ctx *specs.Context, behavior ev
 }
 
 // openBatchedAccount creates the account and credits it in one batch of two
-// events, which reaches the threshold and is written at once.
+// events, which reaches the threshold and is written at once. The create must
+// come first: an account credited before it exists loses the credit, so the
+// credit is sent only once the create is stashed in the open batch.
 func openBatchedAccount(ctx *specs.Context, pid *goakt.PID, persistenceID string) {
-	credit := askInBackground(callWith("open"), pid, &testpb.CreditAccount{AccountId: persistenceID, Balance: 10})
-	stateReplyOf(ctx, ask(ctx, pid, &testpb.CreateAccount{AccountBalance: 500}))
+	create := askInBackground(callWith("open-create"), pid, &testpb.CreateAccount{AccountBalance: 500})
+	ctx.Eventually(stashSize(pid), specs.Equal(uint64(1)), specs.WithTimeout(pollTimeout), specs.WithInterval(pollInterval))
+	credit := askInBackground(callWith("open-credit"), pid, &testpb.CreditAccount{AccountId: persistenceID, Balance: 10})
+	stateReplyOf(ctx, create.await(ctx))
 	credit.await(ctx)
 }
 
