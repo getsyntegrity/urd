@@ -28,10 +28,13 @@ import (
 	"time"
 
 	"github.com/getsyntegrity/go-specs/specs"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/engine/protocol"
+	"github.com/getsyntegrity/urd/internal/instrumentation"
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
@@ -101,6 +104,29 @@ func TestDurableStatePublishesForItsScope(t *testing.T) {
 			ctx.Expect(r.entity.persistStateAndPublish(bg)).To(specs.BeNil())
 
 			ctx.Expect(count(legacy)).To(specs.Equal(1))
+		})
+
+		s.It("counts exactly one rejection in urd.publication.rejected.total when it drops a mismatched state", func(ctx *specs.Context) {
+			scopeA := tenantScopeFor(ctx, "tenant-a")
+			r := newRig(ctx, true, tenantContextFor(ctx, "tenant-b"), scopeA)
+			reader := sdkmetric.NewManualReader()
+			r.entity.metrics = instrumentation.New(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
+
+			ctx.Expect(r.entity.persistStateAndPublish(bg)).To(specs.BeNil())
+
+			var rm metricdata.ResourceMetrics
+			ctx.Expect(reader.Collect(bg, &rm)).To(specs.BeNil())
+			var total int64
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if m.Name == "urd.publication.rejected.total" {
+						for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+							total += dp.Value
+						}
+					}
+				}
+			}
+			ctx.Expect(total).To(specs.Equal(int64(1)))
 		})
 
 		s.It("drops, without failing the write, a state whose tenant identity does not match its scope", func(ctx *specs.Context) {
