@@ -48,6 +48,9 @@ An OMITTED scope and an EXPLICIT scope MUST be told apart:
   no fallback;
 - on an engine with a fixed single-tenant resolver, an explicit scope that
   differs from that tenant MUST be rejected, with no fallback (PROPOSED);
+- on an engine without tenancy, only `Unscoped()` is admitted (omitted or
+  explicit); an explicit tenant scope MUST be rejected, and a projection MUST
+  NOT enable tenancy implicitly (PROPOSED);
 - an omitted scope is resolved only where R5 allows it.
 
 A tenant-aware engine without a fixed tenant that cannot determine the scope
@@ -86,6 +89,7 @@ scope; R3 still rejects an explicit invalid one.
 | AC-R3-4 | R3 | Fixed single-tenant resolver for tenant T, explicit scope for tenant U (U differs from T): rejected, nothing starts, no fallback to T (PROPOSED). |
 | AC-R3-5 | R3 | Any tenant-aware engine (fixed single-tenant or multi-tenant), explicit `Unscoped()`: rejected, nothing starts, no fallback (PROPOSED). |
 | AC-R3-6 | R3 | A processor is registered with a pointer to a valid scope A; the pointed-to variable is then assigned scope B: the processor's effective scope is still A, in registration, in addressing and after restart (PROPOSED representation). |
+| AC-R3-7 | R3 | Engine without tenancy, explicit tenant scope: rejected, nothing starts, tenancy is not enabled. Explicit `Unscoped()` is admitted and binds `Unscoped()` (PROPOSED). |
 | AC-R4-1 | R4 | After restart the processor is still bound to its original scope. |
 | AC-R4-2 | R4 | With the existing registration, start, stop and restart paths, the effective scope of a registered or active instance never differs from the one validated at its registration. Registering the same name under another scope yields a separate instance and leaves the first one's scope, registration and progress unchanged. No modification API is assumed or added to test this. |
 | AC-R5-1 | R5 | Legacy engine (no tenancy): a processor starts with no scope declared and no extra plumbing, bound to `Unscoped()`. |

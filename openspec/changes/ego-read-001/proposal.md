@@ -87,8 +87,9 @@ pointer makes presence observable without a new type. This is a proposal from
 the review of this PR; it needs the owner's approval before anything is
 implemented.
 
-Still open: how an explicit valid tenant scope is handled on an engine
-without tenancy (not decided here).
+On an engine without tenancy, only `Unscoped()` is admitted, omitted or
+explicit. An explicit tenant scope is rejected (PROPOSED): to process a tenant,
+tenancy must be configured; a projection never enables it implicitly.
 
 ### What approving this does not prove
 
