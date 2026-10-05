@@ -1,73 +1,52 @@
-# Read-Side Tenant Isolation Specification (PROPOSED)
+# Read-Side Tenant Isolation Specification (DRAFT, REVIEW_REQUIRED)
 
 ## Purpose
 
-State the isolation guarantees for read-side processors and their offsets,
-written against the proposed `ego-read-001` contract (processor identity is
-the pair (scope, name); scope is `persistence.Scope`). Not satisfied by any
-code yet.
+Behavioural, storage-agnostic isolation cases for read-side processors.
+They are CANDIDATES: they stay candidates until the #71 contract
+(`ego-read-001`) is approved, and name no key shape, filter mechanism,
+table or migration.
 
 ## Requirements
 
-### Requirement: Offset identity includes the scope
+R1. Progress of a processor MUST be independent per tenant scope.
+R2. A processor bound to a tenant MUST receive only that tenant's events.
+R3. A processor MUST stay bound to its scope across restart.
+R4. A tenant-aware engine MUST fail closed when a processor's scope cannot be determined.
+R5. Single-tenant and no-tenancy use MUST need no extra application plumbing and MUST keep prior progress.
 
-An offset MUST be identified by (scope, processor name, shard). Offsets of
-different scopes MUST NOT collide, read, overwrite or reset each other.
+## Acceptance Criteria (candidates)
 
-### Requirement: A scoped processor reads only its scope
+| AC | Req | Observable pass/fail |
+|---|---|---|
+| AC-1 | R1 | Tenants A and B, same processor name and same entity ID: progress recorded for A is not visible to B, and conversely. |
+| AC-2 | R2 | Processor for A over a journal holding A and B events: the handler sees only A's; B's events do not alter A's progress. |
+| AC-3 | R1, R3 | A and B at different progress, both restarted: each resumes from its own progress; resetting A leaves B unchanged. |
+| AC-4 | R1, R2 | `Unscoped()` and a tenant named "unscoped" do not share progress or events. |
+| AC-5 | R4 | Scope undeterminable (or zero): start fails, nothing is read or recorded. |
+| AC-6 | R5 | No-tenancy and fixed single-tenant engines run with no scope declared, and progress made before the change is still honoured. |
 
-A processor bound to a tenant scope MUST be delivered only that tenant's
-events, and shard pending/cursor decisions MUST consider only that scope.
+## Deferred until the #71 contract is approved
 
-### Requirement: Scope survives restart
+Not decided and not to be implemented from this document:
 
-Restart or resume MUST reuse the scope the processor was bound to and its
-own committed positions.
+- how offset identity is composed;
+- how shard reads are restricted to a scope;
+- any schema change or migration (and its number), including a data
+  migration check for existing rows.
 
-### Requirement: Fail closed
+## Human gates
 
-A tenant-aware engine that cannot determine a processor's scope MUST refuse
-to start it and MUST NOT fall back to `Unscoped()`.
+Data-migration gate: PENDING (only if a storage change results). Public API
+gate: PENDING (SPEC-READ-001).
 
-### Requirement: Single-tenant needs no plumbing
+## Test plan (for after approval)
 
-An engine without tenancy, or with a fixed single tenant, MUST run
-processors with no scope declared by the application, and existing
-unscoped offsets MUST remain readable.
+AC-1..AC-6 in the unit lane: go-specs, mocks or testkit in-memory stores,
+deterministic clock, no sleeps, no external resources. Any storage-level
+check goes to the Postgres lane under `inttest`. Conformance additions are #95's.
 
-## Acceptance Criteria
+## Risks / Open Questions
 
-AC-1 Same name, same persistence ID, tenants A and B: offsets written for A
-are not returned for B and conversely.
-
-AC-2 A processor bound to A, over a shard holding events of A and B, receives
-only A's events; B's events do not advance A's cursor, and
-the pending-shard decision ignores B's later events.
-
-AC-3 A and B at different progress: after restart each resumes from its own
-offset. Resetting A's offset leaves B's unchanged. No event is lost or
-duplicated beyond at-least-once for either.
-
-AC-4 `Unscoped()` and a tenant literally named "unscoped" do not collide, for
-offsets and for reads.
-
-AC-5 Tenant-aware engine, processor with undeterminable scope: start fails
-closed; no read, no offset write happens. A zero-value scope is rejected.
-
-AC-6 Single-tenant (`WithSingleTenant`) and no-tenancy engines: processor
-starts with no extra application plumbing, and an offset that was committed
-before the change is still read.
-
-AC-7 (storage) The offsets schema change is idempotent, preserves existing
-rows as unscoped, and enforces uniqueness on (scope, name, shard).
-
-## Test plan
-
-AC-1 to AC-6: unit lane, go-specs with the offset-store and events-store
-mocks or the testkit in-memory stores, deterministic runner clock, no sleeps,
-no external resources. AC-7: Postgres lane under `inttest` only.
-Conformance-suite additions belong to #95.
-
-## Open questions
-
-See `ego-read-001/tasks.md` and the PR description.
+Q1-Q6 live in `openspec/changes/ego-read-001/proposal.md`; Q6 (identity vs
+name-keyed registry and singleton) directly affects AC-1 and AC-3.

@@ -1,39 +1,49 @@
 # Proposal - Read-side and offset tenant isolation (EGO-TENANT-004, #93)
 
+## Metadata
+
 | Field | Value |
 |---|---|
-| Change | `ego-tenant-004` |
-| Tracker | #93, epic #23 |
-| Status | PROPOSED. Implementation BLOCKED until `ego-read-001` (#71) is approved. |
-| Depends on | `ego-read-001` (contract), `ego-tenant-003` (`persistence.Scope`, merged) |
-| Governance | `REVIEW_REQUIRED`: depends on an unapproved contract. |
+| spec_id | SPEC-TENANT-004 (change `ego-tenant-004`) |
+| status | REVIEW_REQUIRED; implementation BLOCKED |
+| parent_epic | #23 (EGO-TENANT) |
+| dependencies | `ego-read-001` (#71) contract approval; `ego-tenant-003` (merged) |
+| contracts_produced | none until #71 is approved |
+| contracts_consumed | SPEC-READ-001 (processor identity and tenant binding, proposed); `persistence.Scope` |
+| affected_subsystems | none decided; offset and read paths are deferred (see spec.md) |
+| human_gates | Data-migration gate: PENDING (applies if a storage change results). Public API gate: PENDING, owned by SPEC-READ-001. |
 
 ## Outcome
 
-Two tenants running a processor with the same name never share offsets or
-events: offset identity and shard reads are scoped, and restart resumes each
-tenant from its own position. Single-tenant needs no extra plumbing.
+Two tenants running a processor with the same name keep independent
+progress and never receive each other's events, across restart.
 
-## The gap (verified on `develop`)
+## Context (verified on `develop`)
 
-- `offsetstore.OffsetStore` identifies an offset by projection name and shard
-  only; table `offsets_store` keys `(projection_name, shard_number)`.
-- `EventsStore.GetShardEvents` and `ShardOffsets` are unscoped and are marked
-  "TENANT-004's concern" in `persistence/events_store.go`. The shard is
-  derived from the persistence ID, so two tenants share shards and one
-  timestamp cursor.
-- `Handler.Handle` receives no tenant.
+`offsetstore.OffsetStore` and `EventsStore.GetShardEvents`/`ShardOffsets`
+carry no tenant, and `persistence/events_store.go` defers read-side
+isolation to this issue. `Handler.Handle` receives no tenant.
 
-## Scope and out of scope
+## Scope
 
-In: scope-qualified offset identity, scope-filtered shard reads, one scope
-per processor run, restart/resume under the same scope, acceptance cases.
-Out: designing the processor API (#71), leases/fencing/claiming, topic
-isolation (#94), adapters, administrative context (#96), the conformance
-suite (#95).
+Behavioural acceptance cases (candidates) in `spec.md`.
 
-## Why no implementation yet
+## Out of Scope
 
-The owner's decision: contract first. This change fixes the acceptance cases
-against the proposed #71 contract (D4: scope is part of processor identity).
-The signature and migration design is written only after #71 is approved.
+Designing the processor API (#71), leases/fencing/claiming, topic isolation
+(#94), adapters, administrative context (#96), the conformance suite (#95).
+
+## Deferred until the #71 contract is approved
+
+Offset identity, shard read filtering, schema/migration. Not decided here.
+See `spec.md`.
+
+## Tasks
+
+| Task | Acceptance |
+|---|---|
+| T0 Blocker: owner approves SPEC-READ-001 | all |
+| T1 Design deferred items | all |
+| T2 Tests first, then implementation | AC-1..AC-6 |
+
+Questions Q1-Q6: see `openspec/changes/ego-read-001/proposal.md`.

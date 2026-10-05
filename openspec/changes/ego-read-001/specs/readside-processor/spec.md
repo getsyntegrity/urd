@@ -1,80 +1,62 @@
-# Read-Side Processor Specification (PROPOSED)
+# Read-Side Processor Specification (DRAFT, REVIEW_REQUIRED)
 
 ## Purpose
 
-Define, from behaviour that already exists in `projection/`,
-`engine/projections.go` and `internal/projectionrunner`, what a read-side
-processor is. Status: proposal for owner review; not implemented as a named
-API.
+Minimal contract for registering and identifying a read-side processor and
+binding its consumption to a tenant scope. Everything else about a
+processor's behaviour (lifecycle, ordering, delivery, recovery) is whatever
+`projection/`, `engine/projections.go` and `internal/projectionrunner`
+define, and is unchanged. Note for readers: shard reads are ordered by
+timestamp (`GetShardEvents`); any per-entity ordering is an inference from
+that, not a guarantee this contract adds.
 
 ## Requirements
 
-### Requirement: A processor is identified by a name and a scope
+### Requirement R1: A processor has a name
 
-A processor MUST have a non-empty name, unique within its scope on one
-engine. Its effective identity MUST be the pair (scope, name), where scope is
-`persistence.Unscoped()` or a tenant scope. Registering the same pair twice
-MUST keep the existing last-wins behaviour of `WithProjection`.
+A processor MUST be registered under a non-empty name.
 
-#### Scenario: Same name, different scope
+### Requirement R2: A processor's identity includes a scope
 
-- GIVEN a processor named "balances" registered for tenant A and another
-  named "balances" registered for tenant B
-- WHEN both are started
-- THEN they are two processors with independent identity
+The processor identity MUST be the pair (scope, name), where scope is a
+`persistence.Scope`: `Unscoped()` or one tenant. Two processors with the
+same name and different scopes MUST be distinct. How the existing keying by
+name alone is reconciled is open (Q6).
 
-#### Scenario: Unscoped registration
+### Requirement R3: Scope is explicit
 
-- GIVEN a processor registered with no scope declared
-- WHEN it is started
-- THEN its scope is `persistence.Unscoped()` and behaviour matches today's
+The scope MUST be declared by the application or by a fixed single-tenant
+resolver. It MUST NOT be taken from event payload or `tenant_metadata`, nor
+built by prefixing or parsing the name. A zero-value scope MUST be rejected.
+A tenant-aware engine that cannot determine the scope MUST refuse to start
+the processor and MUST NOT fall back to `Unscoped()`.
 
-### Requirement: Scope is explicit and never inferred
+### Requirement R4: Consumption is bound to one scope
 
-The scope MUST be declared at registration or start. It MUST NOT be taken from
-event payload or `tenant_metadata`, and MUST NOT be built by prefixing or
-parsing the name. A zero-value scope MUST be rejected.
+A processor's consumption MUST be bound to exactly one scope for its run, and
+MUST stay bound to the same scope across restart. How the binding is realised
+in storage or reads is not decided here.
 
-#### Scenario: Zero scope rejected
+### Requirement R5: Unscoped use needs nothing extra
 
-- GIVEN a registration whose scope is the zero `persistence.Scope`
-- WHEN it is registered or started
-- THEN it fails with an error and no processing begins
+An engine without tenancy, or with a fixed single tenant, MUST run
+processors without the application declaring a scope.
 
-### Requirement: Consumption is durable, ordered and at-least-once
+## Acceptance Criteria
 
-A processor MUST resume from its last committed position after a restart.
-Events of one persistence ID MUST reach the handler in revision order.
-Delivery MUST be at-least-once; handlers MUST tolerate redelivery.
+| AC | Requirement | Observable pass/fail |
+|---|---|---|
+| AC-R1-1 | R1 | Registering with an empty name fails. |
+| AC-R2-1 | R2 | Same name under tenants A and B yields two distinct processors. |
+| AC-R3-1 | R3 | A zero-value scope is rejected and nothing starts. |
+| AC-R3-2 | R3 | Tenant-aware engine, scope undeterminable: start fails, no fallback to Unscoped. |
+| AC-R4-1 | R4 | After restart the processor is still bound to its original scope. |
+| AC-R5-1 | R5 | Engine without tenancy starts a processor with no scope declared. |
 
-#### Scenario: Restart resumes
+## Human gates
 
-- GIVEN a processor that committed a position and then stopped
-- WHEN it is started again
-- THEN it continues from the committed position, not from the beginning
+Public API gate: PENDING.
 
-#### Scenario: Crash mid-batch redelivers
+## Risks / Open Questions
 
-- GIVEN a batch whose position was not yet committed when the processor died
-- WHEN the processor restarts
-- THEN the whole batch is delivered again
-
-### Requirement: Handler failure follows the declared recovery policy
-
-A handler error or panic MUST follow the processor's recovery policy
-(fail, retry then fail, retry then skip). Skipped events MUST go to the
-dead-letter handler when one is set. A failed store round trip MUST be
-retried in place and MUST NOT stop the processor.
-
-### Requirement: Lifecycle
-
-A processor MUST support register, start, stop, running-state query and
-rebuild from a timestamp. Starting an unregistered processor MUST fail with
-`ErrProjectionNotRegistered`. In cluster mode every node MUST register the
-same processors, and the processor MUST run once cluster-wide.
-
-### Requirement: Out of scope
-
-This contract MUST NOT define the offset store, claiming, leases, fencing,
-partitioning, failover, adapters, the canonical event envelope, or topic
-isolation.
+Q1-Q6 in `proposal.md`.
