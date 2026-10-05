@@ -1128,25 +1128,34 @@ func (entity *Actor) handleDirectPersistResponse(ctx *goakt.ReceiveContext, resp
 	ctx.UnstashAll()
 }
 
-// directRequest identifies one request to the entity: the message, the context
-// of the call that sent it, and the sender. An actor cannot tell requests apart
-// by the message alone, because a caller may send the same message object more
-// than once, and two callers may share one: what separates the requests is the
-// call. GoAkt's Ask hands the actor the context of the caller's call, the
-// message as sent and the sender, and a stashed message keeps all three, so a
-// re-delivered request compares equal to itself and to no other. Each caller
-// derives its own context per call (Engine.Dispatch does), so two calls that
-// send the same message object still differ.
+// directRequest identifies one request to the entity: the message, the call that
+// sent it, and the sender. An actor cannot tell requests apart by the message
+// alone, because a caller may send the same message object more than once, and
+// two callers may share one: what separates the requests is the call.
+//
+// The call is the protocol.RequestToken its caller attached to the context of the
+// Ask (Engine.Dispatch and the saga do). It is not the context itself: GoAkt
+// derives a new context for every turn of an Ask, so the context of the turn that
+// recorded the request is never the context of the turn that re-delivers it, and
+// it must not be kept beyond its turn. The token is a value of the caller's
+// context and survives that derivation, so a request re-delivered from the stash
+// carries the token it was recorded with, and no other request does.
+//
+// An Ask without a token (one that did not come from a call that attaches it, or
+// that crossed a node) cannot be told apart from another by its call, and is
+// taken to match on the message and the sender alone.
 type directRequest struct {
 	set     bool
 	message any
-	ctx     context.Context
+	call    protocol.RequestToken
+	hasCall bool
 	sender  *goakt.PID
 }
 
 // newDirectRequest records the request ctx is delivering.
 func newDirectRequest(ctx *goakt.ReceiveContext) directRequest {
-	return directRequest{set: true, message: ctx.Message(), ctx: ctx.Context(), sender: ctx.Sender()}
+	call, hasCall := protocol.RequestTokenFromContext(ctx.Context())
+	return directRequest{set: true, message: ctx.Message(), call: call, hasCall: hasCall, sender: ctx.Sender()}
 }
 
 // isRequest reports whether ctx is delivering the recorded request.
@@ -1161,7 +1170,14 @@ func (r directRequest) matches(message any, ctx context.Context, sender *goakt.P
 	if !r.set {
 		return true
 	}
-	return r.sender == sender && sameValue(r.message, message) && sameValue(r.ctx, ctx)
+	if r.sender != sender || !sameValue(r.message, message) {
+		return false
+	}
+	call, hasCall := protocol.RequestTokenFromContext(ctx)
+	if hasCall != r.hasCall {
+		return false
+	}
+	return !hasCall || call == r.call
 }
 
 // sameValue reports whether a and b are the same value, without panicking on a

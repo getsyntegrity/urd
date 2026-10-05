@@ -859,7 +859,7 @@ func (s *Actor) sendCommand(ctx context.Context, cmd sagaCommand) {
 	target, err := s.targetActorName(cmd.EntityID)
 	var reply any
 	if err == nil {
-		reply, err = noSender.SendSync(s.attachCommandMetadata(ctx, cmd.Metadata), target, cmd.Command, timeout)
+		reply, err = noSender.SendSync(protocol.AttachRequestToken(s.attachCommandMetadata(ctx, cmd.Metadata)), target, cmd.Command, timeout)
 	}
 	if err != nil {
 		action, handleErr := s.behavior.HandleError(ctx, cmd.EntityID, err, s.currentState)
@@ -915,7 +915,7 @@ func (s *Actor) compensate(ctx context.Context, logger kitlog.Logger, actorSyste
 		noSender := actorSystem.NoSender()
 		target, err := s.targetActorName(cmd.EntityID)
 		if err == nil {
-			_, err = noSender.SendSync(s.attachCommandMetadata(ctx, cmd.Metadata), target, cmd.Command, timeout)
+			_, err = noSender.SendSync(protocol.AttachRequestToken(s.attachCommandMetadata(ctx, cmd.Metadata)), target, cmd.Command, timeout)
 		}
 		if err != nil {
 			logger.Error("saga: compensation command failed", "saga_id", s.sagaID, "entity_id", cmd.EntityID, "error", err)
