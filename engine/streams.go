@@ -132,7 +132,9 @@ type statesStream struct {
 //
 // Returns:
 //   - An eventstream.Subscriber instance that can be used to receive events.
-//   - An error if the engine has not started or if there is an issue creating the subscriber.
+//   - An error if the engine has not started, has stopped, or began to stop before the
+//     subscription was accepted (ErrEngineNotStarted), or if there is an issue creating the subscriber.
+//     A subscriber accepted before Stop is terminated by Stop.
 func (engine *Engine) Subscribe() (eventstream.Subscriber, error) {
 	if !engine.Started() {
 		return nil, ErrEngineNotStarted
@@ -170,10 +172,17 @@ func (engine *Engine) SubscribeForTenant(id tenancy.TenantID) (eventstream.Subsc
 // subscribeForScope subscribes a new subscriber to the events and states topics
 // for scope, registering nothing on failure.
 func (engine *Engine) subscribeForScope(scope persistence.Scope) (eventstream.Subscriber, error) {
+	// Stop flips started and then takes the write lock, so holding the read lock
+	// across the whole subscription means it is either refused here, or complete
+	// before Stop closes the stream, which terminates every subscriber.
 	engine.mutex.RLock()
-	eventStream := engine.eventStream
-	engine.mutex.RUnlock()
+	defer engine.mutex.RUnlock()
 
+	if !engine.Started() {
+		return nil, ErrEngineNotStarted
+	}
+
+	eventStream := engine.eventStream
 	subscriber := eventStream.AddSubscriber()
 	for _, topic := range []string{protocol.EventsTopic, protocol.StatesTopic} {
 		if err := protocol.SubscribeScoped(eventStream, subscriber, scope, topic); err != nil {
@@ -220,10 +229,13 @@ func duplicatePublisherIDs(ids []string, registered func(id string) bool) error 
 // Parameters:
 //   - publishers: A list of event publishers to be added to the engine.
 //
-// Returns ErrEngineNotStarted if the engine has not started, and an error
+// Returns ErrEngineNotStarted if the engine has not started, has stopped, or
+// began to stop before the registration was accepted, and an error
 // wrapping ErrDuplicatePublisherID, naming the duplicate IDs, when a
 // publisher ID is already registered for this kind or repeated in the call;
-// in that case no publisher from the call is registered or started.
+// in that case no publisher from the call is registered or started. A
+// registration accepted before Stop is closed by Stop, exactly once; none is
+// ever left registered after Stop returns.
 func (engine *Engine) AddEventPublishers(publishers ...EventPublisher) error {
 	if !engine.Started() {
 		return ErrEngineNotStarted
@@ -249,7 +261,9 @@ func (engine *Engine) AddEventPublishers(publishers ...EventPublisher) error {
 //
 // The engine must be tenant-aware, and when its resolver fixes a tenant, id must
 // be that tenant: otherwise the call returns ErrPublicationTenantMismatch. It
-// returns ErrEngineNotStarted before Start, and an error wrapping
+// returns ErrEngineNotStarted before Start, after Stop, and when Stop began
+// before the registration was accepted (one accepted earlier is closed by
+// Stop, exactly once), and an error wrapping
 // ErrDuplicatePublisherID when a publisher ID is already registered for this
 // kind (publisher IDs are unique across tenants) or repeated in the call. On any
 // error nothing from the call is registered or started. Engine.Stop closes every
@@ -270,13 +284,23 @@ func (engine *Engine) AddEventPublishersForTenant(id tenancy.TenantID, publisher
 
 // registerEventPublishers registers publishers on the events stream for scope.
 func (engine *Engine) registerEventPublishers(scope persistence.Scope, publishers []EventPublisher) error {
-	engine.mutex.Lock()
-	defer engine.mutex.Unlock()
-
+	// A publisher's ID is caller code: read it once, outside the lock, so a slow
+	// or blocking ID can neither stall Stop nor be read again under the lock.
 	ids := make([]string, len(publishers))
 	for i, publisher := range publishers {
 		ids[i] = publisher.ID()
 	}
+
+	engine.mutex.Lock()
+	defer engine.mutex.Unlock()
+
+	// Stop flips started before it takes this lock, so a registration that gets
+	// here after Stop began is refused, and one that is accepted here is in the
+	// maps Stop snapshots once it holds the lock: Stop closes it.
+	if !engine.Started() {
+		return ErrEngineNotStarted
+	}
+
 	if err := duplicatePublisherIDs(ids, func(id string) bool {
 		_, ok := engine.eventsStreams.Get(id)
 		return ok
@@ -284,9 +308,9 @@ func (engine *Engine) registerEventPublishers(scope persistence.Scope, publisher
 		return err
 	}
 
-	for _, publisher := range publishers {
+	for i, publisher := range publishers {
 		subscriber := engine.eventStream.AddSubscriber()
-		engine.logger.Debug("events publisher subscribing to topic", "publisher", publisher.ID(), "topic", protocol.EventsTopic)
+		engine.logger.Debug("events publisher subscribing to topic", "publisher", ids[i], "topic", protocol.EventsTopic)
 		if err := protocol.SubscribeScoped(engine.eventStream, subscriber, scope, protocol.EventsTopic); err != nil {
 			engine.eventStream.RemoveSubscriber(subscriber)
 			return err
@@ -300,10 +324,10 @@ func (engine *Engine) registerEventPublishers(scope persistence.Scope, publisher
 		}
 
 		// add the event publisher to the engine
-		engine.eventsStreams.Set(publisher.ID(), eventSubscriber)
+		engine.eventsStreams.Set(ids[i], eventSubscriber)
 
 		// start the event publisher
-		engine.logger.Info("starting events publisher", "publisher", publisher.ID())
+		engine.logger.Info("starting events publisher", "publisher", ids[i])
 		go engine.sendEvent(eventSubscriber)
 	}
 
@@ -319,10 +343,13 @@ func (engine *Engine) registerEventPublishers(scope persistence.Scope, publisher
 // Parameters:
 //   - publishers: A list of state publishers to be added to the engine.
 //
-// Returns ErrEngineNotStarted if the engine has not started, and an error
+// Returns ErrEngineNotStarted if the engine has not started, has stopped, or
+// began to stop before the registration was accepted, and an error
 // wrapping ErrDuplicatePublisherID, naming the duplicate IDs, when a
 // publisher ID is already registered for this kind or repeated in the call;
-// in that case no publisher from the call is registered or started.
+// in that case no publisher from the call is registered or started. A
+// registration accepted before Stop is closed by Stop, exactly once; none is
+// ever left registered after Stop returns.
 func (engine *Engine) AddStatePublishers(publishers ...StatePublisher) error {
 	if !engine.Started() {
 		return ErrEngineNotStarted
@@ -348,7 +375,9 @@ func (engine *Engine) AddStatePublishers(publishers ...StatePublisher) error {
 //
 // The engine must be tenant-aware, and when its resolver fixes a tenant, id must
 // be that tenant: otherwise the call returns ErrPublicationTenantMismatch. It
-// returns ErrEngineNotStarted before Start, and an error wrapping
+// returns ErrEngineNotStarted before Start, after Stop, and when Stop began
+// before the registration was accepted (one accepted earlier is closed by
+// Stop, exactly once), and an error wrapping
 // ErrDuplicatePublisherID when a publisher ID is already registered for this
 // kind (publisher IDs are unique across tenants) or repeated in the call. On any
 // error nothing from the call is registered or started. Engine.Stop closes every
@@ -369,13 +398,23 @@ func (engine *Engine) AddStatePublishersForTenant(id tenancy.TenantID, publisher
 
 // registerStatePublishers registers publishers on the events stream for scope.
 func (engine *Engine) registerStatePublishers(scope persistence.Scope, publishers []StatePublisher) error {
-	engine.mutex.Lock()
-	defer engine.mutex.Unlock()
-
+	// A publisher's ID is caller code: read it once, outside the lock, so a slow
+	// or blocking ID can neither stall Stop nor be read again under the lock.
 	ids := make([]string, len(publishers))
 	for i, publisher := range publishers {
 		ids[i] = publisher.ID()
 	}
+
+	engine.mutex.Lock()
+	defer engine.mutex.Unlock()
+
+	// Stop flips started before it takes this lock, so a registration that gets
+	// here after Stop began is refused, and one that is accepted here is in the
+	// maps Stop snapshots once it holds the lock: Stop closes it.
+	if !engine.Started() {
+		return ErrEngineNotStarted
+	}
+
 	if err := duplicatePublisherIDs(ids, func(id string) bool {
 		_, ok := engine.statesStreams.Get(id)
 		return ok
@@ -383,9 +422,9 @@ func (engine *Engine) registerStatePublishers(scope persistence.Scope, publisher
 		return err
 	}
 
-	for _, publisher := range publishers {
+	for i, publisher := range publishers {
 		subscriber := engine.eventStream.AddSubscriber()
-		engine.logger.Debug("durable state publisher subscribing to topic", "publisher", publisher.ID(), "topic", protocol.StatesTopic)
+		engine.logger.Debug("durable state publisher subscribing to topic", "publisher", ids[i], "topic", protocol.StatesTopic)
 		if err := protocol.SubscribeScoped(engine.eventStream, subscriber, scope, protocol.StatesTopic); err != nil {
 			engine.eventStream.RemoveSubscriber(subscriber)
 			return err
@@ -399,10 +438,10 @@ func (engine *Engine) registerStatePublishers(scope persistence.Scope, publisher
 		}
 
 		// add the state publisher to the engine
-		engine.statesStreams.Set(publisher.ID(), stateSubscriber)
+		engine.statesStreams.Set(ids[i], stateSubscriber)
 
 		// start the state publisher
-		engine.logger.Info("starting durable state publisher", "publisher", publisher.ID())
+		engine.logger.Info("starting durable state publisher", "publisher", ids[i])
 		go engine.sendState(stateSubscriber)
 	}
 
