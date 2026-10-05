@@ -192,6 +192,7 @@ func TestNewCreatesTheCatalog(t *testing.T) {
 				"urd.projection.lag_ms":                 "Int64Gauge|Projection lag in milliseconds per shard|",
 				"urd.projection.latest_offset":          "Int64Gauge|Current projection offset timestamp per shard|",
 				"urd.projection.events_behind":          "Int64Gauge|Approximate number of unprocessed events per shard|",
+				"urd.publication.rejected.total":        "Int64Counter|Total number of publications dropped because their tenant identity was absent, invalid or mismatched|",
 			})
 		})
 	})
@@ -265,6 +266,22 @@ func TestRecordingMethods(t *testing.T) {
 			ctx.Expect(entities).To(valueOf(1, -1))
 			ctx.Expect(projections).To(valueOf(1, -1))
 			ctx.Expect(processed).To(valueOf(1))
+		})
+	})
+}
+
+func TestPublicationRejectedCountsOne(t *testing.T) {
+	specs.Describe(t, "PublicationRejected counts one dropped publication, and is a no-op on nil instruments", func(s *specs.Spec) {
+		s.It("records one measurement", func(ctx *specs.Context) {
+			meter := newFakeMeter()
+			New(meter).PublicationRejected(context.Background())
+			ctx.Expect(meter.measurements["urd.publication.rejected.total"]).To(specs.HaveLen(1))
+			ctx.Expect(meter.measurements["urd.publication.rejected.total"][0].value).To(specs.Equal(float64(1)))
+		})
+
+		s.It("does nothing without instruments", func(ctx *specs.Context) {
+			var none *Instruments
+			none.PublicationRejected(context.Background())
 		})
 	})
 }

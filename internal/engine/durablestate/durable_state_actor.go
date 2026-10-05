@@ -29,6 +29,7 @@ import (
 	"math"
 	"time"
 
+	kitlog "github.com/pablogore/kit-logger/pkg/logger"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/extension"
 	"go.opentelemetry.io/otel/trace"
@@ -39,6 +40,7 @@ import (
 	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	"github.com/getsyntegrity/urd/internal/extensions"
+	"github.com/getsyntegrity/urd/internal/goaktlog"
 	"github.com/getsyntegrity/urd/internal/instrumentation"
 	"github.com/getsyntegrity/urd/internal/runner"
 	"github.com/getsyntegrity/urd/persistence"
@@ -56,6 +58,7 @@ type Actor struct {
 	currentVersion  uint64
 	lastCommandTime time.Time
 	eventsStream    eventstream.Stream
+	logger          kitlog.Logger
 	actorSystem     goakt.ActorSystem
 	persistenceID   string
 	tracer          trace.Tracer
@@ -131,6 +134,7 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 	}
 	entity.stateStore = stateStoreExt.Underlying()
 	entity.eventsStream = eventsStreamExt.Underlying()
+	entity.logger = goaktlog.Backend(ctx.Logger())
 	entity.persistenceID = ctx.ActorName()
 	// Presence-only signal: tenant-aware mode is active when the engine
 	// registered the tenancy marker extension. The marker carries no
@@ -715,7 +719,7 @@ func (entity *Actor) commitState(ctx context.Context, newState State, newVersion
 		entity.actorTenant = candidateTenant
 	}
 
-	entity.eventsStream.Publish(protocol.StatesTopic, durableState)
+	entity.publishState(ctx, durableState)
 	return nil
 }
 
@@ -746,7 +750,7 @@ func (entity *Actor) persistStateAndPublish(ctx context.Context) error {
 		return err
 	}
 
-	entity.eventsStream.Publish(protocol.StatesTopic, durableState)
+	entity.publishState(ctx, durableState)
 	return nil
 }
 
@@ -755,3 +759,23 @@ func (entity *Actor) persistStateAndPublish(ctx context.Context) error {
 // produce it (tenancy/tenant_context.go), so it safely marks "not yet
 // seeded" for an actor's tenant, distinct from any real resolved identity.
 var noTenantContext tenancy.TenantContext
+
+// publishState publishes a durable state that the store has already
+// confirmed, for the scope this actor is bound to (EGO-TENANT-005). It
+// publishes only when the state's tenant identity agrees with that scope;
+// otherwise the state is dropped, logged at error level and counted, never
+// delivered, and the write is not failed.
+func (entity *Actor) publishState(ctx context.Context, durableState *egopb.DurableState) {
+	err := protocol.PublishScoped(entity.eventsStream, entity.scope, protocol.StatesTopic, durableState, durableState.GetTenantMetadata())
+	if err == nil {
+		return
+	}
+	entity.metrics.PublicationRejected(ctx)
+	if entity.logger != nil {
+		entity.logger.ErrorContext(ctx, "durable state not published: tenant identity check failed",
+			"persistence_id", durableState.GetPersistenceId(),
+			"version_number", durableState.GetVersionNumber(),
+			"scope", entity.scope.String(),
+			"error", err)
+	}
+}

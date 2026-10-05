@@ -241,7 +241,12 @@ func (s *Actor) PreStart(ctx *goakt.Context) error {
 	// from every shard; the shard is carried in the event payload for any
 	// downstream filtering the saga behavior wants to apply.
 	s.subscriber = s.eventsStream.AddSubscriber()
-	s.eventsStream.Subscribe(s.subscriber, protocol.EventsTopic)
+	// EGO-TENANT-005: the saga subscribes for the scope it is bound to, so a
+	// tenant's saga never sees another tenant's events.
+	if err := protocol.SubscribeScoped(s.eventsStream, s.subscriber, s.scope, protocol.EventsTopic); err != nil {
+		s.eventsStream.RemoveSubscriber(s.subscriber)
+		return err
+	}
 
 	return nil
 }

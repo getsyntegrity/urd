@@ -55,6 +55,7 @@ type Instruments struct {
 	projectionLag     metric.Int64Gauge
 	projectionOffset  metric.Int64Gauge
 	projectionBehind  metric.Int64Gauge
+	publicationReject metric.Int64Counter
 }
 
 // New creates the metric instruments from the given meter.
@@ -100,7 +101,12 @@ func New(meter metric.Meter) *Instruments {
 		metric.WithDescription("Approximate number of unprocessed events per shard"),
 	)
 
+	publicationReject, _ := meter.Int64Counter("urd.publication.rejected.total",
+		metric.WithDescription("Total number of publications dropped because their tenant identity was absent, invalid or mismatched"),
+	)
+
 	return &Instruments{
+		publicationReject: publicationReject,
 		commandsTotal:     commandsTotal,
 		commandsDuration:  commandsDuration,
 		eventsPersisted:   eventsPersisted,
@@ -137,6 +143,15 @@ func (x *Instruments) EventsPersisted(ctx context.Context, count int) {
 		return
 	}
 	x.eventsPersisted.Add(ctx, int64(count))
+}
+
+// PublicationRejected counts one event or state dropped by the tenant
+// isolation checks of the publication path (EGO-TENANT-005).
+func (x *Instruments) PublicationRejected(ctx context.Context) {
+	if x == nil {
+		return
+	}
+	x.publicationReject.Add(ctx, 1)
 }
 
 // EntityStarted increments the number of active entities.

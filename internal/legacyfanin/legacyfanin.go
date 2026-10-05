@@ -20,43 +20,20 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package eventstream
+// Package legacyfanin holds the capability that lets the projection actor
+// subscribe to every scope of a topic.
+//
+// TEMPORARY (EGO-TENANT-005): the projection runner subscribes through the
+// legacy, unscoped Stream API and its file belongs to #93. Until #93 gives it
+// a scope, the projection actor passes it a Stream that subscribes through
+// this grant. Because the package is internal, code outside this module cannot
+// name Grant and therefore cannot call eventstream.EventsStream.SubscribeFanIn.
+// #93 removes this package.
+package legacyfanin
 
-import "github.com/getsyntegrity/urd/persistence"
+// Grant is the capability required to subscribe to every scope of a topic.
+// Its zero value is the only value.
+type Grant struct{}
 
-// Message defines the stream message
-type Message struct {
-	scope   persistence.Scope
-	topic   string
-	payload any
-}
-
-// Scope returns the scope the message was published for. A message made by
-// NewMessage, Publish or Broadcast is Unscoped(); one made by PublishScoped
-// carries the scope it was published with.
-func (m Message) Scope() persistence.Scope {
-	return m.scope
-}
-
-// Topic returns the message topic
-func (m Message) Topic() string {
-	return m.topic
-}
-
-// Payload returns the message payload
-func (m Message) Payload() any {
-	return m.payload
-}
-
-// NewMessage creates an instance of Stream Message
-func NewMessage(topic string, payload any) *Message {
-	return newScopedMessage(persistence.Unscoped(), topic, payload)
-}
-
-func newScopedMessage(scope persistence.Scope, topic string, payload any) *Message {
-	return &Message{
-		scope:   scope,
-		topic:   topic,
-		payload: payload,
-	}
-}
+// Token is the grant. Only code inside this module can reference it.
+var Token = Grant{}

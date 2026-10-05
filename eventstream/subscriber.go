@@ -47,6 +47,9 @@ type Subscriber interface {
 	signal(message *Message)
 	subscribe(topic string)
 	unsubscribe(topic string)
+	subscribeRoute(r route)
+	unsubscribeRoute(r route)
+	routes() []route
 }
 
 // subscriber defines the subscriber
@@ -58,7 +61,7 @@ type subscriber struct {
 	// messages of the subscriber
 	messages *queue.Queue
 	// topics define the topic the subscriber subscribed to
-	topics map[string]bool
+	routeSet map[route]bool
 	// states whether the given subscriber is active or not
 	active *atomic.Bool
 	// notify wakes consumers blocked on Ready when a message is enqueued
@@ -80,7 +83,7 @@ func newSubscriber() *subscriber {
 		id:       id,
 		sem:      sync.Mutex{},
 		messages: queue.NewQueue(),
-		topics:   make(map[string]bool),
+		routeSet: make(map[route]bool),
 		active:   atomic.NewBool(true),
 		notify:   make(chan struct{}, 1),
 	}
@@ -96,15 +99,18 @@ func (x *subscriber) Active() bool {
 	return x.active.Load()
 }
 
-// Topics returns the list of topics the consumer has subscribed to
+// Topics returns the distinct topic names the consumer has subscribed to,
+// whatever the scope of the subscription.
 func (x *subscriber) Topics() []string {
-	// acquire the lock
 	x.sem.Lock()
-	// release the lock once done
 	defer x.sem.Unlock()
+	seen := make(map[string]bool, len(x.routeSet))
 	var topics []string
-	for topic := range x.topics {
-		topics = append(topics, topic)
+	for r := range x.routeSet {
+		if !seen[r.topic] {
+			seen[r.topic] = true
+			topics = append(topics, r.topic)
+		}
 	}
 	return topics
 }
@@ -162,22 +168,33 @@ func (x *subscriber) signal(message *Message) {
 	}
 }
 
-// subscribe subscribes the subscriber to a given topic
-func (x *subscriber) subscribe(topic string) {
-	// acquire the lock
+// subscribe subscribes the subscriber to a topic of the Unscoped() scope
+func (x *subscriber) subscribe(topic string) { x.subscribeRoute(unscopedRoute(topic)) }
+
+// unsubscribe unsubscribes the subscriber from a topic of the Unscoped() scope
+func (x *subscriber) unsubscribe(topic string) { x.unsubscribeRoute(unscopedRoute(topic)) }
+
+// subscribeRoute records r as one of the subscriber's routes
+func (x *subscriber) subscribeRoute(r route) {
 	x.sem.Lock()
-	// set the topic
-	x.topics[topic] = true
-	// release the lock
+	x.routeSet[r] = true
 	x.sem.Unlock()
 }
 
-// unsubscribe unsubscribes the subscriber from the give topic
-func (x *subscriber) unsubscribe(topic string) {
-	// acquire the lock
+// unsubscribeRoute forgets r
+func (x *subscriber) unsubscribeRoute(r route) {
 	x.sem.Lock()
-	// remove the topic from the consumer topics
-	delete(x.topics, topic)
-	// release the lock
+	delete(x.routeSet, r)
 	x.sem.Unlock()
+}
+
+// routes returns the routes the subscriber is registered on
+func (x *subscriber) routes() []route {
+	x.sem.Lock()
+	defer x.sem.Unlock()
+	out := make([]route, 0, len(x.routeSet))
+	for r := range x.routeSet {
+		out = append(out, r)
+	}
+	return out
 }

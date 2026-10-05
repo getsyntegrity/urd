@@ -27,11 +27,15 @@ import (
 	"fmt"
 	"time"
 
+	kitlog "github.com/pablogore/kit-logger/pkg/logger"
 	goakt "github.com/tochemey/goakt/v4/actor"
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	"github.com/getsyntegrity/urd/internal/extensions"
+	"github.com/getsyntegrity/urd/internal/goaktlog"
+	"github.com/getsyntegrity/urd/internal/instrumentation"
 	"github.com/getsyntegrity/urd/persistence"
 )
 
@@ -66,6 +70,8 @@ type persistEventsResponse struct {
 type eventsWriterActor struct {
 	eventsStore  persistence.EventsStore
 	eventsStream eventstream.Stream
+	logger       kitlog.Logger
+	metrics      *instrumentation.Instruments
 }
 
 var _ goakt.Actor = (*eventsWriterActor)(nil)
@@ -89,6 +95,15 @@ func (a *eventsWriterActor) PreStart(ctx *goakt.Context) error {
 
 	a.eventsStore = eventsStoreExt.Underlying()
 	a.eventsStream = eventsStreamExt.Underlying()
+	a.logger = goaktlog.Backend(ctx.Logger())
+
+	telemetryExt, err := extensions.Optional[*extensions.TelemetryExtension](ctx, extensions.TelemetryExtensionID)
+	if err != nil {
+		return err
+	}
+	if telemetryExt != nil {
+		a.metrics = instrumentation.New(telemetryExt.Meter())
+	}
 	return nil
 }
 
@@ -119,7 +134,18 @@ func (a *eventsWriterActor) handlePersistEvents(ctx *goakt.ReceiveContext, req *
 	}
 
 	for _, envelope := range req.envelopes {
-		a.eventsStream.Publish(req.topic, envelope)
+		// EGO-TENANT-005: publish for the scope the owning actor is bound to,
+		// and only when the envelope's tenant identity agrees with it. The
+		// events are already persisted, so a rejected publication is dropped,
+		// logged and counted, never delivered, and never fails the write.
+		if err := protocol.PublishScoped(a.eventsStream, req.scope, req.topic, envelope, envelope.GetTenantMetadata()); err != nil {
+			a.metrics.PublicationRejected(ctx.Context())
+			a.logger.ErrorContext(ctx.Context(), "event not published: tenant identity check failed",
+				"persistence_id", envelope.GetPersistenceId(),
+				"sequence_number", envelope.GetSequenceNumber(),
+				"scope", req.scope.String(),
+				"error", err)
+		}
 	}
 
 	ctx.Response(&persistEventsResponse{})
