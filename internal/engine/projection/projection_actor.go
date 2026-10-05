@@ -120,7 +120,7 @@ func (x *Actor) PreStart(ctx *goakt.Context) error {
 		return err
 	}
 	if eventsStreamExt != nil {
-		opts = append(opts, projectionrunner.WithEventsStream(withLegacyFanIn(eventsStreamExt.Underlying()), protocol.EventsTopic))
+		opts = append(opts, projectionrunner.WithEventsStream(withProjectionWake(eventsStreamExt.Underlying()), protocol.EventsTopic))
 	}
 
 	encryptorExt, err := extensions.Optional[*extensions.EncryptorExtension](ctx, extensions.EncryptorExtensionID)

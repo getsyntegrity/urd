@@ -34,6 +34,7 @@ import (
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/engine/enginetest"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	"github.com/getsyntegrity/urd/internal/extensions"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
@@ -80,6 +81,13 @@ func tenantEnvelopes(ctx *specs.Context, persistenceID string, count int, tenant
 		envelope.TenantMetadata = tenancy.MarshalMetadata(tc)
 	}
 	return envelopes
+}
+
+// streamScopeOf converts an actor's persistence scope to the stream's scope.
+func streamScopeOf(ctx *specs.Context, scope persistence.Scope) eventstream.Scope {
+	out, err := protocol.StreamScope(scope)
+	ctx.Expect(err).To(specs.BeNil())
+	return out
 }
 
 // drainStream returns the messages queued for sub.
@@ -155,7 +163,7 @@ func TestWriterContract(t *testing.T) {
 			store := enginetest.NewEventsStoreMock(ctrl)
 			stream := newClosingEventStream(ctx)
 			sub := stream.AddSubscriber()
-			ctx.Expect(stream.(eventstream.ScopedStream).SubscribeScoped(sub, scope, contractTopic)).To(specs.BeNil())
+			ctx.Expect(stream.(eventstream.ScopedStream).SubscribeScoped(sub, streamScopeOf(ctx, scope), contractTopic)).To(specs.BeNil())
 			expectWrite(ctrl, contractWriteArgs{scope, envelopes, persistence.Unconditional()}).Return(nil)
 			pid := startWriter(ctx, store, stream)
 
@@ -177,7 +185,7 @@ func TestWriterContract(t *testing.T) {
 			stream := newClosingEventStream(ctx)
 			scoped := stream.(eventstream.ScopedStream)
 			subOther, subLegacy := stream.AddSubscriber(), stream.AddSubscriber()
-			ctx.Expect(scoped.SubscribeScoped(subOther, other, contractTopic)).To(specs.BeNil())
+			ctx.Expect(scoped.SubscribeScoped(subOther, streamScopeOf(ctx, other), contractTopic)).To(specs.BeNil())
 			stream.Subscribe(subLegacy, contractTopic)
 			expectWrite(ctrl, contractWriteArgs{scope, envelopes, persistence.Unconditional()}).Return(nil)
 			pid := startWriter(ctx, store, stream)
@@ -203,7 +211,7 @@ func TestWriterContract(t *testing.T) {
 			store := enginetest.NewEventsStoreMock(ctrl)
 			stream := newClosingEventStream(ctx)
 			sub := stream.AddSubscriber()
-			ctx.Expect(stream.(eventstream.ScopedStream).SubscribeScoped(sub, scope, contractTopic)).To(specs.BeNil())
+			ctx.Expect(stream.(eventstream.ScopedStream).SubscribeScoped(sub, streamScopeOf(ctx, scope), contractTopic)).To(specs.BeNil())
 			expectWrite(ctrl, contractWriteArgs{scope, envelopes, persistence.Unconditional()}).Return(nil)
 			pid := startWriter(ctx, store, stream)
 

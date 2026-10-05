@@ -22,11 +22,9 @@
 
 package eventstream
 
-import "github.com/getsyntegrity/urd/persistence"
-
 // Message defines the stream message
 type Message struct {
-	scope   persistence.Scope
+	scope   Scope
 	topic   string
 	payload any
 }
@@ -34,7 +32,7 @@ type Message struct {
 // Scope returns the scope the message was published for. A message made by
 // NewMessage, Publish or Broadcast is Unscoped(); one made by PublishScoped
 // carries the scope it was published with.
-func (m Message) Scope() persistence.Scope {
+func (m Message) Scope() Scope {
 	return m.scope
 }
 
@@ -50,10 +48,10 @@ func (m Message) Payload() any {
 
 // NewMessage creates an instance of Stream Message
 func NewMessage(topic string, payload any) *Message {
-	return newScopedMessage(persistence.Unscoped(), topic, payload)
+	return newScopedMessage(Unscoped(), topic, payload)
 }
 
-func newScopedMessage(scope persistence.Scope, topic string, payload any) *Message {
+func newScopedMessage(scope Scope, topic string, payload any) *Message {
 	return &Message{
 		scope:   scope,
 		topic:   topic,

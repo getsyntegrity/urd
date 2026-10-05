@@ -38,6 +38,12 @@ import (
 	"github.com/getsyntegrity/urd/testkit"
 )
 
+func streamScope(ctx *specs.Context, scope persistence.Scope) eventstream.Scope {
+	out, err := protocol.StreamScope(scope)
+	ctx.Expect(err).To(specs.BeNil())
+	return out
+}
+
 func TestDurableStatePublishesForItsScope(t *testing.T) {
 	specs.Describe(t, "a durable state actor publishes its confirmed state for the scope it is bound to (EGO-TENANT-005)", func(s *specs.Spec) {
 		bg := context.Background()
@@ -76,8 +82,8 @@ func TestDurableStatePublishesForItsScope(t *testing.T) {
 			scopeA, scopeB := tenantScopeFor(ctx, "tenant-a"), tenantScopeFor(ctx, "tenant-b")
 			r := newRig(ctx, true, tenantContextFor(ctx, "tenant-a"), scopeA)
 			subA, subB, legacy := r.stream.AddSubscriber(), r.stream.AddSubscriber(), r.stream.AddSubscriber()
-			ctx.Expect(r.stream.SubscribeScoped(subA, scopeA, protocol.StatesTopic)).To(specs.BeNil())
-			ctx.Expect(r.stream.SubscribeScoped(subB, scopeB, protocol.StatesTopic)).To(specs.BeNil())
+			ctx.Expect(r.stream.SubscribeScoped(subA, streamScope(ctx, scopeA), protocol.StatesTopic)).To(specs.BeNil())
+			ctx.Expect(r.stream.SubscribeScoped(subB, streamScope(ctx, scopeB), protocol.StatesTopic)).To(specs.BeNil())
 			r.stream.Subscribe(legacy, protocol.StatesTopic)
 
 			ctx.Expect(r.entity.persistStateAndPublish(bg)).To(specs.BeNil())
@@ -101,7 +107,7 @@ func TestDurableStatePublishesForItsScope(t *testing.T) {
 			scopeA := tenantScopeFor(ctx, "tenant-a")
 			r := newRig(ctx, true, tenantContextFor(ctx, "tenant-b"), scopeA)
 			subA := r.stream.AddSubscriber()
-			ctx.Expect(r.stream.SubscribeScoped(subA, scopeA, protocol.StatesTopic)).To(specs.BeNil())
+			ctx.Expect(r.stream.SubscribeScoped(subA, streamScope(ctx, scopeA), protocol.StatesTopic)).To(specs.BeNil())
 
 			ctx.Expect(r.entity.persistStateAndPublish(bg)).To(specs.BeNil())
 

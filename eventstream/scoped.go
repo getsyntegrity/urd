@@ -25,8 +25,6 @@ package eventstream
 import (
 	"errors"
 
-	"github.com/getsyntegrity/urd/internal/legacyfanin"
-	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
 )
 
@@ -43,41 +41,37 @@ var ErrScopeMismatch = errors.New("eventstream: message tenant identity does not
 // a struct, never as a concatenated string. A subscription made for scope S on
 // topic T receives only messages published for S on T. The legacy Publish and
 // Subscribe of Stream are exactly PublishScoped and SubscribeScoped with
-// persistence.Unscoped(), and a tenant scope and Unscoped() never meet.
+// Unscoped(), and a tenant scope and Unscoped() never meet.
 type ScopedStream interface {
 	Stream
 	// PublishScoped publishes msg on topic for scope. A zero-value scope fails
-	// closed with an error matching persistence.ErrInvalidScope and nothing is
+	// closed with an error matching ErrInvalidScope and nothing is
 	// delivered.
-	PublishScoped(scope persistence.Scope, topic string, msg any) error
+	PublishScoped(scope Scope, topic string, msg any) error
 	// SubscribeScoped subscribes sub to topic for scope only. A zero-value
-	// scope fails closed with an error matching persistence.ErrInvalidScope and
+	// scope fails closed with an error matching ErrInvalidScope and
 	// nothing is registered.
-	SubscribeScoped(sub Subscriber, scope persistence.Scope, topic string) error
+	SubscribeScoped(sub Subscriber, scope Scope, topic string) error
 	// UnsubscribeScoped removes a SubscribeScoped registration.
-	UnsubscribeScoped(sub Subscriber, scope persistence.Scope, topic string) error
+	UnsubscribeScoped(sub Subscriber, scope Scope, topic string) error
 }
 
-// route is the routing key: a (scope, topic) pair, or, when fanIn is set, the
-// internal legacy fan-in of topic that receives every scope.
+// route is the routing key: a (scope, topic) pair, compared as a struct.
 type route struct {
-	scope persistence.Scope
+	scope Scope
 	topic string
-	fanIn bool
 }
 
 func unscopedRoute(topic string) route {
 	return route{scope: legacyScope(), topic: topic}
 }
 
-func legacyScope() persistence.Scope { return persistence.Unscoped() }
+func legacyScope() Scope { return Unscoped() }
 
-func invalidScope() error {
-	return persistence.ErrInvalidScope
-}
+func invalidScope() error { return ErrInvalidScope }
 
 // PublishScoped implements ScopedStream.
-func (b *EventsStream) PublishScoped(scope persistence.Scope, topic string, msg any) error {
+func (b *EventsStream) PublishScoped(scope Scope, topic string, msg any) error {
 	if !scope.Valid() {
 		return invalidScope()
 	}
@@ -86,7 +80,7 @@ func (b *EventsStream) PublishScoped(scope persistence.Scope, topic string, msg 
 }
 
 // SubscribeScoped implements ScopedStream.
-func (b *EventsStream) SubscribeScoped(sub Subscriber, scope persistence.Scope, topic string) error {
+func (b *EventsStream) SubscribeScoped(sub Subscriber, scope Scope, topic string) error {
 	if !scope.Valid() {
 		return invalidScope()
 	}
@@ -95,7 +89,7 @@ func (b *EventsStream) SubscribeScoped(sub Subscriber, scope persistence.Scope, 
 }
 
 // UnsubscribeScoped implements ScopedStream.
-func (b *EventsStream) UnsubscribeScoped(sub Subscriber, scope persistence.Scope, topic string) error {
+func (b *EventsStream) UnsubscribeScoped(sub Subscriber, scope Scope, topic string) error {
 	if !scope.Valid() {
 		return invalidScope()
 	}
@@ -105,28 +99,17 @@ func (b *EventsStream) UnsubscribeScoped(sub Subscriber, scope persistence.Scope
 	return nil
 }
 
-// SubscribeFanIn subscribes sub to topic for every scope.
-//
-// TEMPORARY, INTERNAL: this exists only for the projection actor until #93
-// scopes the projection runner. It requires a legacyfanin.Grant, a type of an
-// internal package, so no code outside this module can call it, and the public
-// Subscribe, SubscribeScoped, AddEventPublishers and AddStatePublishers paths
-// never reach it.
-func (b *EventsStream) SubscribeFanIn(sub Subscriber, topic string, _ legacyfanin.Grant) {
-	b.subscribeRoute(sub, route{fanIn: true, topic: topic})
-}
-
 // VerifyScope reports whether tenantMetadata (the tenant_metadata map of an
 // event or durable state) agrees with scope. It fails closed:
 //
-//   - a zero-value scope returns an error matching persistence.ErrInvalidScope;
+//   - a zero-value scope returns an error matching ErrInvalidScope;
 //   - Unscoped() requires no tenant metadata at all;
 //   - a tenant scope requires tenant metadata of that same, valid tenant;
 //     absent, invalid, administrative or different identity returns an error
 //     matching ErrScopeMismatch. There is no administrative bypass.
-func VerifyScope(scope persistence.Scope, tenantMetadata map[string]string) error {
+func VerifyScope(scope Scope, tenantMetadata map[string]string) error {
 	if !scope.Valid() {
-		return persistence.ErrInvalidScope
+		return ErrInvalidScope
 	}
 	if scope.IsUnscoped() {
 		if len(tenantMetadata) != 0 {

@@ -107,8 +107,8 @@ func TestPublishScoped(t *testing.T) {
 			ctx.Expect(drainPayloads(sub)).To(specs.Equal([]any{"evt"}))
 
 			a, md := scopeOf(ctx, "tenant-a")
-			ctx.Expect(protocol.PublishScoped(plain, a, "t", "evt", md)).To(specs.MatchError(persistence.ErrInvalidScope))
-			ctx.Expect(protocol.SubscribeScoped(plain, sub, a, "t")).To(specs.MatchError(persistence.ErrInvalidScope))
+			ctx.Expect(protocol.PublishScoped(plain, a, "t", "evt", md)).To(specs.MatchError(eventstream.ErrInvalidScope))
+			ctx.Expect(protocol.SubscribeScoped(plain, sub, a, "t")).To(specs.MatchError(eventstream.ErrInvalidScope))
 		})
 	})
 }

@@ -20,20 +20,32 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// Package legacyfanin holds the capability that lets the projection actor
-// subscribe to every scope of a topic.
+package projection
+
+import (
+	"github.com/getsyntegrity/urd/eventstream"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
+)
+
+// wakeStream is the Stream the projection runner is given.
 //
-// TEMPORARY (EGO-TENANT-005): the projection runner subscribes through the
-// legacy, unscoped Stream API and its file belongs to #93. Until #93 gives it
-// a scope, the projection actor passes it a Stream that subscribes through
-// this grant. Because the package is internal, code outside this module cannot
-// name Grant and therefore cannot call eventstream.EventsStream.SubscribeFanIn.
-// #93 removes this package.
-package legacyfanin
+// TEMPORARY (EGO-TENANT-005), to be removed by #93: the runner subscribes
+// through the legacy Unscoped() Subscribe, which by design receives nothing a
+// tenant-aware engine publishes for a tenant. The runner only uses the
+// subscription as a nudge to pull from the (scoped) events store, so this
+// wrapper also subscribes it to the payload-free protocol.ProjectionWakeTopic.
+// Nothing else is given this wrapper; the public Subscribe, AddEventPublishers
+// and AddStatePublishers paths never subscribe to that topic.
+type wakeStream struct {
+	eventstream.Stream
+}
 
-// Grant is the capability required to subscribe to every scope of a topic.
-// Its zero value is the only value.
-type Grant struct{}
+func withProjectionWake(stream eventstream.Stream) eventstream.Stream {
+	return &wakeStream{Stream: stream}
+}
 
-// Token is the grant. Only code inside this module can reference it.
-var Token = Grant{}
+// Subscribe registers sub on topic and on the wake-up topic.
+func (s *wakeStream) Subscribe(sub eventstream.Subscriber, topic string) {
+	s.Stream.Subscribe(sub, topic)
+	s.Stream.Subscribe(sub, protocol.ProjectionWakeTopic)
+}

@@ -27,13 +27,11 @@ import (
 
 	"github.com/getsyntegrity/go-specs/specs"
 
-	"github.com/getsyntegrity/urd/internal/legacyfanin"
-	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
 )
 
-func tenantScope(ctx *specs.Context, id string) persistence.Scope {
-	scope, err := persistence.NewTenantScope(tenancy.TenantID(id))
+func tenantScope(ctx *specs.Context, id string) Scope {
+	scope, err := TenantScope(tenancy.TenantID(id))
 	ctx.Expect(err).To(specs.BeNil())
 	return scope
 }
@@ -58,7 +56,7 @@ func TestScopedStream(t *testing.T) {
 	specs.Describe(t, "the scoped event stream", func(s *specs.Spec) {
 		var (
 			stream *EventsStream
-			a, b   persistence.Scope
+			a, b   Scope
 		)
 		s.BeforeEach(func(ctx *specs.Context) {
 			stream = New().(*EventsStream)
@@ -100,10 +98,10 @@ func TestScopedStream(t *testing.T) {
 
 		s.It("keeps Unscoped() a distinct scope from any tenant, scoped API included", func(ctx *specs.Context) {
 			un, tenant := stream.AddSubscriber(), stream.AddSubscriber()
-			ctx.Expect(stream.SubscribeScoped(un, persistence.Unscoped(), "topic")).To(specs.BeNil())
+			ctx.Expect(stream.SubscribeScoped(un, Unscoped(), "topic")).To(specs.BeNil())
 			ctx.Expect(stream.SubscribeScoped(tenant, a, "topic")).To(specs.BeNil())
 
-			ctx.Expect(stream.PublishScoped(persistence.Unscoped(), "topic", "u")).To(specs.BeNil())
+			ctx.Expect(stream.PublishScoped(Unscoped(), "topic", "u")).To(specs.BeNil())
 
 			ctx.Expect(payloads(drain(un))).To(specs.Equal([]any{"u"}))
 			ctx.Expect(drain(tenant)).To(specs.BeEmpty())
@@ -111,7 +109,7 @@ func TestScopedStream(t *testing.T) {
 
 		s.It("treats the legacy API exactly as Unscoped()", func(ctx *specs.Context) {
 			sub := stream.AddSubscriber()
-			ctx.Expect(stream.SubscribeScoped(sub, persistence.Unscoped(), "topic")).To(specs.BeNil())
+			ctx.Expect(stream.SubscribeScoped(sub, Unscoped(), "topic")).To(specs.BeNil())
 			stream.Publish("topic", "p")
 			stream.Broadcast("b", []string{"topic"})
 			ctx.Expect(payloads(drain(sub))).To(specs.Equal([]any{"p", "b"}))
@@ -128,18 +126,18 @@ func TestScopedStream(t *testing.T) {
 		})
 
 		s.It("fails closed on a zero-value scope: nothing is delivered or registered", func(ctx *specs.Context) {
-			var zero persistence.Scope
+			var zero Scope
 			sub := stream.AddSubscriber()
 			stream.Subscribe(sub, "topic")
 
 			err := stream.PublishScoped(zero, "topic", "x")
-			ctx.Expect(err).To(specs.MatchError(persistence.ErrInvalidScope))
+			ctx.Expect(err).To(specs.MatchError(ErrInvalidScope))
 			ctx.Expect(drain(sub)).To(specs.BeEmpty())
 
 			err = stream.SubscribeScoped(sub, zero, "topic")
-			ctx.Expect(err).To(specs.MatchError(persistence.ErrInvalidScope))
+			ctx.Expect(err).To(specs.MatchError(ErrInvalidScope))
 			err = stream.UnsubscribeScoped(sub, zero, "topic")
-			ctx.Expect(err).To(specs.MatchError(persistence.ErrInvalidScope))
+			ctx.Expect(err).To(specs.MatchError(ErrInvalidScope))
 		})
 
 		s.It("stops delivering after UnsubscribeScoped and after RemoveSubscriber", func(ctx *specs.Context) {
@@ -160,18 +158,30 @@ func TestScopedStream(t *testing.T) {
 			ctx.Expect(other.Topics()).To(specs.BeEmpty())
 		})
 
-		s.It("fans in every scope only through the internal grant, and never through the public paths", func(ctx *specs.Context) {
-			fan, legacy, scoped := stream.AddSubscriber(), stream.AddSubscriber(), stream.AddSubscriber()
-			stream.SubscribeFanIn(fan, "topic", legacyfanin.Token)
-			stream.Subscribe(legacy, "topic")
-			ctx.Expect(stream.SubscribeScoped(scoped, b, "topic")).To(specs.BeNil())
+	})
+}
 
-			ctx.Expect(stream.PublishScoped(a, "topic", "a")).To(specs.BeNil())
-			stream.Publish("topic", "u")
+func TestScope(t *testing.T) {
+	specs.Describe(t, "the stream Scope", func(s *specs.Spec) {
+		s.It("is invalid at its zero value, valid for Unscoped and tenant scopes, and never confuses them", func(ctx *specs.Context) {
+			var zero Scope
+			ctx.Expect(zero.Valid()).To(specs.BeFalse())
+			ctx.Expect(Unscoped().Valid()).To(specs.BeTrue())
+			a := tenantScope(ctx, "tenant-a")
+			ctx.Expect(a.Valid()).To(specs.BeTrue())
+			ctx.Expect(a.IsUnscoped()).To(specs.BeFalse())
+			ctx.Expect(a.TenantID()).To(specs.Equal(tenancy.TenantID("tenant-a")))
+			ctx.Expect(Unscoped().TenantID()).To(specs.Equal(tenancy.TenantID("")))
+			ctx.Expect(a.Equal(tenantScope(ctx, "tenant-a"))).To(specs.BeTrue())
+			ctx.Expect(a.Equal(tenantScope(ctx, "tenant-b"))).To(specs.BeFalse())
+			ctx.Expect(Unscoped().Equal(tenantScope(ctx, "unscoped"))).To(specs.BeFalse())
+			ctx.Expect(zero.String()).To(specs.Contain("invalid"))
+			ctx.Expect(a.String()).To(specs.Contain("tenant-a"))
+		})
 
-			ctx.Expect(payloads(drain(fan))).To(specs.Equal([]any{"a", "u"}))
-			ctx.Expect(payloads(drain(legacy))).To(specs.Equal([]any{"u"}))
-			ctx.Expect(drain(scoped)).To(specs.BeEmpty())
+		s.It("rejects an invalid tenant id", func(ctx *specs.Context) {
+			_, err := TenantScope("")
+			ctx.Expect(err).To(specs.MatchError(ErrInvalidScope))
 		})
 	})
 }
@@ -180,12 +190,12 @@ func TestVerifyScope(t *testing.T) {
 	specs.Describe(t, "VerifyScope", func(s *specs.Spec) {
 		s.It("accepts a tenant scope with that tenant's metadata, and Unscoped() with none", func(ctx *specs.Context) {
 			ctx.Expect(VerifyScope(tenantScope(ctx, "tenant-a"), tenantMetadata(ctx, "tenant-a"))).To(specs.BeNil())
-			ctx.Expect(VerifyScope(persistence.Unscoped(), nil)).To(specs.BeNil())
+			ctx.Expect(VerifyScope(Unscoped(), nil)).To(specs.BeNil())
 		})
 
 		s.It("rejects a zero-value scope", func(ctx *specs.Context) {
-			var zero persistence.Scope
-			ctx.Expect(VerifyScope(zero, nil)).To(specs.MatchError(persistence.ErrInvalidScope))
+			var zero Scope
+			ctx.Expect(VerifyScope(zero, nil)).To(specs.MatchError(ErrInvalidScope))
 		})
 
 		s.It("rejects absent, invalid, mismatched and administrative identity under a tenant scope", func(ctx *specs.Context) {
@@ -210,7 +220,7 @@ func TestVerifyScope(t *testing.T) {
 		})
 
 		s.It("rejects tenant metadata on an unscoped message", func(ctx *specs.Context) {
-			err := VerifyScope(persistence.Unscoped(), tenantMetadata(ctx, "tenant-a"))
+			err := VerifyScope(Unscoped(), tenantMetadata(ctx, "tenant-a"))
 			ctx.Expect(err).To(specs.MatchError(ErrScopeMismatch))
 		})
 	})

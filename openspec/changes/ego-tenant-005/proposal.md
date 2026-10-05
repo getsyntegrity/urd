@@ -27,9 +27,9 @@ No new bus, no new broker adapter, and `EventPublisher.Publish` and
 ## What changes
 
 1. `eventstream` gains an OPTIONAL interface `ScopedStream` (`eventstream.Stream`
-   is unchanged). Routing is keyed by (`persistence.Scope`, topic) with a struct
+   is unchanged) and its own `Scope` type. Routing is keyed by (`Scope`, topic) with a struct
    key, never by string concatenation. A subscription sees only its own scope.
-   The legacy `Publish`/`Subscribe` map to `persistence.Unscoped()`.
+   The legacy `Publish`/`Subscribe` map to `eventstream.Unscoped()`.
 2. The publish sites (`eventsWriterActor`, durable-state actor) publish with the
    scope they already hold, after checking that the envelope's tenant metadata
    agrees with it.
@@ -48,11 +48,21 @@ No new bus, no new broker adapter, and `EventPublisher.Publish` and
 ## Known limit (temporary)
 
 The projection runner (`internal/projectionrunner`, owned by #93) subscribes
-through the legacy API. To keep it working in tenant mode, an INTERNAL legacy
-fan-in exists, reachable only through a grant type defined in an `internal`
-package and used only by the projection actor. It is unreachable from the public
-`Subscribe`/`AddEventPublishers` paths, is covered by a test saying so, and is to
-be removed by #93.
+through the legacy `Unscoped()` API, which by design receives nothing a
+tenant-aware engine publishes for a tenant. It only uses the stream as a nudge
+to pull from the (scoped) events store. To keep it working, a tenant-scoped
+publication also posts a payload-free message on the INTERNAL topic
+`protocol.ProjectionWakeTopic`, and the projection actor hands the runner a
+stream wrapper that also subscribes it there. The wake-up carries no event, no
+state and no tenant identity, so nothing crosses tenants. It is never
+subscribed by `Subscribe`, `AddEventPublishers` or `AddStatePublishers`, and a
+test says so. #93 removes it when it gives the runner a scope.
+
+Why not a fan-in subscription: it needs a capability visible to `eventstream`,
+and `eventstream` is in the pinned closure of `internal/runtimeconsumer`
+(#147), which allows no new first-party package. For the same reason
+`eventstream` carries its own `Scope` type (depending only on `tenancy`)
+instead of importing `persistence`.
 
 ## Open question (owner decision pending)
 

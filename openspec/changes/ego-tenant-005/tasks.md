@@ -3,7 +3,7 @@
 PR (a): stream and publish-site scoping
 - [ ] T1 `eventstream.ScopedStream`, struct-keyed routing, scoped Message, legacy mapping, scope/metadata verifier
 - [ ] T2 publish sites (`events_writer_actor`, `durable_state_actor`) publish scoped with metadata check, log + counter
-- [ ] T3 saga subscribe passes its bound scope; internal legacy fan-in for the projection actor + unreachability test
+- [ ] T3 saga subscribe passes its bound scope; temporary internal projection wake-up topic + test that public paths never subscribe to it
 
 PR (b): engine and publisher boundary
 - [ ] T4 `sendEvent`/`sendState` attach tenant context, verify identity, drop + log + count

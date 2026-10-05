@@ -14,8 +14,8 @@ for scope S on that topic. Routing keys are structured (scope, topic).
 - AND a legacy subscriber cannot reach a tenant route by choosing a crafted topic string
 
 ## Requirement: Invalid scope fails closed
-`PublishScoped`/`SubscribeScoped` with a zero-value `persistence.Scope` SHALL
-return an error wrapping `persistence.ErrInvalidScope` and deliver or register nothing.
+`PublishScoped`/`SubscribeScoped` with a zero-value `eventstream.Scope` SHALL
+return an error wrapping `eventstream.ErrInvalidScope` and deliver or register nothing.
 
 ## Requirement: Legacy API is single-tenant
 `Publish(topic, msg)`/`Subscribe(sub, topic)` behave exactly as `Unscoped()`.

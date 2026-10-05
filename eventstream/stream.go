@@ -26,7 +26,6 @@ import (
 	"sync"
 
 	"github.com/getsyntegrity/urd/internal/syncmap"
-	"github.com/getsyntegrity/urd/persistence"
 )
 
 type Stream interface {
@@ -184,14 +183,14 @@ func (b *EventsStream) Close() {
 }
 
 // publishToRoute delivers the message to the active subscribers of the
-// (scope, topic) route, and to the internal legacy fan-in of the topic. It
+// (scope, topic) route. It
 // performs a single message allocation per publish. Delivery is
 // synchronous: signal only enqueues on a lock-free queue and does a
 // non-blocking wake-up, so it never blocks the caller, and enqueueing before
 // Publish returns keeps the order of consecutive Publish calls from one
 // producer. Handing each delivery to its own goroutine let two messages
 // published in order be enqueued swapped.
-func (b *EventsStream) publishToRoute(scope persistence.Scope, topic string, msg any) {
+func (b *EventsStream) publishToRoute(scope Scope, topic string, msg any) {
 	message := newScopedMessage(scope, topic, msg)
 	deliver := func(r route) {
 		subscribers, ok := b.topics.Get(r)
@@ -205,5 +204,4 @@ func (b *EventsStream) publishToRoute(scope persistence.Scope, topic string, msg
 		})
 	}
 	deliver(route{scope: scope, topic: topic})
-	deliver(route{fanIn: true, topic: topic})
 }
