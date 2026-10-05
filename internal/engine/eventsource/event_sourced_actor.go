@@ -81,12 +81,26 @@ const (
 	// after its persist write has been confirmed (or failed). Mirrors
 	// phaseReplying for the direct path; see replyDirect.
 	phaseDirectReplying
+	// phaseStopping answers the commands released from the stash with an error
+	// until the actor shuts down, after a failed write left it unable to tell
+	// what the store holds; see stopAfterAnswering.
+	phaseStopping
 )
 
 // batchFlushTick is an internal timer message sent to self to trigger
 // a batch flush when the flush window expires before the batch threshold
 // is reached.
 type batchFlushTick struct{}
+
+// stashDrained is an internal message sent to self after the stash has been
+// released, to stop the actor once every command released with it has been
+// answered; see stopAfterAnswering.
+type stashDrained struct{}
+
+// errEntityStopped is the error a command receives when the entity stops after
+// a failed write before it could run the command. The command was not run and
+// nothing was persisted for it.
+var errEntityStopped = errors.New("entity stopped after a failed write: command not executed")
 
 // noTenantContext is the zero value of tenancy.TenantContext. Neither
 // tenancy.NewTenantContext nor tenancy.NewAdministrativeContext can ever
@@ -344,6 +358,10 @@ func (entity *Actor) Receive(ctx *goakt.ReceiveContext) {
 		ctx.Response(protocol.AnswerTenantBinding(entity.tenantAware, entity.scope, msg))
 	case *batchFlushTick:
 		entity.handleBatchFlushTick(ctx)
+	case *stashDrained:
+		if entity.phase == phaseStopping {
+			ctx.Shutdown()
+		}
 	case *persistEventsResponse:
 		if entity.batchEnabled() {
 			entity.handleBatchPersistResponse(ctx, msg)
@@ -354,6 +372,10 @@ func (entity *Actor) Receive(ctx *goakt.ReceiveContext) {
 		command, ok := msg.(Command)
 		if !ok {
 			ctx.Unhandled()
+			return
+		}
+		if entity.phase == phaseStopping {
+			entity.sendErrorReply(ctx, errEntityStopped)
 			return
 		}
 		if entity.batchEnabled() {
@@ -883,6 +905,10 @@ func (entity *Actor) sendStateReply(ctx *goakt.ReceiveContext) {
 // getStateAndReply already returns a consistent value regardless of
 // batchThreshold's flush phase.
 func (entity *Actor) handleGetStateCommand(ctx *goakt.ReceiveContext) {
+	if entity.phase == phaseStopping {
+		entity.sendErrorReply(ctx, errEntityStopped)
+		return
+	}
 	if !entity.batchEnabled() && (entity.phase == phasePersisting || entity.phase == phaseDirectReplying) {
 		ctx.Stash()
 		return
@@ -1171,9 +1197,10 @@ func sameValue(a, b any) bool {
 // it, and ran the stashed command a second time later. A PID only ever runs one
 // turn at a time, so nothing this actor unstashes can be dequeued before the
 // current Receive call returns. We still send the reply before calling
-// UnstashAll() so the ordering is explicit in the code, and, on the error path,
-// so the stash is drained before ctx.Shutdown() tears the actor down. It is a
-// no-op when nothing stashed during the window.
+// UnstashAll() so the ordering is explicit in the code. It is a no-op when
+// nothing stashed during the window. When the failed write leaves the actor
+// unable to tell what the store holds, it stops instead, once it has answered
+// the commands the stash holds (see stopAfterAnswering).
 func (entity *Actor) replyDirect(ctx *goakt.ReceiveContext) {
 	entity.endCommandSpan(ctx.Context(), entity.directSpan, entity.directStartTime)
 	entity.directSpan = nil
@@ -1186,9 +1213,10 @@ func (entity *Actor) replyDirect(ctx *goakt.ReceiveContext) {
 		entity.directErr = nil
 		entity.directShutdown = false
 		entity.sendErrorReply(ctx, err)
-		ctx.UnstashAll()
 		if shutdown {
-			ctx.Shutdown()
+			entity.stopAfterAnswering(ctx)
+		} else {
+			ctx.UnstashAll()
 		}
 		return
 	}
@@ -1849,13 +1877,31 @@ func (entity *Actor) replyFromBatch(ctx *goakt.ReceiveContext) {
 		shouldShutdown := entity.shutdownOnDrain
 		entity.resetBatch()
 		entity.phase = phaseProcessing
-		// Release the commands set aside above, and on the error path drain the
-		// stash before the actor is torn down.
-		ctx.UnstashAll()
+		// Release the commands set aside above. On the error path they are
+		// answered before the actor is torn down.
 		if shouldShutdown {
-			ctx.Shutdown()
+			entity.stopAfterAnswering(ctx)
+		} else {
+			ctx.UnstashAll()
 		}
 	}
+}
+
+// stopAfterAnswering stops the actor after it has answered every command that
+// reached it before the stop. The commands in the stash, and any queued ahead of
+// them, were accepted, but the actor cannot run them: after a failed write it
+// cannot tell what the store holds. Each is answered with errEntityStopped, so
+// no caller is left to its own timeout.
+//
+// UnstashAll followed by Shutdown would not do it. UnstashAll re-delivers the
+// stash at the tail of the mailbox, and Shutdown does not process what the
+// mailbox still holds: those commands would be dropped unanswered. So the actor
+// releases the stash, then sends itself stashDrained, which lands behind every
+// released command, and shuts down on receiving it.
+func (entity *Actor) stopAfterAnswering(ctx *goakt.ReceiveContext) {
+	entity.phase = phaseStopping
+	ctx.UnstashAll()
+	ctx.Tell(ctx.Self(), new(stashDrained))
 }
 
 // crossedSnapshotBoundary reports whether the range
