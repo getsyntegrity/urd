@@ -42,7 +42,7 @@ Out: any bypass; IAM; a persistent audit log; read-side and publisher denial.
 |---|---|
 | Spec status | DRAFT; Security human gate has no recorded approval |
 | Governance verdict | ATOMIC (record in spec Design) |
-| Engine-boundary ACs | PROVEN except AC-R4-1 (NOT_PROVEN) |
+| Engine-boundary ACs | All PROVEN; spec not VERIFIED (human gate pending) |
 | #96 overall | EVIDENCE_BLOCKED |
 
 ## Pending for #96

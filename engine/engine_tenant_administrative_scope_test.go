@@ -91,7 +91,7 @@ func TestAdministrativeScopeIsNeverAnAggregateTenantScope(t *testing.T) {
 			ctx.Expect(engine.Entity(bg, probe, WithTenant(tenancy.TenantID("acme")))).To(specs.BeNil())
 
 			_, _, err := engine.SendCommand(adminCtx, entityID, &testpb.CreateAccount{AccountBalance: 500}, time.Minute)
-			ctx.Expect(err).To(specs.Not(specs.BeNil()))
+			ctx.Expect(err).To(specs.MatchError(tenancy.ErrDenied))
 			// HandleCommand must never run under an administrative scope
 			ctx.Expect(probe.InvocationCount()).To(specs.BeZero())
 
@@ -217,8 +217,8 @@ func TestNoTenantIdentityGrantsAdministrativePrivilege(t *testing.T) {
 			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
 
 			err := engine.Entity(bg, newTenancyProbeEventSourcedBehavior(uuid.NewString()))
-			ctx.Expect(err).To(specs.Not(specs.BeNil()))
-			ctx.Expect(engine.EraseEntity(bg, uuid.NewString(), true)).To(specs.Not(specs.BeNil()))
+			ctx.Expect(err).To(specs.MatchError(ErrSpawnTenantUndetermined))
+			ctx.Expect(engine.EraseEntity(bg, uuid.NewString(), true)).To(specs.MatchError(tenancy.ErrDenied))
 		})
 
 		s.It("an empty tenant id from the caller is rejected, never treated as administrative", func(ctx *specs.Context) {
@@ -257,6 +257,35 @@ func TestNoTenantIdentityGrantsAdministrativePrivilege(t *testing.T) {
 			latest, err := store.GetLatestEvent(bg, globex, persistenceID)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(latest).To(specs.Not(specs.BeNil()))
+		})
+
+		s.It("legacy mode erasure with an administrative caller reaches only the unscoped records", func(ctx *specs.Context) {
+			store := connectedEventsStore(ctx)
+			adminCtx := context.WithValue(bg, administrativeScopeKey{}, true)
+
+			persistenceID := uuid.NewString()
+			eventAny, err := anypb.New(&testpb.AccountCreated{AccountId: persistenceID, AccountBalance: 100})
+			ctx.Expect(err).To(specs.BeNil())
+			acme, err := persistence.NewTenantScope("acme")
+			ctx.Expect(err).To(specs.BeNil())
+			for _, scope := range []persistence.Scope{persistence.Unscoped(), acme} {
+				ctx.Expect(store.WriteEvents(bg, scope, []*egopb.Event{{
+					PersistenceId: persistenceID, SequenceNumber: 1, Event: eventAny, Timestamp: time.Now().UnixNano(),
+				}}, persistence.Unconditional())).To(specs.BeNil())
+			}
+
+			// No resolver: the context is never consulted, so an administrative
+			// caller gains nothing over any other caller.
+			engine := newSpecsEngine(ctx, "Sample", store)
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+			ctx.Expect(engine.EraseEntity(adminCtx, persistenceID, true)).To(specs.BeNil())
+
+			unscoped, err := store.GetLatestEvent(bg, persistence.Unscoped(), persistenceID)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(unscoped).To(specs.BeNil())
+			tenant, err := store.GetLatestEvent(bg, acme, persistenceID)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(tenant).To(specs.Not(specs.BeNil()))
 		})
 	})
 }

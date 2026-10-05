@@ -14,7 +14,7 @@
 | contracts_consumed | `tenancy.TenantContext` / `tenancy.Administrative` (`tenancy-core`); `tenancy-runtime` fail-closed gates |
 | affected_subsystems | engine (tests and comments only); no production behavior change |
 | human_gates | Security (AuthN/AuthZ boundary): **PENDING**, no approval reference recorded |
-| evidence status | EVIDENCE_BLOCKED for #96 as a whole; EVIDENCE_INCOMPLETE for this spec's non-engine ACs (see Evidence) |
+| evidence status | every AC of this spec is PROVEN (see Evidence), but the spec is not VERIFIED because the Security human gate has no approval; #96 as a whole is EVIDENCE_BLOCKED |
 
 ## Outcome
 
@@ -54,13 +54,13 @@ cross tenants, so the decision is to support no bypass rather than build one.
 | AC | Verifies | Statement |
 |---|---|---|
 | AC-R1-1 | R1 | Given an administrative-only resolver, spawning an entity, saga or durable-state entity without `WithTenant` fails with `ErrSpawnTenantUndetermined`. |
-| AC-R1-2 | R1 | Given a tenant-bound entity or durable-state entity, an administrative command fails and behavior is not invoked (`ErrDenied` asserted for the durable-state entity; the entity test asserts a non-nil error and zero invocations). |
+| AC-R1-2 | R1 | Given a tenant-bound entity or durable-state entity, an administrative command fails with `ErrDenied` and behavior is not invoked. |
 | AC-R1-3 | R1 | Given a tenant-bound saga, an administrative `SagaStatus` fails with `ErrDenied`. |
 | AC-R1-4 | R1 | An administrative `EraseEntity` fails with `ErrDenied` and erases no scope. |
 | AC-R2-1 | R2 | A resolver returning the zero `TenantContext` is rejected at spawn and erasure. |
 | AC-R2-2 | R2 | A caller resolving to an empty tenant ID is rejected with `ErrInvalid` at erasure. |
 | AC-R3-1 | R3 | A `WithSingleTenant` context has scope `ScopeTenant`, `Administrative()` is false, and its erasure leaves another tenant's record intact. |
-| AC-R4-1 | R4 | With no resolver, spawn and erasure behave unscoped as before; no administrative path exists. |
+| AC-R4-1 | R4 | With no resolver, an administrative caller's erasure reaches only the unscoped records and never a tenant's; no administrative path exists. |
 
 ## Constraints
 
@@ -85,14 +85,15 @@ Consumed: `tenancy-core` TenantContext/Administrative; `tenancy-runtime` fail-cl
 |---|---|---|
 | T1 Pin administrative denial at saga/durable-state spawn, `SagaStatus`, durable-state command | R1 | AC-R1-1, AC-R1-2, AC-R1-3 |
 | T2 Pin zero context, empty tenant, single-tenant | R2, R3 | AC-R2-1, AC-R2-2, AC-R3-1 |
-| T3 Reword stale "TENANT-008 will do this" comments | C3 | none (no behavior) |
+| T3 Reword stale "TENANT-008 will do this" comments so they point at this decision | C3, R1 (keeps the recorded rule discoverable) | AC-R1-1 (comment text only; no behavior) |
+| T5 Pin legacy-mode erasure | R4 | AC-R4-1 |
 | T4 Record decision and status | R1 to R4 | all |
 
-Traceability: R1 to AC-R1-1..4 to T1 (AC-R1-4 pre-existing); R2 to AC-R2-1..2 to T2; R3 to AC-R3-1 to T2; R4 to AC-R4-1 (pre-existing tests only).
+Traceability: R1 to AC-R1-1..4 to T1 (AC-R1-4 pre-existing); R2 to AC-R2-1..2 to T2; R3 to AC-R3-1 to T2; R4 to AC-R4-1 to T5.
 
 ## Evidence
 
-Revision: tests added at commit `d85e9fe` on `feat/96-administrative-tenant-semantics`; the PR head may be later.
+Revision: the head of `feat/96-administrative-tenant-semantics` as of the commit that adds this text (tests first added in `d85e9fe`, strengthened and extended in that commit). `engine/` is byte-identical between `d85e9fe` and `f8671e7` (empty diff), so the `f8671e7` text edits did not change the evidence.
 Not proof by themselves: an agent claim, task completion, or the merged PR.
 
 | AC | Status | Class | Evidence (file: test) |
@@ -104,10 +105,10 @@ Not proof by themselves: an agent claim, task completion, or the merged PR.
 | AC-R2-1 | PROVEN | TEST | same file: `TestNoTenantIdentityGrantsAdministrativePrivilege` |
 | AC-R2-2 | PROVEN | TEST | same file: `TestNoTenantIdentityGrantsAdministrativePrivilege` |
 | AC-R3-1 | PROVEN | TEST | same file: `TestNoTenantIdentityGrantsAdministrativePrivilege` |
-| AC-R4-1 | NOT_PROVEN | TEST | existing legacy-mode tests (`TestEngineEntitySpawnWithoutResolverStaysUnscoped`) cover spawn only; no test asserts erasure or that no administrative path exists in legacy mode. Gap, not hidden. |
+| AC-R4-1 | PROVEN | TEST | same file: `TestNoTenantIdentityGrantsAdministrativePrivilege`, case "legacy mode erasure with an administrative caller reaches only the unscoped records"; spawn is covered by `TestEngineEntitySpawnWithoutResolverStaysUnscoped` |
 
-Negative path: every R1 to R3 AC is itself a denial. Guard check: removing the denial in `actorNameFor` made `TestAdministrativeScopeIsDeniedAtEveryEngineEntry` fail (manual mutation, not recorded as an automated artifact).
-Gap check: complete for AC-R1-1..4, AC-R2-1..2, AC-R3-1; missing for AC-R4-1. This spec is therefore not VERIFIED, and not DONE.
+Negative path: every R1 to R3 AC is itself a denial. Assertions use `errors.Is` against `tenancy.ErrDenied` / `ErrSpawnTenantUndetermined`. Guard check: local mutations were run by hand and are NOT reproducible from the repository (no committed mutation harness): removing the `actorNameFor` denial, the `EraseEntity` non-tenant denial, and making legacy erasure target a tenant scope each made the new assertions fail; the tree was restored afterwards.
+Gap check: complete for all ACs. The spec is still not VERIFIED (Security human approval missing) and not DONE.
 
 ## Relation to #96
 
@@ -128,5 +129,4 @@ Overall #96: EVIDENCE_BLOCKED (criteria 3, 4 and 5). Criteria 1, 2 and 6 are met
 
 - Blocking: Security human gate approval reference is missing; status cannot reach READY.
 - Blocking for #96 closure: audit contract (#31); read-side (#93) and publisher (#94) denial.
-- Non-blocking: AC-R4-1 needs an erasure-in-legacy-mode assertion, or an approved decision that existing coverage suffices.
 - Unresolved governance finding: whether "no bypass" is the owner's accepted resolution of #96's bypass criteria (a spec-change decision) or leaves them BLOCKED; this spec records them as BLOCKED.
