@@ -102,6 +102,9 @@ type batchEntry struct {
 	reply     *egopb.CommandReply
 	startTime time.Time
 	span      trace.Span
+	// request identifies the request this entry answers: replyFromBatch
+	// hands the reply to that request only. See directRequest.
+	request directRequest
 }
 
 // Actor persists state changes as a sequence of immutable events.
@@ -1677,6 +1680,7 @@ func (entity *Actor) processAndBatch(ctx *goakt.ReceiveContext, command Command)
 		},
 		startTime: startTime,
 		span:      span,
+		request:   newDirectRequest(ctx),
 	}
 	// batchMu guards the slice header so it can be observed from outside the
 	// receive goroutine (tests, PreStart) without racing the append.
@@ -1819,6 +1823,18 @@ func (entity *Actor) replyFromBatch(ctx *goakt.ReceiveContext) {
 	idx := len(entity.batchEntries) - entity.remainingReplies
 	entry := &entity.batchEntries[idx]
 
+	// Only the request this entry was computed for is answered with it. GoAkt
+	// re-delivers the stashed requests at the tail of the mailbox, so a command
+	// already queued behind the write's confirmation (another saga's, say) can
+	// arrive first: answering it with this entry would send its caller the
+	// reply of another request without running it, and the stashed request
+	// would then run a second time as a new command. It waits in the stash
+	// until the last reply releases it.
+	if !entry.request.isRequest(ctx) {
+		ctx.Stash()
+		return
+	}
+
 	if entry.span != nil {
 		entry.span.End()
 		entry.span = nil
@@ -1833,6 +1849,9 @@ func (entity *Actor) replyFromBatch(ctx *goakt.ReceiveContext) {
 		shouldShutdown := entity.shutdownOnDrain
 		entity.resetBatch()
 		entity.phase = phaseProcessing
+		// Release the commands set aside above, and on the error path drain the
+		// stash before the actor is torn down.
+		ctx.UnstashAll()
 		if shouldShutdown {
 			ctx.Shutdown()
 		}
