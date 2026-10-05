@@ -30,12 +30,7 @@ Command, saga status and erasure therefore deny the administrative scope (fail
 closed), and an administrative-only resolver without `WithTenant` cannot bind a
 spawn. Spawn itself does not consult or deny the caller's context: it binds the
 tenant the application declares with `WithTenant` (or the resolver's fixed
-tenant). Owner decision, kept in this cut: `WithTenant` declares the actor's
-tenant at creation; it does not authorize the caller. Authorization of remote
-spawn is a pending decision tracked in #305; no caller-context check is added
-inside #312/#96. This is an authorization question of the caller code, not a
-bypass; see the spec section "Spawn: what is and is not pinned" (including what
-was only demonstrated locally). No admin store
+tenant). Approved decision for this cut (owner): "WithTenant declara el tenant del actor durante su creación; no autoriza al llamador. El spawn local conserva ese comportamiento y no añade una validación del contexto del llamador." That is, `WithTenant` declares the actor's tenant at creation and does not authorize the caller; local spawn adds no validation of the caller's context. This is not a bypass. The only pending item is the authorization of remote spawn, tracked in #305 and outside this cut; see the spec sections "Approved decisions for this cut" and "Spawn: what is and is not pinned" (including what was only demonstrated locally). No admin store
 scope, bypass option or audit type is added.
 
 ## Scope
@@ -52,7 +47,7 @@ Out: any bypass; IAM; a persistent audit log; read-side and publisher denial.
 
 | Item | State |
 |---|---|
-| Spec status | READY for review and implementation of the approved engine cut: every active criterion corresponds to the approved scope. NOT VERIFIED, NOT DONE, #96 NOT complete. Open questions are non-blocking and outside the approved scope |
+| Spec status | READY for review and implementation of the approved engine cut: every active criterion corresponds to the approved scope. READY does NOT mean VERIFIED, DONE or that #96 is complete. No blocking open question remains; the one pending item (authorization of remote spawn, #305) is outside the approved scope and does not block this cut |
 | Security human gate | APPROVED by owner decision recorded in the session of 2026-10-05; scope = engine entry points pinned by tests only; does NOT cover read side, publication, spawn with `WithTenant`, or the remote spawn path |
 | Governance verdict | ATOMIC (record in spec Design) |
 | Engine-boundary ACs | PROVEN for what each states (spawn ACs are resolver-only cases); gate approved for the pinned entry points only |
@@ -63,13 +58,13 @@ Out: any bypass; IAM; a persistent audit log; read-side and publisher denial.
 - NOT_APPLICABLE (approved spec change, owner decision 2026-10-05): every supported bypass requires actor/reason; persistent audit evidence for bypass. No bypass is offered in this cut.
 - NOT_PROVEN: boundaries accepting bypass are deliberate and fail closed. Read-side denial pending #93; publication denial pending #94.
 - PROVEN at engine boundaries only: explicit admin context, no privilege from empty/default tenant, single-tenant is not admin mode.
-- Not covered by the gate or by any criterion here: a caller context combined with `WithTenant` at spawn, and remote spawn (authorization pending, tracked in #305).
+- Not covered by the gate or by any criterion here: spawn with `WithTenant` (a decided behaviour of this cut, neither denied nor proven) and the remote spawn path (authorization pending in #305, outside this cut).
 
-## Open question (not a criterion)
+## Approved decision and pending item
 
-Should an administrative or foreign caller context combined with `WithTenant`
-be refused at spawn? Non-blocking and outside the approved scope. Current
-contract kept by owner decision; remote spawn authorization is tracked in #305.
+Decided (not open): "WithTenant declara el tenant del actor durante su creación; no autoriza al llamador. El spawn local conserva ese comportamiento y no añade una validación del contexto del llamador." The former question about refusing an administrative or foreign caller context combined with `WithTenant` at spawn is answered: that validation is not added in this cut. It is not a requirement or an AC.
+
+Pending, tracked outside this spec in #305, outside the approved scope and not blocking: authorization of remote spawn. (a) which peers may create the actors of each tenant; (b) who may choose their retention and snapshot configuration; (c) mTLS authenticates the peer but does not by itself authorize those operations.
 
 ## Future bypass rule (prominent)
 
