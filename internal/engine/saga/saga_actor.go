@@ -240,14 +240,19 @@ func (s *Actor) PreStart(ctx *goakt.Context) error {
 	// Subscribe to the single in-process events topic. Sagas observe events
 	// from every shard; the shard is carried in the event payload for any
 	// downstream filtering the saga behavior wants to apply.
+	return s.subscribeToEvents()
+}
+
+// subscribeToEvents registers the saga's subscriber on the events topic for the
+// scope it is bound to (EGO-TENANT-005), so a tenant's saga never sees another
+// tenant's events. A scope the stream cannot honor fails closed, leaving no
+// subscriber registered.
+func (s *Actor) subscribeToEvents() error {
 	s.subscriber = s.eventsStream.AddSubscriber()
-	// EGO-TENANT-005: the saga subscribes for the scope it is bound to, so a
-	// tenant's saga never sees another tenant's events.
 	if err := protocol.SubscribeScoped(s.eventsStream, s.subscriber, s.scope, protocol.EventsTopic); err != nil {
 		s.eventsStream.RemoveSubscriber(s.subscriber)
 		return err
 	}
-
 	return nil
 }
 

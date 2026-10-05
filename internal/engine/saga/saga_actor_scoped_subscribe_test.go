@@ -23,20 +23,14 @@
 package saga
 
 import (
-	"context"
 	"sync"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/specs"
-	"github.com/google/uuid"
-	goakt "github.com/tochemey/goakt/v4/actor"
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
-	"github.com/getsyntegrity/urd/internal/engine/enginetest"
 	"github.com/getsyntegrity/urd/internal/engine/protocol"
-	"github.com/getsyntegrity/urd/internal/extensions"
-	"github.com/getsyntegrity/urd/internal/goaktlog"
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
@@ -76,33 +70,19 @@ func (s *subscribeSpy) snapshot() (scoped []eventstream.Scope, topics, legacy []
 
 func TestSagaActorSubscribesForItsTenantScope(t *testing.T) {
 	specs.Describe(t, "a tenant-aware saga subscribes to the events topic for its bound scope only (EGO-TENANT-005)", func(s *specs.Spec) {
-		s.It("registers exactly one scoped subscription for its tenant on the events topic, and no legacy one", func(ctx *specs.Context) {
-			sagaID := uuid.NewString()
-			store := newTestkitStore(ctx)
+		// The saga is built directly and subscribeToEvents is the PreStart step
+		// under test, so no actor system is started.
+		newSaga := func(ctx *specs.Context, tenant string) (*Actor, *subscribeSpy) {
 			spy := &subscribeSpy{ScopedStream: eventstream.New().(eventstream.ScopedStream)}
 			ctx.Cleanup(spy.Close)
+			return &Actor{eventsStream: spy, scope: mustTenantScope(ctx, tenancy.TenantID(tenant))}, spy
+		}
 
-			system, err := goakt.NewActorSystem("SagaScopedSubscribe",
-				goakt.WithLogger(goaktlog.New(enginetest.DiscardLogger)),
-				goakt.WithExtensions(extensions.NewEventsStore(store), extensions.NewEventsStream(spy), extensions.NewTenancyMarker(false)),
-				goakt.WithActorInitMaxRetries(1))
-			ctx.Expect(err).To(specs.BeNil())
-			ctx.Expect(system.Start(context.Background())).To(specs.BeNil())
-			ctx.Cleanup(func() { ctx.Expect(system.Stop(context.Background())).To(specs.BeNil()) })
+		s.It("registers exactly one scoped subscription for its tenant on the events topic, and no legacy one", func(ctx *specs.Context) {
+			saga, spy := newSaga(ctx, "tenant-a")
 
-			behavior := &enginetest.CallbackSagaBehavior{
-				SagaID: sagaID,
-				HandleEventFn: func(_ context.Context, _ Event, _ State) (*sagaAction, error) {
-					return &sagaAction{}, nil
-				},
-			}
-			_, err = system.Spawn(context.Background(), sagaID, New(), goakt.WithLongLived(),
-				goakt.WithDependencies(behavior, extensions.NewSagaConfig(0), extensions.NewEntityTenantScope("tenant-a")))
-			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(saga.subscribeToEvents()).To(specs.BeNil())
 
-			// Registration: exactly one scoped subscription, for tenant-a on the
-			// events topic, and no legacy Subscribe. An unscoped subscription
-			// would show up in legacy (or with Unscoped()) and fail here.
 			scopes, topics, legacy := spy.snapshot()
 			a, err := eventstream.TenantScope("tenant-a")
 			ctx.Expect(err).To(specs.BeNil())
@@ -111,22 +91,9 @@ func TestSagaActorSubscribesForItsTenantScope(t *testing.T) {
 			ctx.Expect(legacy).To(specs.BeEmpty())
 		})
 
-		s.It("only the saga's tenant reaches HandleEvent: tenant-b's event is not delivered, tenant-a's is", func(ctx *specs.Context) {
-			sagaID := uuid.NewString()
-			store := newTestkitStore(ctx)
-			rig := newSagaRig(ctx, store, extensions.NewTenancyMarker(false))
-
-			seen := make(chan string, 4)
-			behavior := &enginetest.CallbackSagaBehavior{
-				SagaID: sagaID,
-				HandleEventFn: func(_ context.Context, event Event, _ State) (*sagaAction, error) {
-					if acct, ok := event.(interface{ GetAccountId() string }); ok {
-						seen <- acct.GetAccountId()
-					}
-					return &sagaAction{}, nil
-				},
-			}
-			rig.spawnSaga(ctx, sagaID, behavior, extensions.NewSagaConfig(0), extensions.NewEntityTenantScope("tenant-a"))
+		s.It("its subscriber is handed tenant-a's event and never tenant-b's", func(ctx *specs.Context) {
+			saga, spy := newSaga(ctx, "tenant-a")
+			ctx.Expect(saga.subscribeToEvents()).To(specs.BeNil())
 
 			publish := func(tenant, account string) {
 				tid, err := tenancy.NewTenantID(tenant)
@@ -136,19 +103,28 @@ func TestSagaActorSubscribesForItsTenantScope(t *testing.T) {
 				event := accountCreatedEvent(ctx, account, tenancy.MarshalMetadata(tc))
 				scope, err := protocol.StreamScope(mustTenantScope(ctx, tid))
 				ctx.Expect(err).To(specs.BeNil())
-				ctx.Expect(rig.stream.(eventstream.ScopedStream).PublishScoped(scope, protocol.EventsTopic, event)).To(specs.BeNil())
+				ctx.Expect(spy.PublishScoped(scope, protocol.EventsTopic, event)).To(specs.BeNil())
 			}
-
-			// tenant-b first, tenant-a second: delivery to one subscriber is FIFO,
-			// so once tenant-a's event was handled, anything tenant-b's earlier
-			// event would have caused has already happened.
 			publish("tenant-b", "acct-b")
 			publish("tenant-a", "acct-a")
 
-			ctx.Eventually(func() any { return len(seen) }, specs.BeGreaterThanOrEqual(1),
-				specs.WithTimeout(signalTimeout), specs.WithInterval(pollEvery))
-			ctx.Expect(<-seen).To(specs.Equal("acct-a"))
-			ctx.Expect(len(seen)).To(specs.Equal(0))
+			// Publication is synchronous, so what is queued is everything the
+			// stream routed to the saga: this checks routing itself, not the
+			// saga's own tenant check that would also drop a foreign event.
+			var got []string
+			for msg := range saga.subscriber.Iterator() {
+				got = append(got, msg.Payload().(*egopb.Event).GetPersistenceId())
+			}
+			ctx.Expect(got).To(specs.Equal([]string{"saga-scope-acct-a"}))
+		})
+
+		s.It("fails closed and leaves no subscriber when the scope is invalid", func(ctx *specs.Context) {
+			spy := &subscribeSpy{ScopedStream: eventstream.New().(eventstream.ScopedStream)}
+			ctx.Cleanup(spy.Close)
+			saga := &Actor{eventsStream: spy}
+
+			ctx.Expect(saga.subscribeToEvents()).To(specs.MatchError(persistence.ErrInvalidScope))
+			ctx.Expect(spy.SubscribersCount(protocol.EventsTopic)).To(specs.Equal(0))
 		})
 	})
 }
@@ -160,5 +136,5 @@ func mustTenantScope(ctx *specs.Context, id tenancy.TenantID) persistence.Scope 
 }
 
 func accountCreatedEvent(ctx *specs.Context, account string, md map[string]string) *egopb.Event {
-	return newAnyEvent(ctx, uuid.NewString(), 1, &testpb.AccountCreated{AccountId: account}, md)
+	return newAnyEvent(ctx, "saga-scope-"+account, 1, &testpb.AccountCreated{AccountId: account}, md)
 }

@@ -16,6 +16,7 @@ engine/engine_test.go | starts a real in-process goakt actor system (component t
 engine/helper_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/logger_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/option_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
+engine/projection_tenant_wake_test.go | starts a real in-process goakt actor system (single node, no cluster) with a tenant-aware projection, because what it proves is that the projection actor's runner is woken by a tenant-scoped publication, which only exists inside a started projection actor (component test, outside the unit lane per #201)
 engine/projection_actor_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/publisher_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/specs_helpers_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
