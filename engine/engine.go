@@ -333,20 +333,42 @@ func (engine *Engine) migrateSchemas(ctx context.Context) error {
 // failing publisher never leaves the others, the event stream, or the actor
 // system reference behind, because a second Stop returns nil at once.
 //
+// Stop and the registration methods (AddEventPublishers, AddStatePublishers,
+// their ForTenant forms, Subscribe and SubscribeForTenant) exclude each other.
+// A registration accepted before Stop is closed by Stop, each publisher exactly
+// once and each subscriber terminated; one that reaches the engine after Stop
+// began returns ErrEngineNotStarted and registers nothing. No publisher or
+// subscriber is registered once Stop has returned. Stop is safe to call twice
+// or concurrently, and does not hold the engine lock while closing publishers.
+//
 // Returns:
 //   - The errors of every publisher that failed to close, joined with
 //     errors.Join; otherwise, nil.
 func (engine *Engine) Stop(ctx context.Context) error {
-	if !engine.Started() {
+	// The transition is atomic, so concurrent Stops are safe: exactly one runs the
+	// shutdown and the others return nil at once, as a Stop after a Stop does.
+	if !engine.started.CompareAndSwap(true, false) {
 		return nil
 	}
 
-	engine.started.Store(false)
+	// Registration is mutually exclusive with this snapshot. started is already
+	// false, so a registration that reaches its own locked check afterwards is
+	// refused with ErrEngineNotStarted; one that was accepted earlier is in the
+	// maps taken here, because Lock waits for it. Nothing is registered once the
+	// maps are taken.
+	engine.mutex.Lock()
+	eventsStreams := engine.eventsStreams.Values()
+	statesStreams := engine.statesStreams.Values()
+	engine.eventsStreams.Reset()
+	engine.statesStreams.Reset()
+	eventStream := engine.eventStream
+	engine.mutex.Unlock()
 
 	var errs []error
 
-	// Shutdown all event publishers
-	for _, stream := range engine.eventsStreams.Values() {
+	// Publisher Close is caller code, so it runs outside the lock: a Close that
+	// calls back into the engine cannot deadlock against it.
+	for _, stream := range eventsStreams {
 		stream.done <- Done{}
 		stream.subscriber.Shutdown()
 		if err := stream.publisher.Close(ctx); err != nil {
@@ -354,7 +376,7 @@ func (engine *Engine) Stop(ctx context.Context) error {
 		}
 	}
 
-	for _, stream := range engine.statesStreams.Values() {
+	for _, stream := range statesStreams {
 		stream.done <- Done{}
 		stream.subscriber.Shutdown()
 		if err := stream.publisher.Close(ctx); err != nil {
@@ -362,11 +384,9 @@ func (engine *Engine) Stop(ctx context.Context) error {
 		}
 	}
 
-	if engine.eventStream != nil {
-		engine.eventStream.Close()
+	if eventStream != nil {
+		eventStream.Close()
 	}
-	engine.eventsStreams.Reset()
-	engine.statesStreams.Reset()
 
 	// Detach our reference atomically so callers racing with shutdown fail
 	// fast. We deliberately do NOT call sys.Stop — the actor system belongs

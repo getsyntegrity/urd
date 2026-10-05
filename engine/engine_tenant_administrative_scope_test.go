@@ -32,6 +32,9 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/getsyntegrity/urd/egopb"
+	"github.com/getsyntegrity/urd/eventstream"
+	"github.com/getsyntegrity/urd/internal/engine/enginetest"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
@@ -61,7 +64,7 @@ func (administrativeScopeResolver) Resolve(ctx context.Context) (tenancy.TenantC
 
 // TestAdministrativeScopeIsNeverAnAggregateTenantScope pins that an
 // administrative TenantContext can never stand in for an aggregate's tenant
-// scope (administrative bypass is TENANT-008's scope, not TENANT-003's): it
+// scope (no administrative bypass is supported, see openspec/changes/ego-tenant-008): it
 // cannot declare a spawn, cannot command a tenant-bound entity, and cannot
 // scope an erasure.
 func TestAdministrativeScopeIsNeverAnAggregateTenantScope(t *testing.T) {
@@ -90,7 +93,7 @@ func TestAdministrativeScopeIsNeverAnAggregateTenantScope(t *testing.T) {
 			ctx.Expect(engine.Entity(bg, probe, WithTenant(tenancy.TenantID("acme")))).To(specs.BeNil())
 
 			_, _, err := engine.SendCommand(adminCtx, entityID, &testpb.CreateAccount{AccountBalance: 500}, time.Minute)
-			ctx.Expect(err).To(specs.Not(specs.BeNil()))
+			ctx.Expect(err).To(specs.MatchError(tenancy.ErrDenied))
 			// HandleCommand must never run under an administrative scope
 			ctx.Expect(probe.InvocationCount()).To(specs.BeZero())
 
@@ -135,6 +138,194 @@ func TestAdministrativeScopeIsNeverAnAggregateTenantScope(t *testing.T) {
 				}
 			}
 			ctx.Expect(erased).To(specs.BeEmpty())
+		})
+	})
+}
+
+// zeroTenantContextResolver is a misbehaving resolver that returns the zero
+// value of tenancy.TenantContext alongside a nil error.
+type zeroTenantContextResolver struct{}
+
+var _ tenancy.TenantResolver = zeroTenantContextResolver{}
+
+func (zeroTenantContextResolver) Resolve(context.Context) (tenancy.TenantContext, error) {
+	return tenancy.TenantContext{}, nil
+}
+
+// TestAdministrativeScopeIsDeniedAtEveryEngineEntry pins TENANT-008's
+// decision: no engine entry point supports an administrative bypass. An
+// administrative TenantContext is denied at saga and durable-state spawn, at
+// saga status and at a durable-state command, and none of those paths runs
+// behavior or persists anything.
+func TestAdministrativeScopeIsDeniedAtEveryEngineEntry(t *testing.T) {
+	specs.Describe(t, "an administrative TenantContext is denied at every engine entry", func(s *specs.Spec) {
+		bg := context.Background()
+		adminCtx := context.WithValue(bg, administrativeScopeKey{}, true)
+
+		s.It("an administrative-only resolver cannot bind a saga spawn", func(ctx *specs.Context) {
+			store := connectedEventsStore(ctx)
+			engine := newSpecsEngine(ctx, "Sample", store, WithTenantResolver(administrativeScopeResolver{}))
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+
+			saga := &enginetest.CallbackSagaBehavior{SagaID: "saga-" + uuid.NewString()}
+			ctx.Expect(engine.Saga(adminCtx, saga, 0)).To(specs.MatchError(ErrSpawnTenantUndetermined))
+		})
+
+		s.It("an administrative-only resolver cannot bind a durable-state spawn", func(ctx *specs.Context) {
+			engine := startEngine(ctx, "Sample", nil, WithLogger(DiscardLogger),
+				WithStateStore(connectedDurableStore(ctx)), WithTenantResolver(administrativeScopeResolver{}))
+
+			err := engine.DurableStateEntity(adminCtx, NewAccountDurableStateBehavior(uuid.NewString()))
+			ctx.Expect(err).To(specs.MatchError(ErrSpawnTenantUndetermined))
+		})
+
+		s.It("an administrative caller cannot read a tenant-bound saga's status", func(ctx *specs.Context) {
+			store := connectedEventsStore(ctx)
+			engine := newSpecsEngine(ctx, "Sample", store, WithTenantResolver(administrativeScopeResolver{}))
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+
+			sagaID := "saga-" + uuid.NewString()
+			ctx.Expect(engine.Saga(bg, &enginetest.CallbackSagaBehavior{SagaID: sagaID}, 0,
+				WithTenant(tenancy.TenantID("acme")))).To(specs.BeNil())
+
+			_, err := engine.SagaStatus(adminCtx, sagaID, 5*time.Second)
+			ctx.Expect(err).To(specs.MatchError(tenancy.ErrDenied))
+		})
+
+		s.It("an administrative command is rejected by a tenant-bound durable-state entity", func(ctx *specs.Context) {
+			engine := startEngine(ctx, "Sample", nil, WithLogger(DiscardLogger),
+				WithStateStore(connectedDurableStore(ctx)), WithTenantResolver(administrativeScopeResolver{}))
+
+			entityID := uuid.NewString()
+			ctx.Expect(engine.DurableStateEntity(bg, NewAccountDurableStateBehavior(entityID),
+				WithTenant(tenancy.TenantID("acme")))).To(specs.BeNil())
+
+			_, _, err := engine.SendCommand(adminCtx, entityID, &testpb.CreateAccount{AccountBalance: 500}, time.Minute)
+			ctx.Expect(err).To(specs.MatchError(tenancy.ErrDenied))
+		})
+	})
+}
+
+// TestNoTenantIdentityGrantsAdministrativePrivilege pins that an empty or
+// default tenant, a zero-value TenantContext and the single-tenant and legacy
+// modes never act as an administrative context.
+func TestNoTenantIdentityGrantsAdministrativePrivilege(t *testing.T) {
+	specs.Describe(t, "no tenant identity grants administrative privilege", func(s *specs.Spec) {
+		bg := context.Background()
+
+		s.It("a resolver returning the zero TenantContext is rejected at spawn and erasure", func(ctx *specs.Context) {
+			store := connectedEventsStore(ctx)
+			engine := newSpecsEngine(ctx, "Sample", store, WithTenantResolver(zeroTenantContextResolver{}))
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+
+			err := engine.Entity(bg, newTenancyProbeEventSourcedBehavior(uuid.NewString()))
+			ctx.Expect(err).To(specs.MatchError(ErrSpawnTenantUndetermined))
+			ctx.Expect(engine.EraseEntity(bg, uuid.NewString(), true)).To(specs.MatchError(tenancy.ErrDenied))
+		})
+
+		s.It("an empty tenant id from the caller is rejected, never treated as administrative", func(ctx *specs.Context) {
+			store := connectedEventsStore(ctx)
+			engine := newSpecsEngine(ctx, "Sample", store, WithTenantResolver(perCallerTenantResolver{}))
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+
+			// perCallerTenantResolver resolves an absent tenant id to "".
+			err := engine.EraseEntity(bg, uuid.NewString(), true)
+			ctx.Expect(err).To(specs.MatchError(tenancy.ErrInvalid))
+		})
+
+		s.It("a single-tenant resolver resolves to a tenant scope and its erasure never reaches another tenant", func(ctx *specs.Context) {
+			resolver, err := tenancy.WithSingleTenant(tenancy.TenantID("acme"))
+			ctx.Expect(err).To(specs.BeNil())
+			tc, err := resolver.Resolve(bg)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(tc.Scope()).To(specs.Equal(tenancy.ScopeTenant))
+			_, isAdmin := tc.Administrative()
+			ctx.Expect(isAdmin).To(specs.BeFalse())
+
+			store := connectedEventsStore(ctx)
+			persistenceID := uuid.NewString()
+			eventAny, err := anypb.New(&testpb.AccountCreated{AccountId: persistenceID, AccountBalance: 100})
+			ctx.Expect(err).To(specs.BeNil())
+			globex, err := persistence.NewTenantScope("globex")
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(store.WriteEvents(bg, globex, []*egopb.Event{{
+				PersistenceId: persistenceID, SequenceNumber: 1, Event: eventAny, Timestamp: time.Now().UnixNano(),
+			}}, persistence.Unconditional())).To(specs.BeNil())
+
+			engine := newSpecsEngine(ctx, "Sample", store, WithTenantResolver(resolver))
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+			ctx.Expect(engine.EraseEntity(bg, persistenceID, true)).To(specs.BeNil())
+
+			latest, err := store.GetLatestEvent(bg, globex, persistenceID)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(latest).To(specs.Not(specs.BeNil()))
+		})
+
+		s.It("legacy mode erasure with an administrative caller reaches only the unscoped records", func(ctx *specs.Context) {
+			store := connectedEventsStore(ctx)
+			adminCtx := context.WithValue(bg, administrativeScopeKey{}, true)
+
+			persistenceID := uuid.NewString()
+			eventAny, err := anypb.New(&testpb.AccountCreated{AccountId: persistenceID, AccountBalance: 100})
+			ctx.Expect(err).To(specs.BeNil())
+			acme, err := persistence.NewTenantScope("acme")
+			ctx.Expect(err).To(specs.BeNil())
+			for _, scope := range []persistence.Scope{persistence.Unscoped(), acme} {
+				ctx.Expect(store.WriteEvents(bg, scope, []*egopb.Event{{
+					PersistenceId: persistenceID, SequenceNumber: 1, Event: eventAny, Timestamp: time.Now().UnixNano(),
+				}}, persistence.Unconditional())).To(specs.BeNil())
+			}
+
+			// No resolver: the context is never consulted, so an administrative
+			// caller gains nothing over any other caller.
+			engine := newSpecsEngine(ctx, "Sample", store)
+			ctx.Expect(engine.Start(bg)).To(specs.BeNil())
+			ctx.Expect(engine.EraseEntity(adminCtx, persistenceID, true)).To(specs.BeNil())
+
+			unscoped, err := store.GetLatestEvent(bg, persistence.Unscoped(), persistenceID)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(unscoped).To(specs.BeNil())
+			tenant, err := store.GetLatestEvent(bg, acme, persistenceID)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(tenant).To(specs.Not(specs.BeNil()))
+		})
+	})
+}
+
+// TestAdministrativeScopeIsNeverDeliveredToAStatePublisher pins that a durable
+// state carrying administrative tenant metadata is never delivered to a
+// per-tenant state publisher, and that the publisher loop survives it. The
+// events path is pinned by TestPerTenantRegistrationIsolatesTwoTenants; this is
+// the durable-state path (sendState, deliveryContext, eventstream.VerifyScope).
+func TestAdministrativeScopeIsNeverDeliveredToAStatePublisher(t *testing.T) {
+	specs.Describe(t, "an administrative durable state is never delivered to a state publisher", func(s *specs.Spec) {
+		s.It("delivers only the valid acme state and drops administrative, foreign and unscoped ones", func(ctx *specs.Context) {
+			engine := newIdentityEngine(ctx, "AdminNeverDeliveredToState", connectedEventsStore(ctx), connectedDurableStore(ctx))
+			pub := &namedStatePublisher{id: "state-acme"}
+			ctx.Expect(engine.AddStatePublishersForTenant("acme", pub)).To(specs.BeNil())
+
+			scoped := engine.eventStream.(eventstream.ScopedStream)
+			acmeScope, acmeMetadata := scopeFor(ctx, "acme")
+			_, globexMetadata := scopeFor(ctx, "globex")
+			admin, err := tenancy.NewAdministrative("ops", "audit")
+			ctx.Expect(err).To(specs.BeNil())
+			adminContext, err := tenancy.NewAdministrativeContext(admin)
+			ctx.Expect(err).To(specs.BeNil())
+
+			// Published in order; the publisher loop consumes them in order, so
+			// once the valid state is seen the three before it were dropped.
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "admin", TenantMetadata: tenancy.MarshalMetadata(adminContext)})).To(specs.BeNil())
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "foreign", TenantMetadata: globexMetadata})).To(specs.BeNil())
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "no-metadata"})).To(specs.BeNil())
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "good", TenantMetadata: acmeMetadata})).To(specs.BeNil())
+
+			awaitSeen(ctx, pub.got, 1)
+			ctx.Expect(pub.got()).To(specs.HaveLen(1))
+			ctx.Expect(pub.got()).To(specs.Equal([]forTenantDelivery{{"acme", "acme"}}))
 		})
 	})
 }
