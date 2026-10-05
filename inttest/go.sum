@@ -200,8 +200,8 @@ github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
-github.com/pablogore/goakt/v4 v4.5.7-urd.1 h1:Xl6LP0hpu8oAQms9yVYTqdHqpA++CETdtHVYOdSZ3OU=
-github.com/pablogore/goakt/v4 v4.5.7-urd.1/go.mod h1:9p45hSRx8P6k42Nu6UiPTTrrfZWOc+9iyPxi5BazdQ4=
+github.com/pablogore/goakt/v4 v4.5.7-actorof.1 h1:QLtq8P9qq4dvrBlBfPeMMqFfWbMInXvAsnP0Fz3ZEbs=
+github.com/pablogore/goakt/v4 v4.5.7-actorof.1/go.mod h1:9p45hSRx8P6k42Nu6UiPTTrrfZWOc+9iyPxi5BazdQ4=
 github.com/pablogore/kit-logger v0.1.2-0.20260912231430-17d1a6eacc85 h1:Gj4A97fD08dB2GuLLWY32lutKeBkeuZwtICE4ceXz5o=
 github.com/pablogore/kit-logger v0.1.2-0.20260912231430-17d1a6eacc85/go.mod h1:T+V/0QImgdZdUU+Spul7i4zVc168p0M5WDv+yCaIhnU=
 github.com/philhofer/fwd v1.1.1/go.mod h1:gk3iGcWd9+svBvR0sR+KPcfE+RNWozjowpeBVG3ZVNU=
