@@ -49,6 +49,13 @@ func scopeTenant(ctx *specs.Context, id string) persistence.Scope {
 	return scope
 }
 
+// unscopedPtr is the resolved scope the engine would hand a legacy projection;
+// tests that build the projection registry by hand set it explicitly.
+func unscopedPtr() *persistence.Scope {
+	scope := persistence.Unscoped()
+	return &scope
+}
+
 func scopeOpts(scope *persistence.Scope) *projection.Options {
 	return &projection.Options{Handler: scopeProbeHandler{}, Scope: scope}
 }

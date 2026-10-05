@@ -33,6 +33,8 @@ import (
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/internal/extensions"
+	"github.com/getsyntegrity/urd/persistence"
+	"github.com/getsyntegrity/urd/projection"
 )
 
 // StartProjection starts the named projection previously registered on the
@@ -295,12 +297,21 @@ func (engine *Engine) ProjectionLag(ctx context.Context, projectionName string) 
 		return nil, fmt.Errorf("offset store is required to compute projection lag")
 	}
 
+	// The shards and newest timestamps are those of the projection's own scope:
+	// a global read would report another tenant's backlog as this projection's
+	// lag. The scope is the one resolved at registration; a name that is not
+	// registered has none, so there is no fallback to an unscoped read.
+	scope, err := engine.projectionScope(projectionName)
+	if err != nil {
+		return nil, err
+	}
+
 	// Projections are sharded: each shard is advanced independently by its own
 	// runner, so lag is always reported per shard rather than as a single
 	// aggregate number. ShardOffsets answers "which shards exist" and "what is
 	// the newest event timestamp per shard" in one round trip, so the only
 	// per-shard work left is reading the projection's committed offset.
-	shardOffsets, err := eventsStore.ShardOffsets(ctx)
+	shardOffsets, err := eventsStore.ShardOffsets(ctx, scope)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch shard offsets: %w", err)
 	}
@@ -348,4 +359,25 @@ func (engine *Engine) ProjectionLag(ctx context.Context, projectionName string) 
 	}
 
 	return lags, nil
+}
+
+// projectionScope returns the effective persistence scope the engine resolved
+// for the named projection at registration. It returns
+// ErrProjectionNotRegistered when the name is unknown; there is no fallback to
+// persistence.Unscoped().
+func (engine *Engine) projectionScope(name string) (persistence.Scope, error) {
+	scope, ok := engine.projectionScopes[name]
+	if !ok {
+		return persistence.Scope{}, fmt.Errorf("%w: %s", ErrProjectionNotRegistered, name)
+	}
+	return scope, nil
+}
+
+// projectionScopesOf extracts the effective scope of each resolved projection.
+func projectionScopesOf(resolved map[string]*projection.Options) map[string]persistence.Scope {
+	scopes := make(map[string]persistence.Scope, len(resolved))
+	for name, options := range resolved {
+		scopes[name] = *options.Scope
+	}
+	return scopes
 }

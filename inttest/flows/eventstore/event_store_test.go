@@ -978,7 +978,7 @@ func TestPostgresEventStore_TenantMetadataRoundTrips_GetShardEvents(t *testing.T
 				pgMarkedEventWithMetadata(persistenceID, 1, 1, metadata),
 				persistence.ExpectGenesis())).To(specs.BeNil())
 
-			events, _, err := store.GetShardEvents(ctx, 1, 0, 10)
+			events, _, err := store.GetShardEvents(ctx, scope, 1, 0, 10)
 			sc.Expect(err).To(specs.BeNil())
 
 			var found *egopb.Event

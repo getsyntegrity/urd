@@ -344,7 +344,7 @@ func TestEventStore_GetShardEvents(t *testing.T) {
 		fx := withConnectedStore(s, NewEventsStore)
 
 		s.It("no events for shard", func(ctx *specs.Context) {
-			events, nextOffset, err := fx.store.GetShardEvents(bg, 99, 0, 10)
+			events, nextOffset, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 99, 0, 10)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(events).To(specs.BeEmpty())
 			ctx.Expect(nextOffset).To(specs.Equal(int64(0)))
@@ -360,7 +360,7 @@ func TestEventStore_GetShardEvents(t *testing.T) {
 			}
 			ctx.Expect(fx.store.WriteEvents(bg, persistence.Unscoped(), events, persistence.Unconditional())).To(specs.BeNil())
 
-			result, nextOffset, err := fx.store.GetShardEvents(bg, 5, 0, 10)
+			result, nextOffset, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 5, 0, 10)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(result).To(specs.Not(specs.BeEmpty()))
 			ctx.Expect(nextOffset).To(specs.BeGreaterThan(int64(0)))
@@ -382,7 +382,7 @@ func TestEventStore_ShardOffsets(t *testing.T) {
 			}
 			ctx.Expect(fx.store.WriteEvents(bg, persistence.Unscoped(), events, persistence.Unconditional())).To(specs.BeNil())
 
-			offsets, err := fx.store.ShardOffsets(bg)
+			offsets, err := fx.store.ShardOffsets(bg, persistence.Unscoped())
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(offsets).To(specs.HaveLen(2))
 			// each shard reports the timestamp of its most recent event

@@ -449,9 +449,17 @@ func (x *EventStore) PersistenceIDs(_ context.Context, scope persistence.Scope, 
 	return persistenceIDs, nextPageToken, nil
 }
 
-func (x *EventStore) GetShardEvents(_ context.Context, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+// GetShardEvents implements persistence.EventsStore for the events of scope
+// only. An invalid scope returns persistence.ErrInvalidScope.
+func (x *EventStore) GetShardEvents(_ context.Context, scope persistence.Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+	if !scope.Valid() {
+		return nil, 0, persistence.ErrInvalidScope
+	}
 	var shardEvents []*egopb.Event
-	x.db.Range(func(_ any, value any) bool {
+	x.db.Range(func(key any, value any) bool {
+		if key.(eventStoreKey).scope != scope {
+			return true
+		}
 		log := value.(*eventLog)
 		for _, event := range log.events {
 			if event.GetShard() == shardNumber {
@@ -497,9 +505,17 @@ func (x *EventStore) GetShardEvents(_ context.Context, shardNumber uint64, offse
 	return events, nextOffset, nil
 }
 
-func (x *EventStore) ShardOffsets(context.Context) (map[uint64]int64, error) {
+// ShardOffsets implements persistence.EventsStore for the events of scope
+// only. An invalid scope returns persistence.ErrInvalidScope.
+func (x *EventStore) ShardOffsets(_ context.Context, scope persistence.Scope) (map[uint64]int64, error) {
+	if !scope.Valid() {
+		return nil, persistence.ErrInvalidScope
+	}
 	offsets := make(map[uint64]int64)
-	x.db.Range(func(_ any, value any) bool {
+	x.db.Range(func(key any, value any) bool {
+		if key.(eventStoreKey).scope != scope {
+			return true
+		}
 		log := value.(*eventLog)
 		for _, event := range log.events {
 			if event.GetTimestamp() > offsets[event.GetShard()] {

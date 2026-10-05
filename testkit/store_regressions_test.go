@@ -142,7 +142,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("returns exactly limit events, the oldest ones", func(ctx *specs.Context) {
 			write(ctx, 1, 50, 40, 30, 20, 10)
 
-			got, next, err := fx.store.GetShardEvents(bg, 1, 0, 2)
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 2)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.HaveLen(2))
@@ -154,7 +154,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("returns everything when the limit exceeds the matches", func(ctx *specs.Context) {
 			write(ctx, 1, 10, 20, 30)
 
-			got, next, err := fx.store.GetShardEvents(bg, 1, 0, 10)
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 10)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.HaveLen(3))
@@ -164,7 +164,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("returns exactly limit events when the limit equals the matches", func(ctx *specs.Context) {
 			write(ctx, 1, 10, 20, 30)
 
-			got, _, err := fx.store.GetShardEvents(bg, 1, 0, 3)
+			got, _, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 3)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.HaveLen(3))
@@ -173,7 +173,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("returns nothing for a zero limit", func(ctx *specs.Context) {
 			write(ctx, 1, 10, 20, 30)
 
-			got, next, err := fx.store.GetShardEvents(bg, 1, 0, 0)
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 0)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.BeEmpty())
@@ -183,7 +183,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("returns events strictly after the offset", func(ctx *specs.Context) {
 			write(ctx, 1, 10, 20, 30)
 
-			got, next, err := fx.store.GetShardEvents(bg, 1, 20, 10)
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 20, 10)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.HaveLen(1))
@@ -194,7 +194,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("returns nothing once the offset reaches the last event", func(ctx *specs.Context) {
 			write(ctx, 1, 10, 20, 30)
 
-			got, next, err := fx.store.GetShardEvents(bg, 1, 30, 10)
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 30, 10)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.BeEmpty())
@@ -205,7 +205,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 			write(ctx, 1, 10, 20)
 			write(ctx, 2, 15, 25)
 
-			got, _, err := fx.store.GetShardEvents(bg, 2, 0, 10)
+			got, _, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 2, 0, 10)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(got).To(specs.HaveLen(2))
@@ -224,7 +224,7 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 			write(ctx, 1, timestamps...)
 
 			for range 25 {
-				got, next, err := fx.store.GetShardEvents(bg, 1, 0, 5)
+				got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 5)
 
 				ctx.Expect(err).To(specs.BeNil())
 				ctx.Expect(got).To(specs.HaveLen(5))
@@ -238,13 +238,13 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 		s.It("does not modify the stored events", func(ctx *specs.Context) {
 			write(ctx, 1, 30, 10, 20)
 
-			_, _, err := fx.store.GetShardEvents(bg, 1, 0, 2)
+			_, _, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 2)
 			ctx.Expect(err).To(specs.BeNil())
 
-			offsets, err := fx.store.ShardOffsets(bg)
+			offsets, err := fx.store.ShardOffsets(bg, persistence.Unscoped())
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(offsets).To(specs.HavePair(uint64(1), int64(30)))
-			all, _, err := fx.store.GetShardEvents(bg, 1, 0, 10)
+			all, _, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 10)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(all).To(specs.HaveLen(3))
 		})

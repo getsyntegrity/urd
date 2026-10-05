@@ -30,6 +30,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/persistence"
 )
 
@@ -65,6 +66,10 @@ var EventsStoreChecks = []Check[persistence.EventsStore]{
 	{Name: "Enumeration/PersistenceIDsScopedToOwnTenant", Run: eventsPersistenceIDsScopedToOwnTenant},
 	{Name: "Enumeration/PersistenceIDsPaginationCoversEveryIDExactlyOnce", Run: eventsPersistenceIDsPaginationCoversEveryIDExactlyOnce},
 	{Name: "Unscoped/NeverCollidesWithTenantNamedUnscoped", Run: eventsUnscopedNeverCollidesWithForgedTenant},
+	{Name: "ShardReads/GetShardEventsReturnsOnlyTheScopesEvents", Run: eventsGetShardEventsScoped},
+	{Name: "ShardReads/ShardOffsetsCoverOnlyTheScopesShards", Run: eventsShardOffsetsScoped},
+	{Name: "ShardReads/UnscopedNeverReadsATenantNamedUnscoped", Run: eventsShardReadsUnscopedVersusForgedTenant},
+	{Name: "ShardReads/InvalidScopeIsRejectedAndReadsNothing", Run: eventsShardReadsRejectInvalidScope},
 }
 
 func eventsOtherTenantGetsNothing(ctx context.Context, t TestingT, store persistence.EventsStore) {
@@ -310,4 +315,120 @@ func eventsUnscopedNeverCollidesWithForgedTenant(ctx context.Context, t TestingT
 	requireNoError(t, err)
 	requireNotNil(t, gotForged)
 	requireEqual(t, float64(222), eventMarker(t, gotForged))
+}
+
+// shardBatch is eventBatch placed on an explicit shard with an explicit
+// timestamp, so a shard read can tell the scopes' events apart.
+func shardBatch(t TestingT, persistenceID string, marker float64, shard uint64, timestamp int64) []*egopb.Event {
+	events := eventBatch(t, persistenceID, 1, marker)
+	events[0].Shard = shard
+	events[0].Timestamp = timestamp
+	return events
+}
+
+func shardEventIDs(events []*egopb.Event) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		ids = append(ids, event.GetPersistenceId())
+	}
+	return ids
+}
+
+func eventsGetShardEventsScoped(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	tenantA := mustTenantScope(t, "tenant-a")
+	tenantB := mustTenantScope(t, "tenant-b")
+	const shard = 7
+
+	// the same shard in three scopes, with interleaved timestamps
+	requireNoError(t, store.WriteEvents(ctx, tenantA, shardBatch(t, "shard-a", 1, shard, 100), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, tenantB, shardBatch(t, "shard-b", 2, shard, 200), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, persistence.Unscoped(), shardBatch(t, "shard-u", 3, shard, 300), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, tenantA, shardBatch(t, "shard-a-2", 4, shard, 400), persistence.Unconditional()))
+
+	gotA, nextA, err := store.GetShardEvents(ctx, tenantA, shard, 0, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"shard-a", "shard-a-2"}, shardEventIDs(gotA), "tenant A must read only its own events of the shard")
+	requireEqual(t, int64(400), nextA, "the next offset is the timestamp of A's last event, not of another scope's")
+
+	gotB, nextB, err := store.GetShardEvents(ctx, tenantB, shard, 0, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"shard-b"}, shardEventIDs(gotB), "tenant B must read only its own events of the shard")
+	requireEqual(t, int64(200), nextB)
+
+	gotU, nextU, err := store.GetShardEvents(ctx, persistence.Unscoped(), shard, 0, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"shard-u"}, shardEventIDs(gotU), "Unscoped() must not read a tenant's events")
+	requireEqual(t, int64(300), nextU)
+
+	// the limit and the offset apply within the scope
+	limited, _, err := store.GetShardEvents(ctx, tenantA, shard, 0, 1)
+	requireNoError(t, err)
+	requireEqual(t, []string{"shard-a"}, shardEventIDs(limited))
+	after, _, err := store.GetShardEvents(ctx, tenantA, shard, 100, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"shard-a-2"}, shardEventIDs(after), "an offset earlier than another scope's event must not bring it back")
+}
+
+func eventsShardOffsetsScoped(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	tenantA := mustTenantScope(t, "tenant-a")
+	tenantB := mustTenantScope(t, "tenant-b")
+	tenantC := mustTenantScope(t, "tenant-c")
+
+	requireNoError(t, store.WriteEvents(ctx, tenantA, shardBatch(t, "off-a", 1, 7, 100), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, tenantB, shardBatch(t, "off-b", 2, 8, 900), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, tenantB, shardBatch(t, "off-b-7", 3, 7, 950), persistence.Unconditional()))
+
+	offsetsA, err := store.ShardOffsets(ctx, tenantA)
+	requireNoError(t, err)
+	requireEqual(t, map[uint64]int64{7: 100}, offsetsA, "tenant A sees only its own shards and its own newest timestamp")
+
+	offsetsB, err := store.ShardOffsets(ctx, tenantB)
+	requireNoError(t, err)
+	requireEqual(t, map[uint64]int64{7: 950, 8: 900}, offsetsB)
+
+	offsetsC, err := store.ShardOffsets(ctx, tenantC)
+	requireNoError(t, err)
+	requireEmpty(t, offsetsC, "a scope with no events has no shards")
+
+	offsetsU, err := store.ShardOffsets(ctx, persistence.Unscoped())
+	requireNoError(t, err)
+	requireEmpty(t, offsetsU, "Unscoped() must not see the shards of a tenant")
+}
+
+func eventsShardReadsUnscopedVersusForgedTenant(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	forged := mustTenantScope(t, "unscoped")
+	const shard = 5
+
+	requireNoError(t, store.WriteEvents(ctx, persistence.Unscoped(), shardBatch(t, "forge-u", 1, shard, 100), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, forged, shardBatch(t, "forge-t", 2, shard, 200), persistence.Unconditional()))
+
+	gotU, _, err := store.GetShardEvents(ctx, persistence.Unscoped(), shard, 0, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"forge-u"}, shardEventIDs(gotU))
+
+	gotT, _, err := store.GetShardEvents(ctx, forged, shard, 0, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"forge-t"}, shardEventIDs(gotT))
+
+	offsetsU, err := store.ShardOffsets(ctx, persistence.Unscoped())
+	requireNoError(t, err)
+	requireEqual(t, map[uint64]int64{shard: 100}, offsetsU)
+
+	offsetsT, err := store.ShardOffsets(ctx, forged)
+	requireNoError(t, err)
+	requireEqual(t, map[uint64]int64{shard: 200}, offsetsT)
+}
+
+func eventsShardReadsRejectInvalidScope(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	tenantA := mustTenantScope(t, "tenant-a")
+	requireNoError(t, store.WriteEvents(ctx, tenantA, shardBatch(t, "invalid-a", 1, 7, 100), persistence.Unconditional()))
+
+	events, next, err := store.GetShardEvents(ctx, persistence.Scope{}, 7, 0, 10)
+	requireErrorIs(t, err, persistence.ErrInvalidScope, "an invalid scope must be rejected, not read globally")
+	requireEmpty(t, events)
+	requireEqual(t, int64(0), next)
+
+	offsets, err := store.ShardOffsets(ctx, persistence.Scope{})
+	requireErrorIs(t, err, persistence.ErrInvalidScope, "an invalid scope must be rejected, not read globally")
+	requireEmpty(t, offsets)
 }

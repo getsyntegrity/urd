@@ -88,8 +88,8 @@ func TestEventsStoreMock(t *testing.T) {
 			c.Method("ReplayEvents").Expect(bg, scope, "p1", uint64(1), uint64(5), uint64(10)).Return(events, nil)
 			c.Method("GetLatestEvent").Expect(bg, scope, "p2").Return(latest, nil)
 			c.Method("PersistenceIDs").Expect(bg, scope, uint64(20), "tok").Return([]string{"a", "b"}, "next", nil)
-			c.Method("GetShardEvents").Expect(bg, uint64(4), int64(7), uint64(50)).Return(events, int64(8), nil)
-			c.Method("ShardOffsets").Expect(bg).Return(map[uint64]int64{4: 8}, nil)
+			c.Method("GetShardEvents").Expect(bg, persistence.Unscoped(), uint64(4), int64(7), uint64(50)).Return(events, int64(8), nil)
+			c.Method("ShardOffsets").Expect(bg, persistence.Unscoped()).Return(map[uint64]int64{4: 8}, nil)
 
 			ctx.Expect(store.Connect(bg)).To(specs.BeNil())
 			ctx.Expect(store.Disconnect(bg)).To(specs.BeNil())
@@ -110,12 +110,12 @@ func TestEventsStoreMock(t *testing.T) {
 			ctx.Expect(ids).To(specs.Equal([]string{"a", "b"}))
 			ctx.Expect(next).To(specs.Equal("next"))
 
-			shardEvents, shardOffset, err := store.GetShardEvents(bg, 4, 7, 50)
+			shardEvents, shardOffset, err := store.GetShardEvents(bg, persistence.Unscoped(), 4, 7, 50)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(shardEvents).To(specs.Equal(events))
 			ctx.Expect(shardOffset).To(specs.Equal(int64(8)))
 
-			offsets, err := store.ShardOffsets(bg)
+			offsets, err := store.ShardOffsets(bg, persistence.Unscoped())
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(offsets).To(specs.Equal(map[uint64]int64{4: 8}))
 		})

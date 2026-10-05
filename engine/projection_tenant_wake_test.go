@@ -77,7 +77,7 @@ func TestProjectionAdvancesOnTenantScopedPublication(t *testing.T) {
 					extensions.NewEventsStream(stream),
 					extensions.NewTenancyMarker(false),
 					extensions.NewProjectionExtension(map[string]*projection.Options{
-						projectionName: {Handler: handler, BufferSize: 500, PullInterval: time.Hour, Recovery: projection.NewRecovery()},
+						projectionName: {Handler: handler, BufferSize: 500, PullInterval: time.Hour, Recovery: projection.NewRecovery(), Scope: unscopedPtr()},
 					})),
 				goakt.WithActorInitMaxRetries(3))
 			ctx.Expect(err).To(specs.BeNil())

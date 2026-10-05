@@ -237,12 +237,12 @@ func TestEventStore_WriteEvents_DuplicateSequenceNumberDoesNotDuplicateShardEven
 			ctx.Expect(fx.store.WriteEvents(bg, persistence.Unscoped(), newAccountEvent(ctx, "dup-sn-shard", 1), persistence.Unconditional())).To(specs.BeNil())
 			ctx.Expect(fx.store.WriteEvents(bg, persistence.Unscoped(), newAccountEvent(ctx, "dup-sn-shard", 1), persistence.Unconditional())).To(specs.BeNil())
 
-			shardEvents, _, err := fx.store.GetShardEvents(bg, 1, 0, 100)
+			shardEvents, _, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 100)
 			ctx.Expect(err).To(specs.BeNil())
 			// rewriting SequenceNumber 1 must not duplicate its shard's events
 			ctx.Expect(shardEvents).To(specs.HaveLen(1))
 
-			offsets, err := fx.store.ShardOffsets(bg)
+			offsets, err := fx.store.ShardOffsets(bg, persistence.Unscoped())
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(offsets).To(specs.HaveKey(uint64(1)))
 			// the duplicate rewrite must not skew the shard's offset beyond its single surviving event

@@ -254,6 +254,14 @@ func (x *nonIsolatingEventsStore) PersistenceIDs(ctx context.Context, _ persiste
 	return x.EventStore.PersistenceIDs(ctx, persistence.Unscoped(), pageSize, pageToken)
 }
 
+func (x *nonIsolatingEventsStore) GetShardEvents(ctx context.Context, _ persistence.Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+	return x.EventStore.GetShardEvents(ctx, persistence.Unscoped(), shardNumber, offset, limit)
+}
+
+func (x *nonIsolatingEventsStore) ShardOffsets(ctx context.Context, _ persistence.Scope) (map[uint64]int64, error) {
+	return x.EventStore.ShardOffsets(ctx, persistence.Unscoped())
+}
+
 var _ persistence.EventsStore = (*nonIsolatingEventsStore)(nil)
 
 type nonIsolatingDurableStore struct {

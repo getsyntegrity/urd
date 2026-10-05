@@ -31,6 +31,7 @@ import (
 	"github.com/getsyntegrity/urd/eventadapter"
 	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/instrumentation"
+	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/projection"
 )
 
@@ -48,6 +49,17 @@ type optionFunc func(*Runner)
 // Apply applies the option to the runner.
 func (f optionFunc) Apply(runner *Runner) {
 	f(runner)
+}
+
+// WithScope sets the persistence scope the runner reads: every shard
+// discovery and every events pull is restricted to it. It is required. A
+// runner built without it, or with an invalid scope, refuses to Start with
+// ErrScopeRequired rather than reading another scope's events or falling back
+// to persistence.Unscoped().
+func WithScope(scope persistence.Scope) Option {
+	return optionFunc(func(runner *Runner) {
+		runner.scope = scope
+	})
 }
 
 // WithPullInterval sets the events pull interval

@@ -142,6 +142,13 @@ func (x *Actor) PreStart(ctx *goakt.Context) error {
 		}
 	}
 
+	// The engine resolved the effective scope at registration. A registration
+	// that reaches here without one fails closed instead of reading unscoped.
+	if options.Scope == nil {
+		return fmt.Errorf("projection %q has no resolved scope: %w", ctx.ActorName(), projectionrunner.ErrScopeRequired)
+	}
+	opts = append(opts, projectionrunner.WithScope(*options.Scope))
+
 	x.runner = projectionrunner.New(ctx.ActorName(), options.Handler, eventsStore, offsetStore, opts...)
 
 	// Use context.Background() instead of ctx.Context() because PreStart's
