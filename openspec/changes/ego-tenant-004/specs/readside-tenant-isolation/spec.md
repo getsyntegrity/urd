@@ -61,9 +61,10 @@ Owner decision. #94 introduces a temporary wake-up so a tenant-aware
 projection advances on tenant-scoped publications: the internal topic
 `protocol.ProjectionWakeTopic`, the wrapper the projection actor hands the
 runner (`internal/engine/projection/wake_stream.go`, `withProjectionWake`),
-and the extra post in `protocol.PublishScoped`. These symbols are in the
-#94/#316 line of work and are not on `develop` as of this writing; verify
-against the code when the task starts.
+and the extra post in `protocol.PublishScoped`. These symbols are now in
+`develop` (f21520f, #316), at `internal/engine/protocol/publish.go` and
+`internal/engine/projection/wake_stream.go`; re-verify against the code when
+the task starts.
 
 **When it is removed:** when #93 gives the runner an explicit scope and a
 scoped subscription. Not before.
