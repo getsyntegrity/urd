@@ -27,6 +27,7 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,10 +145,21 @@ func rawSend(sys goakt.ActorSystem, ctx context.Context, name string, cmd any) e
 		return err
 	}
 	commandReply, ok := reply.(*egopb.CommandReply)
-	if !ok || commandReply.GetErrorReply() != nil {
-		return errors.New("rejected")
+	if !ok {
+		return errors.New("rejected: the reply is not a CommandReply")
+	}
+	if rejection := commandReply.GetErrorReply(); rejection != nil {
+		return errors.New("rejected by the actor: " + rejection.GetMessage())
 	}
 	return nil
+}
+
+// expectCause fails unless err names cause, so that a rejection for the wrong
+// reason (a timeout, a transport failure) does not pass for the right one.
+func expectCause(ctx *specs.Context, err error, cause string) {
+	ctx.Helper()
+	ctx.Expect(err).To(specs.Not(specs.BeNil()))
+	ctx.Expect(strings.Contains(err.Error(), cause)).To(specs.BeTrue())
 }
 
 func callerFor(tenant string) context.Context {
@@ -218,13 +230,14 @@ func TestClusterTenantRemoteCommands(t *testing.T) {
 				return attached
 			}
 			// no identity at all
-			ctx.Expect(send(bg)).To(specs.Not(specs.BeNil()))
+			expectCause(ctx, send(bg), "no tenant identity attached")
 			// another tenant's identity aimed at acme's actor name
-			ctx.Expect(send(attach(tenancy.NewTenantContext("globex")))).To(specs.Not(specs.BeNil()))
-			// an administrative scope is never accepted from another node
+			expectCause(ctx, send(attach(tenancy.NewTenantContext("globex"))), "tenant identity changed across a boundary")
+			// an administrative scope is never sent to another node (the receive side is
+			// covered by TestTenantPropagatorRejectsHostileInput)
 			admin, adminErr := tenancy.NewAdministrative("ops", "audit")
 			ctx.Expect(adminErr).To(specs.BeNil())
-			ctx.Expect(send(attach(tenancy.NewAdministrativeContext(admin)))).To(specs.Not(specs.BeNil()))
+			expectCause(ctx, send(attach(tenancy.NewAdministrativeContext(admin))), "administrative scope is never propagated")
 
 			// none of the rejected commands wrote anything
 			for tenant := range balances {

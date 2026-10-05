@@ -117,6 +117,14 @@ func WithActorSystemOptions(opts ...actor.Option) Option {
 // It is the composition counterpart of
 // actor.WithRemote(remote.NewConfig(host, port, cfg.RemoteOptions()...)); use
 // it instead of passing actor.WithRemote through WithActorSystemOptions.
+//
+// Precedence: the engine's options are applied after opts, so in a
+// tenant-aware App the tenant propagator replaces a remote.WithContextPropagator
+// given here, and WithRemoting replaces an actor.WithRemote given through
+// WithActorSystemOptions. An App that passes actor.WithRemote through
+// WithActorSystemOptions and does not use WithRemoting gets no tenant
+// propagation: the compose package cannot see inside a GoAkt option, so it
+// cannot warn about it.
 func WithRemoting(host string, port int, opts ...remote.Option) Option {
 	return func(o *options) { o.remoting = &remotingSpec{host: host, port: port, opts: opts} }
 }

@@ -301,11 +301,12 @@ func (a *App) startActorSystem(ctx context.Context) error {
 	if a.opts.cluster != nil {
 		actorOpts = append(actorOpts, actor.WithCluster(a.opts.cluster.WithKinds(engine.ClusterKinds()...)))
 	}
-	if r := a.opts.remoting; r != nil {
-		remoteOpts := append(config.RemoteOptions(), r.opts...)
-		actorOpts = append(actorOpts, actor.WithRemote(remote.NewConfig(r.host, r.port, remoteOpts...)))
-	}
 	actorOpts = append(actorOpts, a.opts.actorOptions...)
+	if r := a.opts.remoting; r != nil {
+		// Last, so that WithRemoting wins over an actor.WithRemote passed through
+		// WithActorSystemOptions (see WithRemoting).
+		actorOpts = append(actorOpts, actor.WithRemote(remotingConfig(config, r)))
+	}
 
 	sys, err := actor.NewActorSystem(a.spec.Name, actorOpts...)
 	if err != nil {
@@ -488,4 +489,13 @@ func (a *App) cleanupContext(ctx context.Context) (context.Context, context.Canc
 		timeout = lifecycle.DefaultShutdownTimeout
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+// remotingConfig builds the remoting configuration of WithRemoting. The
+// engine's own options come after the caller's, so the tenant propagator of a
+// tenant-aware engine replaces any remote.WithContextPropagator the caller
+// passed (GoAkt keeps the last one).
+func remotingConfig(config *engine.Config, r *remotingSpec) *remote.Config {
+	opts := append(append([]remote.Option{}, r.opts...), config.RemoteOptions()...)
+	return remote.NewConfig(r.host, r.port, opts...)
 }

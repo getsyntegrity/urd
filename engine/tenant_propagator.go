@@ -37,6 +37,13 @@ import (
 	"github.com/getsyntegrity/urd/tenancy"
 )
 
+// Trust assumption: this file transports a claim, it does not authenticate the
+// sender. Without mutual TLS on the GoAkt remoting transport (remote.WithTLS), a
+// cluster trusts every peer that can reach its remoting port, and any such peer
+// can assert any tenant. Nothing here claims more than that. The duplicate-header
+// check below is defensive only: GoAkt collapses repeated and case-variant
+// headers before Extract runs, so it is not a wire-level defence.
+//
 // Wire format. GoAkt hands a ContextPropagator an http.Header whose keys it
 // canonicalizes and whose values it ships first-value-only, so each piece of
 // identity travels as ONE header whose value is a JSON object. Nothing about
