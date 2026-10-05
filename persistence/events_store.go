@@ -60,8 +60,16 @@ import (
 //	PersistenceIDs(ctx, pageSize uint64, pageToken string) ([]string, string, error)                                     ->
 //	PersistenceIDs(ctx, scope Scope, pageSize uint64, pageToken string) ([]string, string, error)
 //
-// GetShardEvents and ShardOffsets are unchanged; see their own doc comments
-// for why. Any external implementation of EventsStore fails to compile
+//	GetShardEvents(ctx, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error)                ->
+//	GetShardEvents(ctx, scope Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error)
+//	ShardOffsets(ctx) (map[uint64]int64, error)                                                                        ->
+//	ShardOffsets(ctx, scope Scope) (map[uint64]int64, error)
+//
+// GetShardEvents and ShardOffsets gained the same leading scope parameter in
+// the read-side tenant isolation slice (TENANT-004, #93): a store that
+// ignored it would hand one tenant's events to another tenant's projection,
+// so there is no unscoped variant and no fallback to a global read. Any
+// external implementation of EventsStore fails to compile
 // against this interface. Manual verification: temporarily assign a value
 // of such an implementation to a var of type EventsStore (e.g.
 // var _ EventsStore = (*oldStyleStore)(nil) where oldStyleStore's methods
@@ -140,20 +148,20 @@ type EventsStore interface {
 	// in scope remain unlisted. persistence/conformance's Enumeration group pins this contract
 	// with a check that forces multiple pages and asserts exact, duplicate-free coverage.
 	PersistenceIDs(ctx context.Context, scope Scope, pageSize uint64, pageToken string) (persistenceIDs []string, nextPageToken string, err error)
-	// GetShardEvents returns the next (limit) events after the offset in the journal for a given
-	// shard. Deliberately unchanged/unscoped in this slice: this is a shard-level projection read,
-	// not a (scope, persistenceID)-addressed record read. Read-side/projection isolation across
-	// tenants belongs to a later slice (TENANT-004); this method's design is not decided here.
-	GetShardEvents(ctx context.Context, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error)
-	// ShardOffsets returns every distinct shard in the journal mapped to the
-	// offset (timestamp) of its most recent event. Compared against the
-	// offsets a projection has committed, it tells which shards have pending
-	// events without scanning every shard. An empty journal yields an empty
-	// map. SQL-backed stores implement it with a single query:
+	// GetShardEvents returns the next (limit) events of the given scope after the offset in the
+	// journal for a given shard, oldest first, strictly after offset, at most limit of them; the
+	// second result is the timestamp of the last event returned (0 when there is none). An invalid
+	// (zero-value) scope returns ErrInvalidScope and nothing is read. A read performed in one scope
+	// MUST NOT return an event that belongs to another scope, and an Unscoped() read does not
+	// return a tenant's events: there is no cross-scope read.
+	GetShardEvents(ctx context.Context, scope Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error)
+	// ShardOffsets returns every distinct shard that holds events of the given scope mapped to the
+	// offset (timestamp) of that scope's most recent event in the shard. Compared against the
+	// offsets a projection has committed, it tells which shards have pending events without
+	// scanning every shard. A scope with no events yields an empty map. An invalid (zero-value)
+	// scope returns ErrInvalidScope. Shards and timestamps that only other scopes hold MUST NOT
+	// appear. SQL-backed stores implement it with a single query:
 	//
-	//	SELECT shard_number, MAX(timestamp) FROM events_store GROUP BY shard_number
-	//
-	// Deliberately unchanged/unscoped in this slice, for the same reason as GetShardEvents: it is
-	// a shard-level projection read, and projection isolation is TENANT-004's concern.
-	ShardOffsets(ctx context.Context) (map[uint64]int64, error)
+	//	SELECT shard_number, MAX(timestamp) FROM events_store WHERE tenant_id = $1 GROUP BY shard_number
+	ShardOffsets(ctx context.Context, scope Scope) (map[uint64]int64, error)
 }

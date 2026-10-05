@@ -211,13 +211,13 @@ func TestProjectionRunnerErrorPaths(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{shardNumber: nextOffset.AsTime().UnixMilli()}, nil).AtLeast(1)
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), shardNumber, offset.GetValue(), uint64(maxBufferSize)).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{shardNumber: nextOffset.AsTime().UnixMilli()}, nil).AtLeast(1)
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, shardNumber, offset.GetValue(), uint64(maxBufferSize)).
 				Return(events, nextOffset.AsTime().UnixMilli(), nil).AtLeast(1)
 
 			handler := projection.NewDiscardHandler()
 			runner := New(projectionName, handler, eventsStore, offsetStore,
-				append([]Option{WithPullInterval(time.Millisecond)}, opts...)...)
+				append([]Option{WithScope(runnerTestScope), WithPullInterval(time.Millisecond)}, opts...)...)
 			runner.resetOffsetTo = resetOffsetTo
 			runner.maxBufferSize = maxBufferSize
 
@@ -265,13 +265,13 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).Return(nil, errFailed).Times(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).AtLeast(1).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(nil, errFailed).Times(1)
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).AtLeast(1).
 				Do(func([]any) []any { retried.Inc(); return []any{nil, nil} })
 
 			handler := projection.NewDiscardHandler()
 			clk := newManualClock()
-			runner := New(projectionName, handler, eventsStore, offsetStore,
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Minute), WithClock(clk))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -335,12 +335,12 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{shardNumber: nextOffset.AsTime().UnixMilli()}, nil).AtLeast(1)
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), shardNumber, offset.GetValue(), uint64(maxBufferSize)).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{shardNumber: nextOffset.AsTime().UnixMilli()}, nil).AtLeast(1)
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, shardNumber, offset.GetValue(), uint64(maxBufferSize)).
 				Return(events, nextOffset.AsTime().UnixMilli(), nil).AtLeast(1)
 
 			// testHandler1 always fails and the default recovery policy is Fail
-			runner := New(projectionName, testHandler1{}, eventsStore, offsetStore,
+			runner := New(projectionName, testHandler1{}, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond))
 			runner.maxBufferSize = maxBufferSize
 
@@ -397,11 +397,11 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{storeShard: nextOffset, poisonShard: nextOffset}, nil).AtLeast(1)
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), storeShard, offsetValue, uint64(maxBufferSize)).Return(nil, int64(0), errFailed).AtLeast(1)
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), poisonShard, offsetValue, uint64(maxBufferSize)).Return(events, nextOffset, nil).AtLeast(1)
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{storeShard: nextOffset, poisonShard: nextOffset}, nil).AtLeast(1)
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, storeShard, offsetValue, uint64(maxBufferSize)).Return(nil, int64(0), errFailed).AtLeast(1)
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, poisonShard, offsetValue, uint64(maxBufferSize)).Return(events, nextOffset, nil).AtLeast(1)
 
-			runner := New(projectionName, testHandler1{}, eventsStore, offsetStore,
+			runner := New(projectionName, testHandler1{}, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond))
 			runner.maxBufferSize = maxBufferSize
 
@@ -432,12 +432,12 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).AtLeast(1).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).AtLeast(1).
 				Do(func([]any) []any { pulls.Inc(); return []any{nil, errFailed} })
 
 			handler := projection.NewDiscardHandler()
 			clk := newManualClock()
-			runner := New(projectionName, handler, eventsStore, offsetStore,
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Minute), WithClock(clk))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -498,9 +498,9 @@ type pullCountingEventsStore struct {
 	pulls atomic.Int32
 }
 
-func (x *pullCountingEventsStore) ShardOffsets(ctx context.Context) (map[uint64]int64, error) {
+func (x *pullCountingEventsStore) ShardOffsets(ctx context.Context, scope persistence.Scope) (map[uint64]int64, error) {
 	x.pulls.Inc()
-	return x.EventStore.ShardOffsets(ctx)
+	return x.EventStore.ShardOffsets(ctx, scope)
 }
 
 // handlerFailureCase is a recovery strategy under which a permanently failing
@@ -560,7 +560,7 @@ func TestRunner(t *testing.T) {
 			handler := projection.NewDiscardHandler()
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond), WithLogger(logger))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond), WithLogger(logger))
 			// start the projection
 			err := runner.Start(bg)
 			ctx.Expect(err).To(specs.BeNil())
@@ -590,7 +590,7 @@ func TestRunner(t *testing.T) {
 				}
 			}
 
-			ctx.Expect(eventsStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(eventsStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 			ctx.Expect(runner.running.Load()).To(specs.BeTrue())
 
 			// create the projection id
@@ -636,7 +636,7 @@ func TestRunner(t *testing.T) {
 			handler := &testHandler1{}
 
 			runner := New(projectionName, handler, journalStore, offsetStore,
-				append([]Option{WithPullInterval(time.Millisecond)}, c.opts...)...)
+				append([]Option{WithScope(runnerTestScope), WithPullInterval(time.Millisecond)}, c.opts...)...)
 
 			// start the projection
 			err := runner.Start(bg)
@@ -664,7 +664,7 @@ func TestRunner(t *testing.T) {
 				}
 			}
 
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 			ctx.Expect(runner.running.Load()).To(specs.BeTrue())
 
 			// the projection stops: at once under the default Fail policy, once
@@ -699,7 +699,7 @@ func TestRunner(t *testing.T) {
 			// create a underlying that fails on the even revisions
 			handler := &testHandler2{counter: atomic.NewInt32(0)}
 
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithRecoveryStrategy(projection.NewRecovery(
 					projection.WithRecoveryPolicy(c.policy),
@@ -730,7 +730,7 @@ func TestRunner(t *testing.T) {
 				}
 			}
 
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 			ctx.Expect(runner.running.Load()).To(specs.BeTrue())
 
 			projectionID := &egopb.ProjectionId{
@@ -795,12 +795,12 @@ func TestRunner(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{shardNumber: nextOffsetValue.AsTime().UnixMilli()}, nil).AtLeast(1)
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), shardNumber, offset.GetValue(), uint64(maxBufferSize)).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{shardNumber: nextOffsetValue.AsTime().UnixMilli()}, nil).AtLeast(1)
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, shardNumber, offset.GetValue(), uint64(maxBufferSize)).
 				Return(events, nextOffsetValue.AsTime().UnixMilli(), nil).AtLeast(1)
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			runner.maxBufferSize = maxBufferSize
 
 			// start the projection
@@ -826,7 +826,7 @@ func TestRunner(t *testing.T) {
 			ctx.Expect(offsetStore.Connect(bg)).To(specs.BeNil())
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, nil, offsetStore, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, nil, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			// start the projection
 			err := runner.Start(bg)
 			ctx.Expect(err).To(haveMessage("events store is not defined"))
@@ -843,7 +843,7 @@ func TestRunner(t *testing.T) {
 			ctx.Expect(eventsStore.Connect(bg)).To(specs.BeNil())
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, nil, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, eventsStore, nil, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			// start the projection
 			err := runner.Start(bg)
 			ctx.Expect(err).To(haveMessage("offsets store is not defined"))
@@ -865,7 +865,7 @@ func TestRunner(t *testing.T) {
 			ctx.Expect(offsetStore.Connect(bg)).To(specs.BeNil())
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			// start the projection
 			err := runner.Start(bg)
 			ctx.Expect(err).To(specs.BeNil())
@@ -893,7 +893,7 @@ func TestRunner(t *testing.T) {
 
 			// create an instance of the projection
 			clk := newManualClock()
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond), WithClock(clk))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond), WithClock(clk))
 			// start the projection: the pings are retried on the manual clock
 			err := startOnClock(ctx, runner, clk)
 			ctx.Expect(err).To(haveMessage("failed to start the projection: fail ping"))
@@ -916,7 +916,7 @@ func TestRunner(t *testing.T) {
 
 			// create an instance of the projection
 			clk := newManualClock()
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond), WithClock(clk))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond), WithClock(clk))
 			// start the projection: the pings are retried on the manual clock
 			err := startOnClock(ctx, runner, clk)
 			ctx.Expect(err).To(haveMessage("failed to start the projection: fail ping"))
@@ -939,7 +939,7 @@ func TestRunner(t *testing.T) {
 			offsetCtrl.Method("ResetOffset").Expect(bg, projectionName, resetOffsetTo.UnixMilli()).Return(errors.New("fail to reset offset")).AtLeast(1)
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			// purposefully for test
 			runner.resetOffsetTo = resetOffsetTo
 
@@ -955,15 +955,15 @@ func TestRunner(t *testing.T) {
 					offsets.Method("GetCurrentOffset").Expect(mock.Any(), fx.projectionID).Return(fx.offset, nil).AtLeast(1)
 					offsets.Method("WriteOffset").Expect(mock.Any(), mock.Any()).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{errFailed} })
-					events.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{fx.shardNumber: fx.nextOffset}, nil).AtLeast(1)
-					events.Method("GetShardEvents").Expect(mock.Any(), fx.shardNumber, fx.offset.GetValue(), uint64(fx.maxBufferSize)).
+					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{fx.shardNumber: fx.nextOffset}, nil).AtLeast(1)
+					events.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, fx.shardNumber, fx.offset.GetValue(), uint64(fx.maxBufferSize)).
 						Return(fx.events, fx.nextOffset, nil).AtLeast(1)
 				},
 			},
 			{
 				name: "when fail to fetch shard numbers the Runner retries and keeps running",
 				arrange: func(_ retryFixture, _, events *mock.Controller, calls *atomic.Int32) {
-					events.Method("ShardOffsets").Expect(mock.Any()).AtLeast(1).
+					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{nil, errFailed} })
 				},
 			},
@@ -972,15 +972,15 @@ func TestRunner(t *testing.T) {
 				arrange: func(fx retryFixture, offsets, events *mock.Controller, calls *atomic.Int32) {
 					offsets.Method("GetCurrentOffset").Expect(mock.Any(), fx.projectionID).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{nil, errFailed} })
-					events.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{fx.shardNumber: time.Now().UnixMilli()}, nil).AtLeast(1)
+					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{fx.shardNumber: time.Now().UnixMilli()}, nil).AtLeast(1)
 				},
 			},
 			{
 				name: "when fail to get shard events the Runner retries and keeps running",
 				arrange: func(fx retryFixture, offsets, events *mock.Controller, calls *atomic.Int32) {
 					offsets.Method("GetCurrentOffset").Expect(mock.Any(), fx.projectionID).Return(fx.offset, nil).AtLeast(1)
-					events.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{fx.shardNumber: time.Now().UnixMilli()}, nil).AtLeast(1)
-					events.Method("GetShardEvents").Expect(mock.Any(), fx.shardNumber, fx.offset.GetValue(), uint64(fx.maxBufferSize)).AtLeast(1).
+					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{fx.shardNumber: time.Now().UnixMilli()}, nil).AtLeast(1)
+					events.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, fx.shardNumber, fx.offset.GetValue(), uint64(fx.maxBufferSize)).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{nil, int64(0), errFailed} })
 				},
 			},
@@ -1036,7 +1036,7 @@ func TestRunner(t *testing.T) {
 			c.arrange(fx, offsetCtrl, eventsCtrl, failures)
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			runner.resetOffsetTo = resetOffsetTo
 			runner.maxBufferSize = fx.maxBufferSize
 
@@ -1095,9 +1095,9 @@ func TestRunner(t *testing.T) {
 					EncryptionKeyId: keyID,
 				},
 			}
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithEncryptor(encryptor))
 
@@ -1142,9 +1142,9 @@ func TestRunner(t *testing.T) {
 					Shard:          shardNumber,
 				},
 			}
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithEventAdapters([]eventadapter.EventAdapter{adapter}))
 
@@ -1191,9 +1191,9 @@ func TestRunner(t *testing.T) {
 					Shard:          shardNumber,
 				},
 			}
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithMetrics(m))
 
@@ -1238,9 +1238,9 @@ func TestRunner(t *testing.T) {
 					Shard:          shardNumber,
 				},
 			}
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithRecoveryStrategy(projection.NewRecovery(
 					projection.WithRecoveryPolicy(projection.Skip))),
@@ -1288,9 +1288,9 @@ func TestRunner(t *testing.T) {
 					Shard:          shardNumber,
 				},
 			}
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithRecoveryStrategy(projection.NewRecovery(
 					projection.WithRecoveryPolicy(projection.Skip))),
@@ -1333,10 +1333,10 @@ func TestRunner(t *testing.T) {
 					Shard:          shardNumber,
 				},
 			}
-			ctx.Expect(journalStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(journalStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
 			startOffset := time.Now().Add(-time.Hour)
-			runner := New(projectionName, handler, journalStore, offsetStore,
+			runner := New(projectionName, handler, journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(time.Millisecond),
 				WithStartOffset(startOffset))
 
@@ -1401,12 +1401,12 @@ func TestRunner(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).Return(map[uint64]int64{shardNumber: nextOffsetValue.AsTime().UnixMilli()}, nil).AtLeast(1)
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), shardNumber, offset.GetValue(), uint64(maxBufferSize)).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{shardNumber: nextOffsetValue.AsTime().UnixMilli()}, nil).AtLeast(1)
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, shardNumber, offset.GetValue(), uint64(maxBufferSize)).
 				Return(events, nextOffsetValue.AsTime().UnixMilli(), nil).AtLeast(1)
 
 			// create an instance of the projection
-			runner := New(projectionName, handler, eventsStore, offsetStore, WithPullInterval(time.Millisecond))
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
 			runner.resetOffsetTo = resetOffsetTo
 			runner.maxBufferSize = maxBufferSize
 
@@ -1446,7 +1446,7 @@ func TestProjectionRunnerLagMetrics(t *testing.T) {
 			reader := sdkmetric.NewManualReader()
 			m := instrumentation.New(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
 
-			runner := New(projectionName, projection.NewDiscardHandler(), journalStore, offsetStore,
+			runner := New(projectionName, projection.NewDiscardHandler(), journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk), WithMetrics(m))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -1483,7 +1483,7 @@ func TestProjectionRunnerLagMetrics(t *testing.T) {
 			m := instrumentation.New(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
 
 			// a one-event buffer is full, so the lag stays recorded after the pass
-			runner := New(projectionName, projection.NewDiscardHandler(), journalStore, offsetStore,
+			runner := New(projectionName, projection.NewDiscardHandler(), journalStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(interval), WithClock(clk), WithMetrics(m), WithMaxBufferSize(1))
 
 			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
@@ -1612,15 +1612,15 @@ func TestRunnerPullEfficiency(t *testing.T) {
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
 			eventsCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			eventsCtrl.Method("ShardOffsets").Expect(mock.Any()).AtLeast(1).
+			eventsCtrl.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).AtLeast(1).
 				Do(func([]any) []any { pulls.Inc(); return []any{map[uint64]int64{shardNumber: latestOffset}, nil} })
 			// once the shard is caught up (committed == latest), subsequent pulls
 			// must skip it entirely: a second fetch would violate Times(1).
-			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), shardNumber, committedOffset, uint64(maxBufferSize)).
+			eventsCtrl.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, shardNumber, committedOffset, uint64(maxBufferSize)).
 				Return(events, latestOffset, nil).Times(1)
 
 			handler := projection.NewDiscardHandler()
-			runner := New(projectionName, handler, eventsStore, offsetStore,
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(10*time.Millisecond),
 				WithLogger(discardLogger),
 			)
@@ -1657,7 +1657,7 @@ func TestRunnerPullEfficiency(t *testing.T) {
 			// the pull interval is far longer than the test: any processing that
 			// happens can only have been triggered by the stream nudge, and any
 			// processing beyond the first buffer only by the full-buffer re-poll.
-			runner := New(projectionName, handler, eventsStore, offsetStore,
+			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope),
 				WithPullInterval(10*time.Minute),
 				WithLogger(discardLogger),
 				WithEventsStream(stream, testEventsTopic),
@@ -1681,7 +1681,7 @@ func TestRunnerPullEfficiency(t *testing.T) {
 					Shard:          shardNumber,
 				}
 			}
-			ctx.Expect(eventsStore.WriteEvents(bg, persistence.Unscoped(), journals, persistence.Unconditional())).To(specs.BeNil())
+			ctx.Expect(eventsStore.WriteEvents(bg, runnerTestScope, journals, persistence.Unconditional())).To(specs.BeNil())
 
 			// mimic what entity actors do after persisting events on this node
 			stream.Publish(testEventsTopic, journals[count-1])
@@ -1759,6 +1759,42 @@ func TestArchitectureProjectionRunnerStaysRuntimeNeutral(t *testing.T) {
 			ctx.Expect(deps).To(specs.NoElement(specs.Satisfy(
 				"the GoAkt adapter internals (internal/extensions): internal/projectionrunner must not depend on them",
 				func(dep any) bool { return strings.HasSuffix(dep.(string), "/internal/extensions") })))
+		})
+	})
+}
+
+// runnerTestScope is the scope every runner in these tests reads. It is a
+// tenant scope, not Unscoped(), so a runner that dropped its scope or fell back
+// to an unscoped read would not match the mock expectations.
+var runnerTestScope = func() persistence.Scope {
+	scope, err := persistence.NewTenantScope("acme")
+	if err != nil {
+		panic(err)
+	}
+	return scope
+}()
+
+// TestRunnerRequiresAScope pins the fail-closed rule of the #71 contract: a
+// runner without a valid scope never starts and never touches a store, so it
+// cannot fall back to an unscoped (global) read.
+func TestRunnerRequiresAScope(t *testing.T) {
+	specs.Describe(t, "a Runner without a valid persistence scope", func(s *specs.Spec) {
+		bg := context.TODO()
+
+		start := func(ctx *specs.Context, opts ...Option) error {
+			// no expectations are declared: any store call fails the test
+			eventsStore := enginetest.NewEventsStoreMock(mock.NewController(ctx))
+			offsetStore := enginetest.NewOffsetStoreMock(mock.NewController(ctx))
+			runner := New("scope-required", projection.NewDiscardHandler(), eventsStore, offsetStore, opts...)
+			return runner.Start(bg)
+		}
+
+		s.It("refuses to start when no scope was given", func(ctx *specs.Context) {
+			ctx.Expect(start(ctx)).To(specs.MatchError(ErrScopeRequired))
+		})
+
+		s.It("refuses to start with the invalid zero scope", func(ctx *specs.Context) {
+			ctx.Expect(start(ctx, WithScope(persistence.Scope{}))).To(specs.MatchError(ErrScopeRequired))
 		})
 	})
 }

@@ -522,15 +522,22 @@ func (s *EventStore) PersistenceIDs(ctx context.Context, scope persistence.Scope
 	return ids, next, rows.Err()
 }
 
-func (s *EventStore) GetShardEvents(ctx context.Context, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+// GetShardEvents implements persistence.EventsStore. It reads only the events
+// of scope: an invalid scope returns persistence.ErrInvalidScope before any
+// query, and Unscoped() reads the rows whose tenant_id is the empty string.
+func (s *EventStore) GetShardEvents(ctx context.Context, scope persistence.Scope, shardNumber uint64, offset int64, limit uint64) ([]*egopb.Event, int64, error) {
+	tenantID, err := scopeKey(scope)
+	if err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT persistence_id, sequence_number, is_deleted, event_payload, event_manifest,
 		       timestamp, shard_number, encryption_key_id, is_encrypted, tenant_metadata
 		FROM events_store
-		WHERE shard_number=$1 AND timestamp > $2
+		WHERE tenant_id=$1 AND shard_number=$2 AND timestamp > $3
 		ORDER BY timestamp ASC
-		LIMIT $3`,
-		shardNumber, offset, limit)
+		LIMIT $4`,
+		tenantID, shardNumber, offset, limit)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -547,8 +554,15 @@ func (s *EventStore) GetShardEvents(ctx context.Context, shardNumber uint64, off
 	return events, nextOffset, nil
 }
 
-func (s *EventStore) ShardOffsets(ctx context.Context) (map[uint64]int64, error) {
-	rows, err := s.pool.Query(ctx, `SELECT shard_number, MAX(timestamp) FROM events_store GROUP BY shard_number`)
+// ShardOffsets implements persistence.EventsStore for the shards that hold
+// events of scope. An invalid scope returns persistence.ErrInvalidScope before
+// any query.
+func (s *EventStore) ShardOffsets(ctx context.Context, scope persistence.Scope) (map[uint64]int64, error) {
+	tenantID, err := scopeKey(scope)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT shard_number, MAX(timestamp) FROM events_store WHERE tenant_id=$1 GROUP BY shard_number`, tenantID)
 	if err != nil {
 		return nil, err
 	}
