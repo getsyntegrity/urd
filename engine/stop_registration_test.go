@@ -32,6 +32,7 @@ import (
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	"github.com/getsyntegrity/urd/tenancy"
 )
 
@@ -271,6 +272,48 @@ func TestStopVersusRegistration(t *testing.T) {
 				ctx.Expect(ev.closes.Load() + st.closes.Load()).To(specs.Equal(int32(1)))
 				ctx.Expect(engine.eventsStreams.Len()).To(specs.Equal(0))
 				ctx.Expect(engine.statesStreams.Len()).To(specs.Equal(0))
+			})
+
+		// Subscribe and SubscribeForTenant, parked inside subscribeForScope (the
+		// stream's AddSubscriber runs while engine.mutex.RLock is held, after the
+		// locked Started check), are accepted before Stop: Stop must terminate the
+		// subscriber they return, and none may stay active once Stop returns.
+		//
+		// Honesty note: on the code before the fix these cases are racy (they pass
+		// or fail with the scheduling of Stop's goroutine, since the old Stop took
+		// no lock). They are guards for the contract, not proof of the fix; the
+		// deterministic proof is the two "parked" groups above.
+		specs.Table(s, []registration{registrations[4], registrations[5]},
+			func(r registration) string { return "accepted before Stop is terminated: " + r.name },
+			func(ctx *specs.Context, r registration) {
+				gate := newLatch()
+				stream := &blockingStream{ScopedStream: eventstream.New().(eventstream.ScopedStream), gate: gate}
+				resolver, err := tenancy.WithSingleTenant("acme")
+				ctx.Expect(err).To(specs.BeNil())
+				engine := startEngine(ctx, "StopVsSubscriptionAccepted", connectedEventsStore(ctx),
+					WithTenantResolver(resolver), WithEventStream(stream))
+
+				gate.armed.Store(true)
+				result := startRegistration(engine, r, nil, nil)
+				<-gate.entered // inside subscribeForScope, past the started check
+
+				stopped := make(chan error, 1)
+				go func() { stopped <- engine.Stop(bg) }()
+				close(gate.release)
+
+				got := <-result
+				ctx.Expect(got.err).To(specs.BeNil())
+				ctx.Expect(got.sub).To(specs.Not(specs.BeNil()))
+				ctx.Expect(<-stopped).To(specs.BeNil())
+
+				// the subscriber in flight was terminated by Stop, and the stream,
+				// closed by Stop, holds no active subscriber on either topic
+				ctx.Expect(got.sub.Active()).To(specs.BeFalse())
+				ctx.Expect(stream.SubscribersCount(protocol.EventsTopic)).To(specs.Equal(0))
+				ctx.Expect(stream.SubscribersCount(protocol.StatesTopic)).To(specs.Equal(0))
+				// a second Stop neither panics nor changes that
+				ctx.Expect(engine.Stop(bg)).To(specs.BeNil())
+				ctx.Expect(got.sub.Active()).To(specs.BeFalse())
 			})
 
 		// After Stop, every entry point answers explicitly and registers nothing.
