@@ -31,8 +31,10 @@ import (
 	"github.com/getsyntegrity/go-specs/specs"
 	goakt "github.com/tochemey/goakt/v4/actor"
 
+	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/engine/enginetest"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	"github.com/getsyntegrity/urd/internal/extensions"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
@@ -65,6 +67,36 @@ func expectWrite(ctrl *mock.Controller, a contractWriteArgs) *mock.Expectation {
 // expectNoPublication forbids any publication on the stream.
 func expectNoPublication(ctrl *mock.Controller) {
 	ctrl.Method("Publish").Expect(mock.Any(), mock.Any()).Never()
+}
+
+// tenantEnvelopes returns count envelopes stamped with tenantID's tenant
+// metadata, as a tenant-aware entity stamps them before the write.
+func tenantEnvelopes(ctx *specs.Context, persistenceID string, count int, tenantID string) []*egopb.Event {
+	tid, err := tenancy.NewTenantID(tenantID)
+	ctx.Expect(err).To(specs.BeNil())
+	tc, err := tenancy.NewTenantContext(tid)
+	ctx.Expect(err).To(specs.BeNil())
+	envelopes := noReplyEnvelopes(ctx, persistenceID, count)
+	for _, envelope := range envelopes {
+		envelope.TenantMetadata = tenancy.MarshalMetadata(tc)
+	}
+	return envelopes
+}
+
+// streamScopeOf converts an actor's persistence scope to the stream's scope.
+func streamScopeOf(ctx *specs.Context, scope persistence.Scope) eventstream.Scope {
+	out, err := protocol.StreamScope(scope)
+	ctx.Expect(err).To(specs.BeNil())
+	return out
+}
+
+// drainStream returns the messages queued for sub.
+func drainStream(sub eventstream.Subscriber) []*eventstream.Message {
+	var got []*eventstream.Message
+	for msg := range sub.Iterator() {
+		got = append(got, msg)
+	}
+	return got
 }
 
 func TestWriterContract(t *testing.T) {
@@ -126,18 +158,88 @@ func TestWriterContract(t *testing.T) {
 		s.It("the tenant scope of the request reaches the store unchanged", func(ctx *specs.Context) {
 			scope, err := persistence.NewTenantScope(tenancy.TenantID("tenant-a"))
 			ctx.Expect(err).To(specs.BeNil())
-			envelopes := noReplyEnvelopes(ctx, "entity-1", 2)
+			envelopes := tenantEnvelopes(ctx, "entity-1", 2, "tenant-a")
 			ctrl := mock.NewController(ctx)
 			store := enginetest.NewEventsStoreMock(ctrl)
-			stream := enginetest.NewEventStreamMock(ctrl)
+			stream := newClosingEventStream(ctx)
+			sub := stream.AddSubscriber()
+			ctx.Expect(stream.(eventstream.ScopedStream).SubscribeScoped(sub, streamScopeOf(ctx, scope), contractTopic)).To(specs.BeNil())
 			expectWrite(ctrl, contractWriteArgs{scope, envelopes, persistence.Unconditional()}).Return(nil)
-			ctrl.Method("Publish").Expect(contractTopic, mock.Any()).Times(2)
 			pid := startWriter(ctx, store, stream)
 
 			resp, err := askEventsWriter(pid, envelopes, contractTopic, 5*time.Second, persistence.Unconditional(), scope)
 
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(resp.Err).To(specs.BeNil())
+			ctx.Expect(drainStream(sub)).To(specs.HaveLen(2))
+		})
+
+		s.It("publishes only to the request's tenant: another tenant and an unscoped subscriber see nothing", func(ctx *specs.Context) {
+			scope, err := persistence.NewTenantScope(tenancy.TenantID("tenant-a"))
+			ctx.Expect(err).To(specs.BeNil())
+			other, err := persistence.NewTenantScope(tenancy.TenantID("tenant-b"))
+			ctx.Expect(err).To(specs.BeNil())
+			envelopes := tenantEnvelopes(ctx, "entity-1", 1, "tenant-a")
+			ctrl := mock.NewController(ctx)
+			store := enginetest.NewEventsStoreMock(ctrl)
+			stream := newClosingEventStream(ctx)
+			scoped := stream.(eventstream.ScopedStream)
+			subOther, subLegacy := stream.AddSubscriber(), stream.AddSubscriber()
+			ctx.Expect(scoped.SubscribeScoped(subOther, streamScopeOf(ctx, other), contractTopic)).To(specs.BeNil())
+			stream.Subscribe(subLegacy, contractTopic)
+			expectWrite(ctrl, contractWriteArgs{scope, envelopes, persistence.Unconditional()}).Return(nil)
+			pid := startWriter(ctx, store, stream)
+
+			resp, err := askEventsWriter(pid, envelopes, contractTopic, 5*time.Second, persistence.Unconditional(), scope)
+
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(resp.Err).To(specs.BeNil())
+			ctx.Expect(drainStream(subOther)).To(specs.BeEmpty())
+			ctx.Expect(drainStream(subLegacy)).To(specs.BeEmpty())
+		})
+
+		s.It("an envelope whose tenant identity is absent or mismatched is persisted but never published, and the write still succeeds", func(ctx *specs.Context) {
+			scope, err := persistence.NewTenantScope(tenancy.TenantID("tenant-a"))
+			ctx.Expect(err).To(specs.BeNil())
+			absent := noReplyEnvelopes(ctx, "entity-1", 1)
+			mismatched := tenantEnvelopes(ctx, "entity-1", 1, "tenant-b")
+			mismatched[0].SequenceNumber = 2
+			good := tenantEnvelopes(ctx, "entity-1", 1, "tenant-a")
+			good[0].SequenceNumber = 3
+			envelopes := []*egopb.Event{absent[0], mismatched[0], good[0]}
+			ctrl := mock.NewController(ctx)
+			store := enginetest.NewEventsStoreMock(ctrl)
+			stream := newClosingEventStream(ctx)
+			sub := stream.AddSubscriber()
+			ctx.Expect(stream.(eventstream.ScopedStream).SubscribeScoped(sub, streamScopeOf(ctx, scope), contractTopic)).To(specs.BeNil())
+			expectWrite(ctrl, contractWriteArgs{scope, envelopes, persistence.Unconditional()}).Return(nil)
+			pid := startWriter(ctx, store, stream)
+
+			resp, err := askEventsWriter(pid, envelopes, contractTopic, 5*time.Second, persistence.Unconditional(), scope)
+
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(resp.Err).To(specs.BeNil())
+			got := drainStream(sub)
+			ctx.Expect(got).To(specs.HaveLen(1))
+			ctx.Expect(got[0].Payload().(*egopb.Event).GetSequenceNumber()).To(specs.Equal(uint64(3)))
+		})
+
+		s.It("a zero-value scope publishes nothing", func(ctx *specs.Context) {
+			envelopes := noReplyEnvelopes(ctx, "entity-1", 1)
+			ctrl := mock.NewController(ctx)
+			store := enginetest.NewEventsStoreMock(ctrl)
+			stream := newClosingEventStream(ctx)
+			sub := stream.AddSubscriber()
+			stream.Subscribe(sub, contractTopic)
+			var zero persistence.Scope
+			expectWrite(ctrl, contractWriteArgs{zero, envelopes, persistence.Unconditional()}).Return(nil)
+			pid := startWriter(ctx, store, stream)
+
+			resp, err := askEventsWriter(pid, envelopes, contractTopic, 5*time.Second, persistence.Unconditional(), zero)
+
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(resp.Err).To(specs.BeNil())
+			ctx.Expect(drainStream(sub)).To(specs.BeEmpty())
 		})
 
 		s.It("a transport failure is embedded in the response, never returned", func(ctx *specs.Context) {

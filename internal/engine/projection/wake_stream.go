@@ -20,41 +20,32 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package eventstream
+package projection
 
-// Message defines the stream message
-type Message struct {
-	scope   Scope
-	topic   string
-	payload any
+import (
+	"github.com/getsyntegrity/urd/eventstream"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
+)
+
+// wakeStream is the Stream the projection runner is given.
+//
+// TEMPORARY (EGO-TENANT-005), to be removed by #93: the runner subscribes
+// through the legacy Unscoped() Subscribe, which by design receives nothing a
+// tenant-aware engine publishes for a tenant. The runner only uses the
+// subscription as a nudge to pull from the (scoped) events store, so this
+// wrapper also subscribes it to the payload-free protocol.ProjectionWakeTopic.
+// Nothing else is given this wrapper; the public Subscribe, AddEventPublishers
+// and AddStatePublishers paths never subscribe to that topic.
+type wakeStream struct {
+	eventstream.Stream
 }
 
-// Scope returns the scope the message was published for. A message made by
-// NewMessage, Publish or Broadcast is Unscoped(); one made by PublishScoped
-// carries the scope it was published with.
-func (m Message) Scope() Scope {
-	return m.scope
+func withProjectionWake(stream eventstream.Stream) eventstream.Stream {
+	return &wakeStream{Stream: stream}
 }
 
-// Topic returns the message topic
-func (m Message) Topic() string {
-	return m.topic
-}
-
-// Payload returns the message payload
-func (m Message) Payload() any {
-	return m.payload
-}
-
-// NewMessage creates an instance of Stream Message
-func NewMessage(topic string, payload any) *Message {
-	return newScopedMessage(Unscoped(), topic, payload)
-}
-
-func newScopedMessage(scope Scope, topic string, payload any) *Message {
-	return &Message{
-		scope:   scope,
-		topic:   topic,
-		payload: payload,
-	}
+// Subscribe registers sub on topic and on the wake-up topic.
+func (s *wakeStream) Subscribe(sub eventstream.Subscriber, topic string) {
+	s.Stream.Subscribe(sub, topic)
+	s.Stream.Subscribe(sub, protocol.ProjectionWakeTopic)
 }
