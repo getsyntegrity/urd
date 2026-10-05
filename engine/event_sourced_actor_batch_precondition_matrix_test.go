@@ -170,6 +170,12 @@ func expectAllSucceededG2(ctx *specs.Context, results []command.Result) {
 	ctx.Expect(outcomes).To(specs.EveryElement(specs.Equal(command.OutcomeSuccess)))
 }
 
+// These tests flush through the event threshold or the admission gate. The
+// production default also flushes after 5 ms, which can split their deliberately
+// open batch before the next command arrives. A window longer than the test
+// budget keeps that unrelated timer out of the sequence; shutdown cancels it.
+// Assertions and command deadlines are unchanged.
+//
 // newBatchHarness spins up a fresh engine/entity pair wired through a
 // preconditionSpyEventsStore (defined in event_sourced_actor_expected_revision_test.go)
 // so the test can assert on the exact persistence.WritePrecondition each
@@ -183,7 +189,7 @@ func newBatchHarness(ctx *specs.Context, name string, threshold int) (engine *En
 
 	entityID = uuid.NewString()
 	behavior = newBatchStepBehavior(entityID)
-	ctx.Expect(engine.Entity(context.Background(), behavior, WithBatchThreshold(threshold))).To(specs.BeNil())
+	ctx.Expect(engine.Entity(context.Background(), behavior, WithBatchThreshold(threshold), WithBatchFlushWindow(time.Hour))).To(specs.BeNil())
 
 	return engine, entityID, behavior, spy, underlying
 }
@@ -319,7 +325,7 @@ func TestBatchedPreconditionMatrix_GenesisBase(t *testing.T) {
 
 			engine := startEngine(ctx, "matrix-genesis-"+tc.name, spy, WithLogger(DiscardLogger))
 			behavior := newBatchStepBehavior(entityID)
-			ctx.Expect(engine.Entity(bg, behavior, WithBatchThreshold(len(steps)))).To(specs.BeNil())
+			ctx.Expect(engine.Entity(bg, behavior, WithBatchThreshold(len(steps)), WithBatchFlushWindow(time.Hour))).To(specs.BeNil())
 
 			results := runBatchSequence(ctx, engine, entityID, behavior, steps)
 			expectAllSucceededG2(ctx, results)
