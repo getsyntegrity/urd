@@ -64,12 +64,22 @@ and `eventstream` is in the pinned closure of `internal/runtimeconsumer`
 `eventstream` carries its own `Scope` type (depending only on `tenancy`)
 instead of importing `persistence`.
 
-## Open question (owner decision pending)
+## Decided: per-tenant registration (owner decision)
 
-Per-tenant public registration (`AddEventPublishersForTenant`,
-`AddStatePublishersForTenant`, `SubscribeForTenant`) is a public API decision and
-is NOT part of this change. Until it is taken, a multi-tenant engine without a
-fixed tenant cannot register publishers or subscribers (it fails closed).
+`AddEventPublishersForTenant`, `AddStatePublishersForTenant` and
+`SubscribeForTenant(id)` are APPROVED and specified in
+`specs/publication-tenant-isolation/spec.md`. The current signatures of
+`AddEventPublishers`, `AddStatePublishers` and `Subscribe` are unchanged. They
+are delivered in the second PR; that PR must not merge before the methods exist
+and the engine is tested with a per-caller resolver.
+
+## Deferred: a platform publisher for all tenants
+
+A publisher that sees several tenants' events, with attribution and isolation,
+may be a legitimate capability, and is not necessarily an administrative bypass
+(#96). It is DEFERRED and must be defined separately. It MUST NOT be enabled
+implicitly: no wildcard, no empty tenant id meaning "all", no `Unscoped()`
+fallback. Nothing in this change implements or hints at it.
 
 ## Governance (spec-governance)
 
@@ -79,8 +89,12 @@ validation, publisher-boundary scope delivery, fail-closed registration,
 conformance check. None has an acceptance criterion outside the parent outcome
 (fail-closed registration is required for isolation to be correct), so they are
 instrumental: `ATOMIC`. The two PRs are a delivery slicing of one spec, not two
-specs. Human gate (Public API: new optional interface, typed error): approved by
-the coordinator's recorded answers (optional interface; per-tenant API excluded).
+specs. Human gate (Public API): approved by the owner decision recorded in the
+session of 2026-10-05. Scope of that approval: the optional scoped-stream
+interface, the typed errors as documented, and the per-tenant registration
+methods. It approves the CONTRACT, not every #94 criterion: #94 stays open
+(PT-4 is exercised only against fakes and no real publisher implements it; there
+is no cluster or distributed publication; the platform publisher is deferred).
 
 ## Rollback
 

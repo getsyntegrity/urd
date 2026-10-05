@@ -37,6 +37,38 @@ In a tenant-aware engine, `AddEventPublishers`, `AddStatePublishers` and
 `Engine.Subscribe` SHALL subscribe for the engine's fixed tenant. Without one they
 SHALL return `ErrPublicationTenantUndetermined` and register nothing. No bypass.
 
+## Requirement: Per-tenant registration
+`Engine.AddEventPublishersForTenant(id tenancy.TenantID, publishers ...EventPublisher)`,
+`Engine.AddStatePublishersForTenant(id tenancy.TenantID, publishers ...StatePublisher)`
+and `Engine.SubscribeForTenant(id tenancy.TenantID)` SHALL register for exactly
+tenant `id`, and the existing methods keep their signatures. They SHALL:
+- validate `id` with `tenancy.NewTenantID`; an empty or invalid id returns an error
+  matching `ErrInvalidPublicationTenant` (and the tenancy error) and registers nothing;
+- work in a tenant-aware engine WITHOUT a fixed tenant (the per-caller resolver case);
+- in an engine whose resolver fixes a tenant, accept only that tenant, and fail closed with
+  `ErrPublicationTenantMismatch` for any other; in an engine without a tenant resolver
+  (single-tenant/legacy), fail closed with `ErrPublicationTenantMismatch` for every id,
+  because its traffic is `Unscoped()` and a tenant registration could never receive any;
+- never deliver another tenant's traffic, an `Unscoped()` message, or a message whose
+  metadata is administrative; there is no administrative scope, wildcard, empty-id-means-all
+  or `Unscoped()` fallback;
+- return `ErrEngineNotStarted` before `Start`, and register nothing on any error.
+
+#### Scenario: two tenants, one engine
+- GIVEN a tenant-aware engine whose resolver has no fixed tenant, and publishers registered for tenant A and tenant B
+- THEN A's publisher receives only A's events and B's only B's, with the tenant in `tenancy.From(ctx)`
+
+#### Scenario: re-registration and cleanup
+- Publisher IDs are unique per kind across tenants: registering an ID already registered, for the same or another tenant, returns `ErrDuplicatePublisherID` and registers nothing from the call.
+- Several publishers may register for one tenant under distinct IDs, and one `ForTenant` call is atomic.
+- `Engine.Stop` closes every registered publisher and the stream, whichever tenant it was registered for; a subscriber from `SubscribeForTenant` ends with the stream. There is no per-tenant unregister.
+
+## Deferred: platform publisher for all tenants
+A publisher that sees several tenants' events with attribution and isolation may be a
+legitimate capability, not necessarily an administrative bypass (#96). It is DEFERRED and
+MUST be defined separately. It SHALL NOT be enabled implicitly by anything in this spec:
+no wildcard, no empty tenant id meaning "all", no `Unscoped()` fallback.
+
 ## Requirement: Single-tenant mode is zero-plumbing
 An engine without a tenant resolver publishes and delivers `Unscoped()` with no
 tenant context and no new configuration.
@@ -46,4 +78,4 @@ tenant context and no new configuration.
 tenant scope in the context it is given.
 
 ## Non-goals
-New bus/SPI, broker adapters, per-tenant registration API (open question), admin bypass (#96), read-side (#93).
+New bus/SPI, broker adapters, the platform publisher for all tenants (deferred), admin bypass (#96), read-side (#93), cluster/distributed publication.
