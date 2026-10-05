@@ -24,7 +24,7 @@ R6. Once the runner has an explicit scope and a scoped subscription, the tempora
 | AC-2 | R2 | Processor for A over a journal holding A and B events: the handler sees only A's; B's events do not alter A's progress. |
 | AC-3 | R1, R3 | A and B at different progress, both restarted: each resumes from its own progress; resetting A leaves B unchanged. |
 | AC-4 | R1, R2 | `Unscoped()` and a tenant named "unscoped" do not share progress or events. |
-| AC-5 | R4 | Scope omitted and undeterminable on a tenant-aware engine, or explicitly declared invalid (zero) on ANY engine, including legacy and fixed single-tenant: start fails, nothing is read or recorded, no fallback to `Unscoped()` or to the fixed tenant. |
+| AC-5 | R4 | Scope omitted and undeterminable on a tenant-aware engine, or explicitly declared invalid on ANY engine, including legacy and fixed single-tenant: start fails, nothing is read or recorded, no fallback to `Unscoped()` or to the fixed tenant. |
 | AC-6 | R5 | No-tenancy and fixed single-tenant engines run with the scope OMITTED (bound to `Unscoped()` and to the fixed tenant respectively), and progress made before the change is still honoured. |
 | AC-7 | R6 | Tenant-aware engine, projection bound to tenant A, wake topic absent: it advances on A's scoped publication, reading A's own journal and not an unscoped one. |
 | AC-8 | R6 | Same setup: a publication scoped to tenant B does not advance A's projection. |

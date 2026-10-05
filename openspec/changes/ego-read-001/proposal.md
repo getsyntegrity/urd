@@ -39,9 +39,12 @@ failover (READ-006/007/008), adapters (READ-014), canonical envelope
 
 ## Open questions (blocking; owner decides)
 
-Resolution PROPOSED by the owner on 2026-10-05. It is a proposal: the questions
-stay open and this contract stays REVIEW_REQUIRED until the owner approves it
-(Public API gate: PENDING). Nothing here is implemented or approved.
+Resolution PROPOSED by the owner on 2026-10-05. It is a proposal, not an
+approval: no explicit approval exists in the session or on GitHub (no review or
+comment on #315; #71 has only the stale-bot notice). The questions stay open
+and this contract stays REVIEW_REQUIRED until the owner approves it (Public API
+gate: PENDING). Nothing here is implemented or approved. REVIEW_REQUIRED is not
+READY, and neither means verified, #71 delivered or #93 delivered.
 
 | Q | Question | Proposed resolution |
 |---|---|---|
@@ -62,18 +65,17 @@ The contract must tell two inputs apart, and the earlier text did not:
   that tenant. A tenant-aware engine without a fixed tenant refuses to start
   (R3).
 - **Explicit invalid scope** (the application declared a scope that is not
-  valid, today only the zero value of `persistence.Scope`, which is what a
-  discarded `NewTenantScope` error leaves). It MUST be rejected in every
+  valid). It MUST be rejected in every
   mode, including a legacy engine and a fixed single-tenant engine. It must
   never fall back to `Unscoped()` or to the fixed tenant.
 
-`persistence.Scope` is a struct with unexported fields, so its zero value is
-the only invalid one. If `projection.Options` carried a plain `Scope` value, an
-omitted scope and an explicit invalid one would be the same zero value and the
-contract could not distinguish them. The declaration therefore has to carry
-presence (for example a pointer, or a separate registration argument). That
-representation is a public API decision for the owner under the Public API
-gate; it is not chosen here. How an explicit valid scope that differs from a
+Observation, not a decision: `persistence.Scope` is a struct with unexported
+fields, so its zero value is the only invalid one. If `projection.Options`
+carried a plain `Scope` value, an omitted scope and an explicit invalid one
+would be the same zero value and could not be told apart. The declaration has
+to make presence observable somehow; how is a public API decision for the
+owner under the Public API gate and is NOT chosen or approved here. The
+acceptance criteria below are written so they hold for any representation. How an explicit valid scope that differs from a
 fixed single-tenant resolver's tenant is handled is also not decided here.
 
 ### What approving this does not prove

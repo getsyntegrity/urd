@@ -33,7 +33,7 @@ built by prefixing or parsing the name. The scope is declared in
 `projection.Options` at registration (proposed, Q2).
 
 An OMITTED scope (nothing declared) and an EXPLICIT INVALID scope (declared,
-but not valid: today the zero value of `persistence.Scope`) MUST be told
+but not a valid `persistence.Scope`) MUST be told
 apart:
 
 - an explicit invalid scope MUST be rejected in every mode, including a
@@ -67,14 +67,14 @@ scope; R3 still rejects an explicit invalid one.
 | AC | Requirement | Observable pass/fail |
 |---|---|---|
 | AC-R1-1 | R1 | Registering with an empty name fails. |
-| AC-R2-1 | R2 | Same name under tenants A and B yields two distinct processors. |
+| AC-R2-1 | R2 | The same name under tenants A and B yields two independent instances: each keeps its own scope and its own registration, and acting on one does not act on the other. |
 | AC-R2-2 | R2 | Two different (scope, name) pairs whose plain concatenation would be equal stay distinct: no collision in the registry or in addressing. |
-| AC-R3-1 | R3 | An explicit zero-value scope is rejected and nothing starts. |
+| AC-R3-1 | R3 | A scope declared explicitly but not valid is rejected and nothing starts. |
 | AC-R3-2 | R3 | Tenant-aware engine, scope omitted and undeterminable: start fails, no fallback to Unscoped. |
 | AC-R3-3 | R3 | An explicit invalid scope is rejected on a legacy engine and on a fixed single-tenant engine too: nothing starts, no fallback to `Unscoped()` or to the fixed tenant. |
 | AC-R4-1 | R4 | After restart the processor is still bound to its original scope. |
-| AC-R5-1 | R5 | Engine without tenancy starts a processor with the scope omitted, bound to `Unscoped()`. |
-| AC-R5-2 | R5 | Engine with a fixed single-tenant resolver starts a processor with the scope omitted, bound to that tenant. |
+| AC-R5-1 | R5 | Legacy engine (no tenancy): a processor starts with no scope declared and no extra plumbing, bound to `Unscoped()`. |
+| AC-R5-2 | R5 | Engine with a fixed single-tenant resolver: a processor starts with no scope declared by hand, bound to that tenant. |
 
 ## Human gates
 
