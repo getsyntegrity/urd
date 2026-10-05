@@ -39,12 +39,49 @@ failover (READ-006/007/008), adapters (READ-014), canonical envelope
 
 ## Open questions (blocking; owner decides)
 
-- Q1. "ReadSideProcessor": vocabulary for the existing projection, or an alias type?
-- Q2. Where is the scope declared: option on `WithProjection`, field of `projection.Options`, or argument to `StartProjection`? (The first two touch `engine/option.go`.)
-- Q3. Per-tenant fan-out inside one processor: in or out? Draft: out.
-- Q4. Do signature changes to existing ports pass the api-check? (TENANT-003 changed `EventsStore`.)
-- Q5. Migration number and ownership for any storage change.
-- Q6. Identity (scope, name) conflicts with today's keying by name alone: the registry is a `map[string]*projection.Options` (`engine/projections.go`, `engine/option.go`) and the cluster singleton and the standalone actor are keyed by the name. Re-keying them (or composing a key) is a design decision for the owner; this draft does not make it.
+Resolution PROPOSED by the owner on 2026-10-05. It is a proposal: the questions
+stay open and this contract stays REVIEW_REQUIRED until the owner approves it
+(Public API gate: PENDING). Nothing here is implemented or approved.
+
+| Q | Question | Proposed resolution |
+|---|---|---|
+| Q1 | "ReadSideProcessor": vocabulary or alias type? | Vocabulary for the existing projection. No alias and no new abstraction. |
+| Q2 | Where is the scope declared? | In `projection.Options`, during registration. Immutable once registered and for the whole run. (Representation: see "Omitted versus invalid" below.) |
+| Q3 | Per-tenant fan-out inside one processor? | Out of this cut: one instance per (scope, name). |
+| Q4 | Do signature changes to existing ports pass the api-check? | Keep public signatures where possible; each port change is evaluated in #93, not decided here. |
+| Q5 | Migration number and ownership | Designed in #93 after reviewing the data and the adapters. No number and no schema are fixed here. |
+| Q6 | Identity (scope, name) versus keying by name alone | Use (scope, name) in the registry and in local and cluster addressing, with no collision from an ambiguous concatenation. Today the registry is a `map[string]*projection.Options` (`engine/projections.go`, `engine/option.go`) and the cluster singleton and the standalone actor are keyed by the name; re-keying them is implementation work under #93, and the key mechanism is not chosen here. |
+
+### Omitted versus invalid
+
+The contract must tell two inputs apart, and the earlier text did not:
+
+- **Omitted scope** (the application declared nothing). It MAY be resolved
+  automatically where no declaration is needed: an engine without tenancy
+  binds `Unscoped()`, and an engine with a fixed single-tenant resolver binds
+  that tenant. A tenant-aware engine without a fixed tenant refuses to start
+  (R3).
+- **Explicit invalid scope** (the application declared a scope that is not
+  valid, today only the zero value of `persistence.Scope`, which is what a
+  discarded `NewTenantScope` error leaves). It MUST be rejected in every
+  mode, including a legacy engine and a fixed single-tenant engine. It must
+  never fall back to `Unscoped()` or to the fixed tenant.
+
+`persistence.Scope` is a struct with unexported fields, so its zero value is
+the only invalid one. If `projection.Options` carried a plain `Scope` value, an
+omitted scope and an explicit invalid one would be the same zero value and the
+contract could not distinguish them. The declaration therefore has to carry
+presence (for example a pointer, or a separate registration argument). That
+representation is a public API decision for the owner under the Public API
+gate; it is not chosen here. How an explicit valid scope that differs from a
+fixed single-tenant resolver's tenant is handled is also not decided here.
+
+### What approving this does not prove
+
+Approving this contract fixes vocabulary, registration, identity and the
+omitted-versus-invalid rule. It does not show isolation of the journal or of
+the offsets: that is the implementation of #93 and its own acceptance
+criteria. This change contains no code.
 
 ## Tasks
 

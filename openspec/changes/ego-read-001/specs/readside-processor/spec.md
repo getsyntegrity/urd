@@ -20,27 +20,47 @@ A processor MUST be registered under a non-empty name.
 
 The processor identity MUST be the pair (scope, name), where scope is a
 `persistence.Scope`: `Unscoped()` or one tenant. Two processors with the
-same name and different scopes MUST be distinct. How the existing keying by
-name alone is reconciled is open (Q6).
+same name and different scopes MUST be distinct, in the registry and in local
+and cluster addressing, and no two different pairs may collide through an
+ambiguous concatenation of scope and name. How the existing keying by name
+alone is reconciled, and the key mechanism, are open (Q6).
 
 ### Requirement R3: Scope is explicit
 
 The scope MUST be declared by the application or by a fixed single-tenant
 resolver. It MUST NOT be taken from event payload or `tenant_metadata`, nor
-built by prefixing or parsing the name. A zero-value scope MUST be rejected.
+built by prefixing or parsing the name. The scope is declared in
+`projection.Options` at registration (proposed, Q2).
+
+An OMITTED scope (nothing declared) and an EXPLICIT INVALID scope (declared,
+but not valid: today the zero value of `persistence.Scope`) MUST be told
+apart:
+
+- an explicit invalid scope MUST be rejected in every mode, including a
+  legacy engine and a fixed single-tenant engine, and MUST NOT fall back to
+  `Unscoped()` or to the fixed tenant;
+- an omitted scope MAY be resolved automatically only where R5 allows it.
+
 A tenant-aware engine that cannot determine the scope MUST refuse to start
-the processor and MUST NOT fall back to `Unscoped()`.
+the processor and MUST NOT fall back to `Unscoped()`. How presence is
+represented in the declaration is an open public API decision (see
+`proposal.md`).
 
 ### Requirement R4: Consumption is bound to one scope
 
 A processor's consumption MUST be bound to exactly one scope for its run, and
-MUST stay bound to the same scope across restart. How the binding is realised
-in storage or reads is not decided here.
+MUST stay bound to the same scope across restart. The scope declared at
+registration is immutable for the run. How the binding is realised in
+storage or reads is not decided here. Per-tenant fan-out inside one
+processor is out of this cut: one instance per (scope, name).
 
 ### Requirement R5: Unscoped use needs nothing extra
 
-An engine without tenancy, or with a fixed single tenant, MUST run
-processors without the application declaring a scope.
+An engine without tenancy MUST run processors with the scope omitted, bound to
+`Unscoped()`. An engine with a fixed single-tenant resolver MUST run
+processors with the scope omitted, bound to that fixed tenant. Neither
+requires the application to declare a scope. This applies only to an omitted
+scope; R3 still rejects an explicit invalid one.
 
 ## Acceptance Criteria
 
@@ -48,14 +68,19 @@ processors without the application declaring a scope.
 |---|---|---|
 | AC-R1-1 | R1 | Registering with an empty name fails. |
 | AC-R2-1 | R2 | Same name under tenants A and B yields two distinct processors. |
-| AC-R3-1 | R3 | A zero-value scope is rejected and nothing starts. |
-| AC-R3-2 | R3 | Tenant-aware engine, scope undeterminable: start fails, no fallback to Unscoped. |
+| AC-R2-2 | R2 | Two different (scope, name) pairs whose plain concatenation would be equal stay distinct: no collision in the registry or in addressing. |
+| AC-R3-1 | R3 | An explicit zero-value scope is rejected and nothing starts. |
+| AC-R3-2 | R3 | Tenant-aware engine, scope omitted and undeterminable: start fails, no fallback to Unscoped. |
+| AC-R3-3 | R3 | An explicit invalid scope is rejected on a legacy engine and on a fixed single-tenant engine too: nothing starts, no fallback to `Unscoped()` or to the fixed tenant. |
 | AC-R4-1 | R4 | After restart the processor is still bound to its original scope. |
-| AC-R5-1 | R5 | Engine without tenancy starts a processor with no scope declared. |
+| AC-R5-1 | R5 | Engine without tenancy starts a processor with the scope omitted, bound to `Unscoped()`. |
+| AC-R5-2 | R5 | Engine with a fixed single-tenant resolver starts a processor with the scope omitted, bound to that tenant. |
 
 ## Human gates
 
-Public API gate: PENDING.
+Public API gate: PENDING (owner approval of this contract, including how
+scope presence is represented in `projection.Options`). The resolutions in
+`proposal.md` are PROPOSED, not approved.
 
 ## Risks / Open Questions
 
