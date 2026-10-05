@@ -58,6 +58,29 @@ func (engine *Engine) publicationScope() (persistence.Scope, error) {
 	return scope, nil
 }
 
+// tenantPublicationScope returns the scope for an explicit per-tenant
+// registration. It fails closed with ErrInvalidPublicationTenant for an empty or
+// invalid id, and with ErrPublicationTenantMismatch when the engine is not
+// tenant-aware (its traffic is Unscoped(), which a tenant registration could
+// never receive) or its resolver fixes a different tenant.
+func (engine *Engine) tenantPublicationScope(id tenancy.TenantID) (persistence.Scope, error) {
+	validated, err := tenancy.NewTenantID(string(id))
+	if err != nil {
+		return persistence.Scope{}, errors.Join(ErrInvalidPublicationTenant, err)
+	}
+	if engine.tenantResolver == nil {
+		return persistence.Scope{}, fmt.Errorf("%w: the engine has no tenant resolver", ErrPublicationTenantMismatch)
+	}
+	if fixed, ok := tenancy.FixedTenantOf(engine.tenantResolver); ok && fixed != validated {
+		return persistence.Scope{}, fmt.Errorf("%w: the engine is fixed to another tenant", ErrPublicationTenantMismatch)
+	}
+	scope, err := persistence.NewTenantScope(validated)
+	if err != nil {
+		return persistence.Scope{}, errors.Join(ErrInvalidPublicationTenant, err)
+	}
+	return scope, nil
+}
+
 // deliveryContext builds the context a publisher receives for a message
 // published for scope, and re-checks the message's own tenant identity against
 // it (defence in depth: the publish site already checked it). For a tenant
@@ -120,6 +143,33 @@ func (engine *Engine) Subscribe() (eventstream.Subscriber, error) {
 		return nil, err
 	}
 
+	return engine.subscribeForScope(scope)
+}
+
+// SubscribeForTenant is Subscribe for exactly tenant id, in a tenant-aware
+// engine whether or not its resolver fixes a tenant (EGO-TENANT-005). The
+// subscriber receives only that tenant's events and states: never another
+// tenant's, an unscoped one, or one with administrative metadata. The
+// validation, the errors (ErrInvalidPublicationTenant,
+// ErrPublicationTenantMismatch, ErrEngineNotStarted) and the absence of any
+// wildcard or administrative form are those of AddEventPublishersForTenant. The
+// subscriber ends when Engine.Stop closes the stream.
+func (engine *Engine) SubscribeForTenant(id tenancy.TenantID) (eventstream.Subscriber, error) {
+	if !engine.Started() {
+		return nil, ErrEngineNotStarted
+	}
+
+	scope, err := engine.tenantPublicationScope(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return engine.subscribeForScope(scope)
+}
+
+// subscribeForScope subscribes a new subscriber to the events and states topics
+// for scope, registering nothing on failure.
+func (engine *Engine) subscribeForScope(scope persistence.Scope) (eventstream.Subscriber, error) {
 	engine.mutex.RLock()
 	eventStream := engine.eventStream
 	engine.mutex.RUnlock()
@@ -184,6 +234,42 @@ func (engine *Engine) AddEventPublishers(publishers ...EventPublisher) error {
 		return err
 	}
 
+	return engine.registerEventPublishers(scope, publishers)
+}
+
+// AddEventPublishersForTenant is AddEventPublishers for exactly tenant id, in a
+// tenant-aware engine whether or not its resolver fixes a tenant (EGO-TENANT-005).
+//
+// id is validated with tenancy.NewTenantID; an empty or invalid id returns an
+// error matching ErrInvalidPublicationTenant. A publisher registered here
+// receives only that tenant's publications, in a context for which
+// tenancy.From names the tenant; it never receives another tenant's, an
+// unscoped one, or one with administrative metadata. There is no wildcard, no
+// empty id meaning "all", and no administrative or Unscoped() fallback.
+//
+// The engine must be tenant-aware, and when its resolver fixes a tenant, id must
+// be that tenant: otherwise the call returns ErrPublicationTenantMismatch. It
+// returns ErrEngineNotStarted before Start, and an error wrapping
+// ErrDuplicatePublisherID when a publisher ID is already registered for this
+// kind (publisher IDs are unique across tenants) or repeated in the call. On any
+// error nothing from the call is registered or started. Engine.Stop closes every
+// registered publisher, whichever tenant it was registered for; there is no
+// per-tenant unregister.
+func (engine *Engine) AddEventPublishersForTenant(id tenancy.TenantID, publishers ...EventPublisher) error {
+	if !engine.Started() {
+		return ErrEngineNotStarted
+	}
+
+	scope, err := engine.tenantPublicationScope(id)
+	if err != nil {
+		return err
+	}
+
+	return engine.registerEventPublishers(scope, publishers)
+}
+
+// registerEventPublishers registers publishers on the events stream for scope.
+func (engine *Engine) registerEventPublishers(scope persistence.Scope, publishers []EventPublisher) error {
 	engine.mutex.Lock()
 	defer engine.mutex.Unlock()
 
@@ -247,6 +333,42 @@ func (engine *Engine) AddStatePublishers(publishers ...StatePublisher) error {
 		return err
 	}
 
+	return engine.registerStatePublishers(scope, publishers)
+}
+
+// AddStatePublishersForTenant is AddStatePublishers for exactly tenant id, in a
+// tenant-aware engine whether or not its resolver fixes a tenant (EGO-TENANT-005).
+//
+// id is validated with tenancy.NewTenantID; an empty or invalid id returns an
+// error matching ErrInvalidPublicationTenant. A publisher registered here
+// receives only that tenant's publications, in a context for which
+// tenancy.From names the tenant; it never receives another tenant's, an
+// unscoped one, or one with administrative metadata. There is no wildcard, no
+// empty id meaning "all", and no administrative or Unscoped() fallback.
+//
+// The engine must be tenant-aware, and when its resolver fixes a tenant, id must
+// be that tenant: otherwise the call returns ErrPublicationTenantMismatch. It
+// returns ErrEngineNotStarted before Start, and an error wrapping
+// ErrDuplicatePublisherID when a publisher ID is already registered for this
+// kind (publisher IDs are unique across tenants) or repeated in the call. On any
+// error nothing from the call is registered or started. Engine.Stop closes every
+// registered publisher, whichever tenant it was registered for; there is no
+// per-tenant unregister.
+func (engine *Engine) AddStatePublishersForTenant(id tenancy.TenantID, publishers ...StatePublisher) error {
+	if !engine.Started() {
+		return ErrEngineNotStarted
+	}
+
+	scope, err := engine.tenantPublicationScope(id)
+	if err != nil {
+		return err
+	}
+
+	return engine.registerStatePublishers(scope, publishers)
+}
+
+// registerStatePublishers registers publishers on the events stream for scope.
+func (engine *Engine) registerStatePublishers(scope persistence.Scope, publishers []StatePublisher) error {
 	engine.mutex.Lock()
 	defer engine.mutex.Unlock()
 
