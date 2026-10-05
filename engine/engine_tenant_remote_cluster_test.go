@@ -24,10 +24,13 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	nethttp "net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,7 +61,12 @@ type remoteCluster struct {
 // startRemoteCluster starts two clustered nodes. newOptions returns the engine
 // options of one node; the remoting config of each node gets the engine's own
 // RemoteOptions, exactly as a deployment would pass them.
-func startRemoteCluster(ctx *specs.Context, newOptions func() []Option) *remoteCluster {
+//
+// An optional remoteOptions replaces, for the node it is called with (0 is the
+// node that hosts in these tests, 1 the other), the engine's own RemoteOptions.
+// It exists for the tests that put a hand-made propagator on one side of the
+// wire; every other caller gets the real thing.
+func startRemoteCluster(ctx *specs.Context, newOptions func() []Option, remoteOptions ...func(node int, cfg *Config) []remote.Option) *remoteCluster {
 	bg := context.Background()
 	host := "127.0.0.1"
 	ports := dynaport.Get(6)
@@ -71,7 +79,7 @@ func startRemoteCluster(ctx *specs.Context, newOptions func() []Option) *remoteC
 	// one node sees the events of an entity hosted by the other.
 	stream := eventstream.New()
 
-	newNode := func(gossipPort, peersPort, remotingPort int) (goakt.ActorSystem, *Config) {
+	newNode := func(node, gossipPort, peersPort, remotingPort int) (goakt.ActorSystem, *Config) {
 		opts := append([]Option{
 			WithLogger(DiscardLogger),
 			WithStateStore(rc.states),
@@ -87,17 +95,21 @@ func startRemoteCluster(ctx *specs.Context, newOptions func() []Option) *remoteC
 			WithReplicaCount(1).
 			WithPartitionCount(7).
 			WithKinds(ClusterKinds()...)
+		remoteOpts := cfg.RemoteOptions()
+		if len(remoteOptions) > 0 {
+			remoteOpts = remoteOptions[0](node, cfg)
+		}
 		goaktOpts := append(cfg.GoaktOptions(),
 			goakt.WithCluster(clusterCfg),
-			goakt.WithRemote(remote.NewConfig(host, remotingPort, cfg.RemoteOptions()...)),
+			goakt.WithRemote(remote.NewConfig(host, remotingPort, remoteOpts...)),
 		)
 		sys, err := goakt.NewActorSystem("Sample", goaktOpts...)
 		ctx.Expect(err).To(specs.BeNil())
 		return sys, cfg
 	}
 	var cfg1, cfg2 *Config
-	rc.sys1, cfg1 = newNode(ports[0], ports[1], ports[2])
-	rc.sys2, cfg2 = newNode(ports[3], ports[4], ports[5])
+	rc.sys1, cfg1 = newNode(0, ports[0], ports[1], ports[2])
+	rc.sys2, cfg2 = newNode(1, ports[3], ports[4], ports[5])
 
 	errs := make(chan error, 2)
 	go func() { errs <- rc.sys1.Start(bg) }()
@@ -375,6 +387,220 @@ func TestClusterTenantRemoteSingleTenantAndLegacy(t *testing.T) {
 			state, _, err := legacy.engine2.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 3}, time.Minute)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(balanceOf(ctx, state)).To(specs.Equal(float64(3)))
+		})
+	})
+}
+
+// forgedHeadersKey marks a context whose outbound headers forgedInjector must
+// write verbatim, instead of what the engine's propagator would write.
+type forgedHeadersKey struct{}
+
+// forgedInjector is a TEST-ONLY propagator for the SENDING node. The real
+// Inject refuses an administrative scope, so the real sender can never emit
+// one; to put such a header on the real wire without changing production, this
+// writes the headers named by forgedHeadersKey exactly as given, and defers to
+// the real tenantPropagator for every other context, so ordinary calls from
+// this node are unchanged.
+type forgedInjector struct{ real tenantPropagator }
+
+func (f forgedInjector) Inject(ctx context.Context, headers nethttp.Header) error {
+	forged, ok := ctx.Value(forgedHeadersKey{}).(map[string]string)
+	if !ok {
+		return f.real.Inject(ctx, headers)
+	}
+	for name, value := range forged {
+		headers.Set(name, value)
+	}
+	return nil
+}
+
+func (f forgedInjector) Extract(ctx context.Context, headers nethttp.Header) (context.Context, error) {
+	return f.real.Extract(ctx, headers)
+}
+
+// recordingExtractor is a TEST-ONLY wrapper for the RECEIVING node. It records
+// the exact inbound http.Header GoAkt hands to the propagator and then
+// delegates to the REAL tenantPropagator.Extract, so the rejection under test
+// is the production one.
+type recordingExtractor struct {
+	real tenantPropagator
+
+	mu       sync.Mutex
+	received []receivedHeaders
+}
+
+// receivedHeaders is one inbound Extract that carried an Urd header.
+type receivedHeaders struct {
+	// values maps each Urd header name, as GoAkt canonicalised it, to every
+	// value that arrived under it.
+	values map[string][]string
+	err    error
+}
+
+func (r *recordingExtractor) Inject(ctx context.Context, headers nethttp.Header) error {
+	return r.real.Inject(ctx, headers)
+}
+
+func (r *recordingExtractor) Extract(ctx context.Context, headers nethttp.Header) (context.Context, error) {
+	got, err := r.real.Extract(ctx, headers)
+	seen := map[string][]string{}
+	for name, values := range headers {
+		if strings.HasPrefix(strings.ToLower(name), "urd-") {
+			seen[name] = append([]string(nil), values...)
+		}
+	}
+	if len(seen) > 0 {
+		r.mu.Lock()
+		r.received = append(r.received, receivedHeaders{values: seen, err: err})
+		r.mu.Unlock()
+	}
+	return got, err
+}
+
+func (r *recordingExtractor) snapshot() []receivedHeaders {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]receivedHeaders(nil), r.received...)
+}
+
+// TestClusterTenantRemoteRejectsForgedHeaderOnTheWire proves, over the real
+// GoAkt remoting transport between two nodes, that the receiving node rejects a
+// forged identity header before any handler runs, writes nothing, and keeps
+// serving a valid call afterwards.
+//
+// What the receiving node's propagator was handed, observed with
+// recordingExtractor and asserted below: GoAkt passes the propagator an
+// http.Header whose keys are canonicalised (Urd-Wire-Version, Urd-Tenant,
+// Urd-Command), one value each. The values arrive byte for byte as sent, so the
+// administrative marker arrives intact:
+//
+//	Urd-Wire-Version: 1
+//	Urd-Tenant: {"ego.tenant.admin_actor":"ops","ego.tenant.admin_reason":"audit","ego.tenant.scope":"administrative"}
+//
+// The rejection is the scope check of decodeTenant, engine/tenant_propagator.go
+// lines 208-209 (`tc.Scope() != tenancy.ScopeTenant`), after
+// tenancy.UnmarshalMetadata accepted the metadata as a well-formed
+// administrative context. GoAkt turns the Extract error into an INVALID_ARGUMENT
+// reply, so the caller gets exactly:
+//
+//	invalid argument: engine: remote tenant identity rejected: administrative scope is rejected on the wire
+//
+// and the command never reaches the actor.
+func TestClusterTenantRemoteRejectsForgedHeaderOnTheWire(t *testing.T) {
+	specs.Describe(t, "a forged identity header sent over the real remote transport", func(s *specs.Spec) {
+		s.It("is rejected at the hosting node with no handler call and no write, and a valid call still works", func(ctx *specs.Context) {
+			bg := context.Background()
+			recorder := &recordingExtractor{}
+			rc := startRemoteCluster(ctx, func() []Option {
+				return append(tenantMultiResolverOptions(), WithEntityKinds(new(tenancyProbeEventSourcedBehavior)))
+			}, func(node int, cfg *Config) []remote.Option {
+				if node == 0 {
+					// the hosting node: the real propagator behind a recorder
+					return []remote.Option{remote.WithContextPropagator(recorder)}
+				}
+				// the sending node: forges on request, real otherwise
+				return []remote.Option{remote.WithContextPropagator(forgedInjector{})}
+			})
+
+			id := uuid.NewString()
+			probe := newTenancyProbeEventSourcedBehavior(id)
+			ctx.Expect(rc.engine1.Entity(bg, probe, WithTenant("acme"), WithPlacement(Local))).To(specs.BeNil())
+			actorName := qualifiedName(ctx, "acme", id)
+			rc.expectRemoteFromNode2(ctx, actorName)
+
+			adminTenant, err := tenancy.NewAdministrative("ops", "audit")
+			ctx.Expect(err).To(specs.BeNil())
+			adminContext, err := tenancy.NewAdministrativeContext(adminTenant)
+			ctx.Expect(err).To(specs.BeNil())
+			adminRaw, err := json.Marshal(tenancy.MarshalMetadata(adminContext))
+			ctx.Expect(err).To(specs.BeNil())
+			acmeContext, err := tenancy.NewTenantContext("acme")
+			ctx.Expect(err).To(specs.BeNil())
+			acmeRaw, err := json.Marshal(tenancy.MarshalMetadata(acmeContext))
+			ctx.Expect(err).To(specs.BeNil())
+
+			forgeries := []struct {
+				name    string
+				headers map[string]string
+				cause   string
+			}{
+				// the required case: an administrative scope in the tenant header
+				{"administrative scope", map[string]string{
+					wireHeaderVersion: wireVersion, wireHeaderTenant: string(adminRaw),
+				}, "administrative scope is rejected on the wire"},
+				// a tenant identity with no version header
+				{"missing wire version", map[string]string{
+					wireHeaderTenant: string(acmeRaw),
+				}, "unsupported or missing wire version"},
+				// a tenant identity smuggled in the command header as well
+				{"tenant in the command header", map[string]string{
+					wireHeaderVersion: wireVersion, wireHeaderTenant: string(acmeRaw),
+					wireHeaderCommand: `{"ego.tenant.id":"globex"}`,
+				}, "command header must not carry a tenant"},
+			}
+
+			noWrites := func() {
+				for _, tenant := range []string{"acme", "globex"} {
+					latest, getErr := rc.events.GetLatestEvent(bg, tenantScopeOf(ctx, tenant), id)
+					ctx.Expect(getErr).To(specs.BeNil())
+					ctx.Expect(latest).To(specs.BeNil())
+					state, stateErr := rc.states.GetLatestState(bg, tenantScopeOf(ctx, tenant), id)
+					ctx.Expect(stateErr).To(specs.BeNil())
+					ctx.Expect(state).To(specs.BeNil())
+				}
+				latest, getErr := rc.events.GetLatestEvent(bg, persistence.Unscoped(), id)
+				ctx.Expect(getErr).To(specs.BeNil())
+				ctx.Expect(latest).To(specs.BeNil())
+				state, stateErr := rc.states.GetLatestState(bg, persistence.Unscoped(), id)
+				ctx.Expect(stateErr).To(specs.BeNil())
+				ctx.Expect(state).To(specs.BeNil())
+			}
+
+			for i, forgery := range forgeries {
+				forged := context.WithValue(bg, forgedHeadersKey{}, forgery.headers)
+				_, sendErr := rc.sys2.NoSender().SendSync(forged, actorName, &testpb.CreateAccount{AccountBalance: 1}, 5*time.Second)
+
+				// (1) an explicit rejection by the receiver, not a timeout or a
+				// transport failure: GoAkt's INVALID_ARGUMENT carrying the cause
+				ctx.Expect(sendErr).To(specs.Not(specs.BeNil()))
+				ctx.Expect(errors.Is(sendErr, context.DeadlineExceeded)).To(specs.BeFalse())
+				expectCause(ctx, sendErr, forgery.cause)
+				expectCause(ctx, sendErr, "invalid argument: engine: remote tenant identity rejected")
+
+				// what the server received: exactly this header set, canonical
+				// names, one value each, the marker intact, and the real Extract
+				// refused it with the expected cause
+				received := recorder.snapshot()
+				ctx.Expect(len(received)).To(specs.Equal(i + 1))
+				last := received[i]
+				ctx.Expect(len(last.values)).To(specs.Equal(len(forgery.headers)))
+				for name, value := range forgery.headers {
+					ctx.Expect(last.values[name]).To(specs.Equal([]string{value}))
+				}
+				ctx.Expect(last.err).To(specs.Not(specs.BeNil()))
+				ctx.Expect(errors.Is(last.err, errRemoteIdentityRejected)).To(specs.BeTrue())
+				ctx.Expect(strings.Contains(last.err.Error(), forgery.cause)).To(specs.BeTrue())
+
+				// (2) the handler never ran, (3) nothing was written anywhere
+				ctx.Expect(probe.InvocationCount()).To(specs.Equal(0))
+				noWrites()
+			}
+
+			// (4) the receiver is not broken: a valid call through the real
+			// propagator path succeeds and persists under the right scope
+			state, _, err := rc.engine2.SendCommand(callerFor("acme"), id, &testpb.CreateAccount{AccountBalance: 5}, time.Minute)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(balanceOf(ctx, state)).To(specs.Equal(float64(5)))
+			ctx.Expect(probe.InvocationCount()).To(specs.Equal(1))
+			latest, err := rc.events.GetLatestEvent(bg, tenantScopeOf(ctx, "acme"), id)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(latest.GetSequenceNumber()).To(specs.Equal(uint64(1)))
+			other, err := rc.events.GetLatestEvent(bg, tenantScopeOf(ctx, "globex"), id)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(other).To(specs.BeNil())
+			unscoped, err := rc.events.GetLatestEvent(bg, persistence.Unscoped(), id)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(unscoped).To(specs.BeNil())
 		})
 	})
 }
