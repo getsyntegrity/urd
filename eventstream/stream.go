@@ -50,7 +50,7 @@ type Stream interface {
 // EventsStream defines the stream broker
 type EventsStream struct {
 	subscribers *syncmap.Map[string, Subscriber]
-	topics      *syncmap.Map[string, *syncmap.Map[string, Subscriber]]
+	topics      *syncmap.Map[route, *syncmap.Map[string, Subscriber]]
 
 	// mu makes every change to the bookkeeping of subscribers and topics atomic:
 	// AddSubscriber, RemoveSubscriber, Subscribe, Unsubscribe and Close all take
@@ -66,11 +66,14 @@ type EventsStream struct {
 // enforce a compilation error
 var _ Stream = (*EventsStream)(nil)
 
+// EventsStream also implements the optional ScopedStream.
+var _ ScopedStream = (*EventsStream)(nil)
+
 // New creates an instance of EventsStream
 func New() Stream {
 	return &EventsStream{
 		subscribers: syncmap.New[string, Subscriber](),
-		topics:      syncmap.New[string, *syncmap.Map[string, Subscriber]](),
+		topics:      syncmap.New[route, *syncmap.Map[string, Subscriber]](),
 	}
 }
 
@@ -89,8 +92,8 @@ func (b *EventsStream) RemoveSubscriber(sub Subscriber) {
 	b.mu.Lock()
 	// remove subscriber to the broker.
 	//unsubscribe to all topics which s is subscribed to.
-	for _, topic := range sub.Topics() {
-		b.unsubscribe(sub, topic)
+	for _, r := range sub.routes() {
+		b.unsubscribeRoute(sub, r)
 	}
 	b.subscribers.Delete(sub.ID())
 	b.mu.Unlock()
@@ -101,22 +104,27 @@ func (b *EventsStream) RemoveSubscriber(sub Subscriber) {
 // Broadcast notifies all subscribers of a given topic of a new message
 func (b *EventsStream) Broadcast(msg any, topics []string) {
 	for _, topic := range topics {
-		b.publishToTopic(topic, msg)
+		b.publishToRoute(legacyScope(), topic, msg)
 	}
 }
 
 // SubscribersCount returns the number of subscribers for a given topic
 func (b *EventsStream) SubscribersCount(topic string) int {
-	if subscribers, ok := b.topics.Get(topic); ok {
+	if subscribers, ok := b.topics.Get(unscopedRoute(topic)); ok {
 		return subscribers.Len()
 	}
 	return 0
 }
 
-// Subscribe subscribes a subscriber to a topic
+// Subscribe subscribes a subscriber to a topic of the Unscoped() scope. It is
+// the single-tenant path: a subscription made here never receives a message
+// published for a tenant scope.
 func (b *EventsStream) Subscribe(subscriber Subscriber, topic string) {
-	// subscribe to given topic
-	// only subscribe active consumer
+	b.subscribeRoute(subscriber, unscopedRoute(topic))
+}
+
+// subscribeRoute registers subscriber on r. Only active consumers subscribe.
+func (b *EventsStream) subscribeRoute(subscriber Subscriber, r route) {
 	if !subscriber.Active() {
 		return
 	}
@@ -124,37 +132,37 @@ func (b *EventsStream) Subscribe(subscriber Subscriber, topic string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	subscriber.subscribe(topic)
-	if subscribers, ok := b.topics.Get(topic); ok && subscribers.Len() != 0 {
+	subscriber.subscribeRoute(r)
+	if subscribers, ok := b.topics.Get(r); ok && subscribers.Len() != 0 {
 		subscribers.Set(subscriber.ID(), subscriber)
 		return
 	}
 
-	// here the topic does not exist
+	// here the route does not exist
 	subscribers := syncmap.New[string, Subscriber]()
 	subscribers.Set(subscriber.ID(), subscriber)
-	b.topics.Set(topic, subscribers)
+	b.topics.Set(r, subscribers)
 }
 
-// Unsubscribe removes a subscriber from a topic
+// Unsubscribe removes a subscriber from a topic of the Unscoped() scope.
 func (b *EventsStream) Unsubscribe(subscriber Subscriber, topic string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.unsubscribe(subscriber, topic)
+	b.unsubscribeRoute(subscriber, unscopedRoute(topic))
 }
 
-// unsubscribe removes subscriber from topic. The caller holds b.mu.
-func (b *EventsStream) unsubscribe(subscriber Subscriber, topic string) {
-	subscriber.unsubscribe(topic)
-	if subscribers, ok := b.topics.Get(topic); ok && subscribers.Len() != 0 {
+// unsubscribeRoute removes subscriber from r. The caller holds b.mu.
+func (b *EventsStream) unsubscribeRoute(subscriber Subscriber, r route) {
+	subscriber.unsubscribeRoute(r)
+	if subscribers, ok := b.topics.Get(r); ok && subscribers.Len() != 0 {
 		subscribers.Delete(subscriber.ID())
 	}
 }
 
-// Publish publishes a message to a topic
+// Publish publishes a message to a topic of the Unscoped() scope.
 func (b *EventsStream) Publish(topic string, msg any) {
-	b.publishToTopic(topic, msg)
+	b.publishToRoute(legacyScope(), topic, msg)
 }
 
 // Close closes the stream
@@ -174,23 +182,26 @@ func (b *EventsStream) Close() {
 	b.topics.Reset()
 }
 
-// publishToTopic delivers the message to active subscribers of the given topic.
-// It performs a single message allocation per topic publish. Delivery is
+// publishToRoute delivers the message to the active subscribers of the
+// (scope, topic) route. It
+// performs a single message allocation per publish. Delivery is
 // synchronous: signal only enqueues on a lock-free queue and does a
 // non-blocking wake-up, so it never blocks the caller, and enqueueing before
 // Publish returns keeps the order of consecutive Publish calls from one
 // producer. Handing each delivery to its own goroutine let two messages
 // published in order be enqueued swapped.
-func (b *EventsStream) publishToTopic(topic string, msg any) {
-	subscribers, ok := b.topics.Get(topic)
-	if !ok || subscribers.Len() == 0 {
-		return
-	}
-
-	message := NewMessage(topic, msg)
-	subscribers.Range(func(_ string, sub Subscriber) {
-		if sub.Active() {
-			sub.signal(message)
+func (b *EventsStream) publishToRoute(scope Scope, topic string, msg any) {
+	message := newScopedMessage(scope, topic, msg)
+	deliver := func(r route) {
+		subscribers, ok := b.topics.Get(r)
+		if !ok || subscribers.Len() == 0 {
+			return
 		}
-	})
+		subscribers.Range(func(_ string, sub Subscriber) {
+			if sub.Active() {
+				sub.signal(message)
+			}
+		})
+	}
+	deliver(route{scope: scope, topic: topic})
 }
