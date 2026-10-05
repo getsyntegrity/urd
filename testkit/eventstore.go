@@ -468,19 +468,30 @@ func (x *EventStore) GetShardEvents(_ context.Context, shardNumber uint64, offse
 	var events []*egopb.Event
 	for _, event := range shardEvents {
 		if event.GetTimestamp() > offset {
-			if len(events) <= int(limit) {
-				events = append(events, event)
-			}
+			events = append(events, event)
 		}
 	}
 
-	if len(events) == 0 {
+	if len(events) == 0 || limit == 0 {
 		return nil, 0, nil
 	}
 
-	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].GetTimestamp() <= events[j].GetTimestamp()
+	// The map iteration order above is random, so the order must be total:
+	// timestamp first, then persistence ID and sequence number as tie-breakers.
+	// The limit applies to the sorted result, as in the Postgres store.
+	sort.Slice(events, func(i, j int) bool {
+		a, b := events[i], events[j]
+		if a.GetTimestamp() != b.GetTimestamp() {
+			return a.GetTimestamp() < b.GetTimestamp()
+		}
+		if a.GetPersistenceId() != b.GetPersistenceId() {
+			return a.GetPersistenceId() < b.GetPersistenceId()
+		}
+		return a.GetSequenceNumber() < b.GetSequenceNumber()
 	})
+	if uint64(len(events)) > limit {
+		events = events[:limit]
+	}
 
 	nextOffset := events[len(events)-1].GetTimestamp()
 	return events, nextOffset, nil
