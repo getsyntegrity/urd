@@ -14,9 +14,9 @@ tenant-aware boundaries "when a real bypass need exists". The primitives exist
 (`ScopeAdministrative`, `NewAdministrative(actor, reason)`); no boundary
 consumes them.
 
-## Decision (closed)
+## Decision and status
 
-No administrative bypass is supported. Recon found no operation that must act
+Decision taken by the owner for the engine cut (recorded in the session of 2026-10-05): no administrative bypass is offered in this cut. Recon found no operation that must act
 across tenants:
 
 - `Engine.EraseEntity` erases inside the caller's resolved tenant (GDPR is
@@ -40,18 +40,20 @@ Out: any bypass; IAM; a persistent audit log; read-side and publisher denial.
 
 | Item | State |
 |---|---|
-| Spec status | DRAFT; Security human gate has no recorded approval |
+| Spec status | READY for the engine cut; not DONE |
+| Security human gate | APPROVED by owner decision recorded in the session of 2026-10-05; scope = engine boundaries only; does NOT cover read side or publication |
 | Governance verdict | ATOMIC (record in spec Design) |
-| Engine-boundary ACs | All PROVEN; spec not VERIFIED (human gate pending) |
-| #96 overall | EVIDENCE_BLOCKED |
+| Engine-boundary ACs | All PROVEN; human gate approved for the engine cut |
+| #96 overall | NOT complete; stays OPEN |
 
-## Pending for #96
+## #96 criteria
 
-- Persistent audit evidence: BLOCKED on #31 (no audit contract).
-- Read-side admin denial: BLOCKED on #93. Publisher admin denial: BLOCKED on #94.
-- Bypass criteria (actor/reason, deliberate fail-closed acceptance): no bypass exists; whether the owner accepts "no bypass" as resolving them is an open governance decision.
+- NOT_APPLICABLE (approved spec change, owner decision 2026-10-05): every supported bypass requires actor/reason; persistent audit evidence for bypass. No bypass is offered in this cut.
+- NOT_PROVEN: boundaries accepting bypass are deliberate and fail closed. Read-side denial pending #93; publication denial pending #94.
+- PROVEN at engine boundaries only: explicit admin context, no privilege from empty/default tenant, single-tenant is not admin mode.
 
-## Future bypass rule
+## Future bypass rule (prominent)
 
-Per-operation, opt-in, actor and reason required, fail closed, gated on the
-audit contract from #31, and introduced by a new governed spec.
+ANY future bypass MUST be per-operation and opt-in, require actor and reason,
+fail closed, be backed by the persistent audit contract from #31, and be
+introduced by a new governed spec.
