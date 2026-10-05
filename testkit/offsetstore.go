@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"go.uber.org/atomic"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/offsetstore"
@@ -108,14 +109,17 @@ func (x *OffsetStore) GetCurrentOffset(_ context.Context, projectionID *egopb.Pr
 
 func (x *OffsetStore) ResetOffset(_ context.Context, projectionName string, value int64) error {
 	ts := time.Now().UnixMilli()
-	x.db.Range(func(_ interface{}, v interface{}) bool {
-		key := v.(OffsetKey)
-		val := v.(*egopb.Offset)
-		if key.ProjectionName == projectionName {
-			val.Value = value
-			val.Timestamp = ts
-			x.db.Store(key, val)
+	x.db.Range(func(k interface{}, v interface{}) bool {
+		key := k.(OffsetKey)
+		if key.ProjectionName != projectionName {
+			return true
 		}
+		// Store a copy: the stored offset may be the caller's own pointer, which
+		// a reset must not modify.
+		reset := proto.Clone(v.(*egopb.Offset)).(*egopb.Offset)
+		reset.Value = value
+		reset.Timestamp = ts
+		x.db.Store(key, reset)
 		return true
 	})
 	return nil

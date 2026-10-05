@@ -81,6 +81,9 @@ type Runner struct {
 	logger kitlog.Logger
 	// Handler specifies the projection handler
 	handler projection.Handler
+	// scope is the persistence scope this runner reads. The zero value is
+	// invalid: Start fails with ErrScopeRequired.
+	scope persistence.Scope
 	// JournalStore specifies the journal store for reading events
 	eventsStore persistence.EventsStore
 	// OffsetStore specifies the offset store to commit offsets
@@ -173,6 +176,10 @@ type Runner struct {
 	onFailure func(error)
 }
 
+// ErrScopeRequired is returned by Start when the runner has no valid
+// persistence scope (see WithScope).
+var ErrScopeRequired = errors.New("projection runner requires a valid persistence scope")
+
 // discardLogger is the construction default: the host always hands the runner
 // its own logger, so a runner built without WithLogger stays silent.
 var discardLogger kitlog.Logger = kitlog.New(kitlog.Config{Sink: slog.DiscardHandler})
@@ -218,6 +225,10 @@ func New(name string,
 func (x *Runner) Start(ctx context.Context) error {
 	if x.running.Load() {
 		return nil
+	}
+
+	if !x.scope.Valid() {
+		return ErrScopeRequired
 	}
 
 	if x.offsetsStore == nil {
@@ -479,7 +490,7 @@ func storeRetryDelay(failures int) time.Duration {
 // The returned slice is backed by pendingBuf and only valid until the next
 // pass.
 func (x *Runner) pendingShards(ctx context.Context) ([]uint64, error) {
-	shardOffsets, err := x.eventsStore.ShardOffsets(ctx)
+	shardOffsets, err := x.eventsStore.ShardOffsets(ctx, x.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -581,7 +592,7 @@ func (x *Runner) doProcess(ctx context.Context, shard uint64) error {
 		return err
 	}
 
-	events, nextOffset, err := x.eventsStore.GetShardEvents(ctx, shard, currOffset, uint64(x.maxBufferSize))
+	events, nextOffset, err := x.eventsStore.GetShardEvents(ctx, x.scope, shard, currOffset, uint64(x.maxBufferSize))
 	if err != nil {
 		return err
 	}

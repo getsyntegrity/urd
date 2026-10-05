@@ -99,11 +99,14 @@ func startSystem(ctx *specs.Context, name string, retries int, exts ...extension
 // projectionOptions returns the options registered for the "db-writer"
 // projection extension, applying tweak when given.
 func projectionOptions(tweak func(*egoprojection.Options)) *extensions.ProjectionExtension {
+	scope := persistence.Unscoped()
 	options := &egoprojection.Options{
 		Handler:      egoprojection.NewDiscardHandler(),
 		BufferSize:   500,
 		PullInterval: time.Second,
 		Recovery:     egoprojection.NewRecovery(),
+		// the engine resolves the effective scope at registration
+		Scope: &scope,
 	}
 	if tweak != nil {
 		tweak(options)
