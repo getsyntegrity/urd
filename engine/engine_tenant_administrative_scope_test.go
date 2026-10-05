@@ -32,7 +32,9 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/getsyntegrity/urd/egopb"
+	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/engine/enginetest"
+	"github.com/getsyntegrity/urd/internal/engine/protocol"
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/tenancy"
@@ -286,6 +288,44 @@ func TestNoTenantIdentityGrantsAdministrativePrivilege(t *testing.T) {
 			tenant, err := store.GetLatestEvent(bg, acme, persistenceID)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(tenant).To(specs.Not(specs.BeNil()))
+		})
+	})
+}
+
+// TestAdministrativeScopeIsNeverDeliveredToAStatePublisher pins that a durable
+// state carrying administrative tenant metadata is never delivered to a
+// per-tenant state publisher, and that the publisher loop survives it. The
+// events path is pinned by TestPerTenantRegistrationIsolatesTwoTenants; this is
+// the durable-state path (sendState, deliveryContext, eventstream.VerifyScope).
+func TestAdministrativeScopeIsNeverDeliveredToAStatePublisher(t *testing.T) {
+	specs.Describe(t, "an administrative durable state is never delivered to a state publisher", func(s *specs.Spec) {
+		s.It("delivers only the valid acme state and drops administrative, foreign and unscoped ones", func(ctx *specs.Context) {
+			engine := newIdentityEngine(ctx, "AdminNeverDeliveredToState", connectedEventsStore(ctx), connectedDurableStore(ctx))
+			pub := &namedStatePublisher{id: "state-acme"}
+			ctx.Expect(engine.AddStatePublishersForTenant("acme", pub)).To(specs.BeNil())
+
+			scoped := engine.eventStream.(eventstream.ScopedStream)
+			acmeScope, acmeMetadata := scopeFor(ctx, "acme")
+			_, globexMetadata := scopeFor(ctx, "globex")
+			admin, err := tenancy.NewAdministrative("ops", "audit")
+			ctx.Expect(err).To(specs.BeNil())
+			adminContext, err := tenancy.NewAdministrativeContext(admin)
+			ctx.Expect(err).To(specs.BeNil())
+
+			// Published in order; the publisher loop consumes them in order, so
+			// once the valid state is seen the three before it were dropped.
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "admin", TenantMetadata: tenancy.MarshalMetadata(adminContext)})).To(specs.BeNil())
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "foreign", TenantMetadata: globexMetadata})).To(specs.BeNil())
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "no-metadata"})).To(specs.BeNil())
+			ctx.Expect(scoped.PublishScoped(acmeScope, protocol.StatesTopic,
+				&egopb.DurableState{PersistenceId: "good", TenantMetadata: acmeMetadata})).To(specs.BeNil())
+
+			awaitSeen(ctx, pub.got, 1)
+			ctx.Expect(pub.got()).To(specs.HaveLen(1))
+			ctx.Expect(pub.got()).To(specs.Equal([]forTenantDelivery{{"acme", "acme"}}))
 		})
 	})
 }
