@@ -10,4 +10,6 @@ PR (b): engine and publisher boundary
 - [ ] T5 fixed-tenant scoping of `AddEventPublishers`/`AddStatePublishers`/`Subscribe`; `ErrPublicationTenantUndetermined`
 - [ ] T6 `publishingtest` scope-delivery check
 
-Open: per-tenant registration API (owner decision).
+- [ ] T7 per-tenant registration (`AddEventPublishersForTenant`, `AddStatePublishersForTenant`, `SubscribeForTenant`), `ErrInvalidPublicationTenant`, `ErrPublicationTenantMismatch`; engine tests with a per-caller resolver (decided by the owner, session of 2026-10-05)
+
+Deferred: platform publisher for all tenants.
