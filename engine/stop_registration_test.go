@@ -119,29 +119,29 @@ func (s *blockingStream) AddSubscriber() eventstream.Subscriber {
 // error of the call and a cleanup-visible handle.
 type registration struct {
 	name string
-	call func(engine *Engine, ev *stopEventPublisher, st *stopStatePublisher) (error, eventstream.Subscriber)
+	call func(engine *Engine, ev *stopEventPublisher, st *stopStatePublisher) (eventstream.Subscriber, error)
 }
 
 var registrations = []registration{
-	{"AddEventPublishers", func(e *Engine, ev *stopEventPublisher, _ *stopStatePublisher) (error, eventstream.Subscriber) {
-		return e.AddEventPublishers(ev), nil
+	{"AddEventPublishers", func(e *Engine, ev *stopEventPublisher, _ *stopStatePublisher) (eventstream.Subscriber, error) {
+		return nil, e.AddEventPublishers(ev)
 	}},
-	{"AddEventPublishersForTenant", func(e *Engine, ev *stopEventPublisher, _ *stopStatePublisher) (error, eventstream.Subscriber) {
-		return e.AddEventPublishersForTenant("acme", ev), nil
+	{"AddEventPublishersForTenant", func(e *Engine, ev *stopEventPublisher, _ *stopStatePublisher) (eventstream.Subscriber, error) {
+		return nil, e.AddEventPublishersForTenant("acme", ev)
 	}},
-	{"AddStatePublishers", func(e *Engine, _ *stopEventPublisher, st *stopStatePublisher) (error, eventstream.Subscriber) {
-		return e.AddStatePublishers(st), nil
+	{"AddStatePublishers", func(e *Engine, _ *stopEventPublisher, st *stopStatePublisher) (eventstream.Subscriber, error) {
+		return nil, e.AddStatePublishers(st)
 	}},
-	{"AddStatePublishersForTenant", func(e *Engine, _ *stopEventPublisher, st *stopStatePublisher) (error, eventstream.Subscriber) {
-		return e.AddStatePublishersForTenant("acme", st), nil
+	{"AddStatePublishersForTenant", func(e *Engine, _ *stopEventPublisher, st *stopStatePublisher) (eventstream.Subscriber, error) {
+		return nil, e.AddStatePublishersForTenant("acme", st)
 	}},
-	{"Subscribe", func(e *Engine, _ *stopEventPublisher, _ *stopStatePublisher) (error, eventstream.Subscriber) {
+	{"Subscribe", func(e *Engine, _ *stopEventPublisher, _ *stopStatePublisher) (eventstream.Subscriber, error) {
 		sub, err := e.Subscribe()
-		return err, sub
+		return sub, err
 	}},
-	{"SubscribeForTenant", func(e *Engine, _ *stopEventPublisher, _ *stopStatePublisher) (error, eventstream.Subscriber) {
+	{"SubscribeForTenant", func(e *Engine, _ *stopEventPublisher, _ *stopStatePublisher) (eventstream.Subscriber, error) {
 		sub, err := e.SubscribeForTenant("acme")
-		return err, sub
+		return sub, err
 	}},
 }
 
@@ -155,7 +155,7 @@ type registrationResult struct {
 func startRegistration(engine *Engine, r registration, ev *stopEventPublisher, st *stopStatePublisher) <-chan registrationResult {
 	out := make(chan registrationResult, 1)
 	go func() {
-		err, sub := r.call(engine, ev, st)
+		sub, err := r.call(engine, ev, st)
 		out <- registrationResult{err, sub}
 	}()
 	return out
@@ -325,7 +325,7 @@ func TestStopVersusRegistration(t *testing.T) {
 				ctx.Expect(engine.Stop(bg)).To(specs.BeNil())
 				ev, st := &stopEventPublisher{id: "ev"}, &stopStatePublisher{id: "st"}
 
-				err, sub := r.call(engine, ev, st)
+				sub, err := r.call(engine, ev, st)
 
 				ctx.Expect(err).To(specs.MatchError(ErrEngineNotStarted))
 				ctx.Expect(sub).To(specs.BeNil())
