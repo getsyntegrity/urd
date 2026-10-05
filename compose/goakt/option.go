@@ -29,6 +29,7 @@ import (
 
 	kitlog "github.com/pablogore/kit-logger/pkg/logger"
 	actor "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/remote"
 
 	"github.com/getsyntegrity/urd/compose"
 	"github.com/getsyntegrity/urd/engine"
@@ -55,6 +56,13 @@ type options struct {
 	cluster      *actor.ClusterConfig
 	kinds        []engine.BehaviorKind
 	actorOptions []actor.Option
+	remoting     *remotingSpec
+}
+
+type remotingSpec struct {
+	host string
+	port int
+	opts []remote.Option
 }
 
 // WithLogger sets the logger the engine and the actor system log through.
@@ -98,6 +106,27 @@ func WithCluster(cfg *actor.ClusterConfig, kinds ...engine.BehaviorKind) Option 
 // options, so an option that GoAkt applies last-wins overrides Urd's value.
 func WithActorSystemOptions(opts ...actor.Option) Option {
 	return func(o *options) { o.actorOptions = append(o.actorOptions, opts...) }
+}
+
+// WithRemoting enables GoAkt remoting on host and port and adds the engine's
+// own engine.Config.RemoteOptions, so that in a tenant-aware App the caller's
+// tenant identity survives a hop to an actor hosted on another node. opts are
+// further GoAkt remote options, for example remote.WithTLS: a cluster without
+// mutual TLS trusts every peer that can reach its remoting port.
+//
+// It is the composition counterpart of
+// actor.WithRemote(remote.NewConfig(host, port, cfg.RemoteOptions()...)); use
+// it instead of passing actor.WithRemote through WithActorSystemOptions.
+//
+// Precedence: the engine's options are applied after opts, so in a
+// tenant-aware App the tenant propagator replaces a remote.WithContextPropagator
+// given here, and WithRemoting replaces an actor.WithRemote given through
+// WithActorSystemOptions. An App that passes actor.WithRemote through
+// WithActorSystemOptions and does not use WithRemoting gets no tenant
+// propagation: the compose package cannot see inside a GoAkt option, so it
+// cannot warn about it.
+func WithRemoting(host string, port int, opts ...remote.Option) Option {
+	return func(o *options) { o.remoting = &remotingSpec{host: host, port: port, opts: opts} }
 }
 
 // actorSystemName is GoAkt's own naming rule, checked by
