@@ -342,6 +342,8 @@ func TestTelemetryContract(t *testing.T) {
 				"urd.projection.lag_ms":                 "Int64Gauge|Projection lag in milliseconds per shard|",
 				"urd.projection.latest_offset":          "Int64Gauge|Current projection offset timestamp per shard|",
 				"urd.projection.events_behind":          "Int64Gauge|Approximate number of unprocessed events per shard|",
+				// EGO-TENANT-005: additive, recorded only when a publication is dropped.
+				"urd.publication.rejected.total": "Int64Counter|Total number of publications dropped because their tenant identity was absent, invalid or mismatched|",
 			})
 
 			shard := []string{"{projection_name,shard}"}
