@@ -51,6 +51,7 @@ exclude (
 replace github.com/getsyntegrity/urd => ../../
 
 // TEMPORARY: the pinned GoAkt commit plus the fix of https://github.com/Tochemey/goakt/pull/1447
-// (ActorOf, ActorExists and Kill panic with a nil pointer when an actor leaves the tree). Remove this
+// (ActorOf, ActorExists and Kill panic with a nil pointer when an actor leaves the tree), tagged
+// v4.5.7-urd.1 on the pablogore/goakt fork. Remove this
 // replace, and require the GoAkt release that carries the fix, once that PR is released.
-replace github.com/tochemey/goakt/v4 => github.com/pablogore/goakt/v4 v4.5.7-0.20261005195759-c51a72dca92f
+replace github.com/tochemey/goakt/v4 => github.com/pablogore/goakt/v4 v4.5.7-urd.1
