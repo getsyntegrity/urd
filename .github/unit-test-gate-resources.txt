@@ -11,6 +11,7 @@ engine/behavior_dependency_test.go | starts a real in-process goakt actor system
 engine/behavior_kind_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/engine_lifecycle_fixes_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/engine_tenant_cluster_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
+engine/engine_tenant_remote_cluster_test.go | starts two real in-process goakt actor systems in a cluster and sends tenant-aware commands from the node that does not host the actor, to prove the tenant identity crosses nodes (#305; outside the unit lane per #201, run by the cluster job)
 engine/engine_tenant_relocation_test.go | starts two real in-process goakt actor systems in a cluster and stops one, to prove a relocated actor recovers its own tenant (outside the unit lane per #201, run by the cluster job)
 engine/engine_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
 engine/helper_test.go | starts a real in-process goakt actor system (component test, outside the unit lane per #201)
