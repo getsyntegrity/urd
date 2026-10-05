@@ -24,6 +24,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -31,7 +32,63 @@ import (
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/eventstream"
 	"github.com/getsyntegrity/urd/internal/engine/protocol"
+	"github.com/getsyntegrity/urd/persistence"
+	"github.com/getsyntegrity/urd/tenancy"
 )
+
+// publicationScope returns the scope the engine's publishers and subscribers
+// register for (EGO-TENANT-005). Without a tenant resolver it is
+// persistence.Unscoped(), so single-tenant mode needs no plumbing. In a
+// tenant-aware engine it is the resolver's fixed tenant; when the resolver has
+// none, it fails closed with ErrPublicationTenantUndetermined, because the
+// alternatives are an all-tenants subscription (a bypass, which #96 rules out)
+// or a silent Unscoped() one that would receive nothing.
+func (engine *Engine) publicationScope() (persistence.Scope, error) {
+	if engine.tenantResolver == nil {
+		return persistence.Unscoped(), nil
+	}
+	id, ok := tenancy.FixedTenantOf(engine.tenantResolver)
+	if !ok {
+		return persistence.Scope{}, ErrPublicationTenantUndetermined
+	}
+	scope, err := persistence.NewTenantScope(id)
+	if err != nil {
+		return persistence.Scope{}, errors.Join(ErrPublicationTenantUndetermined, err)
+	}
+	return scope, nil
+}
+
+// deliveryContext builds the context a publisher receives for a message
+// published for scope, and re-checks the message's own tenant identity against
+// it (defence in depth: the publish site already checked it). For a tenant
+// scope the context carries the tenant, so tenancy.From(ctx) names it. For
+// Unscoped() it is a plain context, with no tenant plumbing. An invalid scope,
+// or identity that is absent, invalid, administrative or for another tenant,
+// returns an error and the message must not be delivered.
+func deliveryContext(scope eventstream.Scope, tenantMetadata map[string]string) (context.Context, error) {
+	if err := eventstream.VerifyScope(scope, tenantMetadata); err != nil {
+		return nil, err
+	}
+	if scope.IsUnscoped() {
+		return context.Background(), nil
+	}
+	tc, err := tenancy.NewTenantContext(scope.TenantID())
+	if err != nil {
+		return nil, err
+	}
+	return tenancy.Attach(context.Background(), tc)
+}
+
+// rejectPublication drops, logs at error level and counts a message whose
+// tenant identity failed the delivery check. The publisher loop goes on.
+func (engine *Engine) rejectPublication(publisherID, persistenceID string, scope eventstream.Scope, err error) {
+	engine.metrics.PublicationRejected(context.Background())
+	engine.logger.Error("publication dropped: tenant identity check failed",
+		"publisher", publisherID,
+		"persistence_id", persistenceID,
+		"scope", scope.String(),
+		"error", err)
+}
 
 type eventsStream struct {
 	publisher  EventPublisher
@@ -58,13 +115,22 @@ func (engine *Engine) Subscribe() (eventstream.Subscriber, error) {
 		return nil, ErrEngineNotStarted
 	}
 
+	scope, err := engine.publicationScope()
+	if err != nil {
+		return nil, err
+	}
+
 	engine.mutex.RLock()
 	eventStream := engine.eventStream
 	engine.mutex.RUnlock()
 
 	subscriber := eventStream.AddSubscriber()
-	eventStream.Subscribe(subscriber, protocol.EventsTopic)
-	eventStream.Subscribe(subscriber, protocol.StatesTopic)
+	for _, topic := range []string{protocol.EventsTopic, protocol.StatesTopic} {
+		if err := protocol.SubscribeScoped(eventStream, subscriber, scope, topic); err != nil {
+			eventStream.RemoveSubscriber(subscriber)
+			return nil, err
+		}
+	}
 
 	return subscriber, nil
 }
@@ -113,6 +179,11 @@ func (engine *Engine) AddEventPublishers(publishers ...EventPublisher) error {
 		return ErrEngineNotStarted
 	}
 
+	scope, err := engine.publicationScope()
+	if err != nil {
+		return err
+	}
+
 	engine.mutex.Lock()
 	defer engine.mutex.Unlock()
 
@@ -130,7 +201,10 @@ func (engine *Engine) AddEventPublishers(publishers ...EventPublisher) error {
 	for _, publisher := range publishers {
 		subscriber := engine.eventStream.AddSubscriber()
 		engine.logger.Debug("events publisher subscribing to topic", "publisher", publisher.ID(), "topic", protocol.EventsTopic)
-		engine.eventStream.Subscribe(subscriber, protocol.EventsTopic)
+		if err := protocol.SubscribeScoped(engine.eventStream, subscriber, scope, protocol.EventsTopic); err != nil {
+			engine.eventStream.RemoveSubscriber(subscriber)
+			return err
+		}
 
 		// create an instance of the event subscriber
 		eventSubscriber := &eventsStream{
@@ -168,6 +242,11 @@ func (engine *Engine) AddStatePublishers(publishers ...StatePublisher) error {
 		return ErrEngineNotStarted
 	}
 
+	scope, err := engine.publicationScope()
+	if err != nil {
+		return err
+	}
+
 	engine.mutex.Lock()
 	defer engine.mutex.Unlock()
 
@@ -185,7 +264,10 @@ func (engine *Engine) AddStatePublishers(publishers ...StatePublisher) error {
 	for _, publisher := range publishers {
 		subscriber := engine.eventStream.AddSubscriber()
 		engine.logger.Debug("durable state publisher subscribing to topic", "publisher", publisher.ID(), "topic", protocol.StatesTopic)
-		engine.eventStream.Subscribe(subscriber, protocol.StatesTopic)
+		if err := protocol.SubscribeScoped(engine.eventStream, subscriber, scope, protocol.StatesTopic); err != nil {
+			engine.eventStream.RemoveSubscriber(subscriber)
+			return err
+		}
 
 		// create an instance of the state subscriber
 		stateSubscriber := &statesStream{
@@ -234,7 +316,13 @@ func (engine *Engine) sendEvent(stream *eventsStream) {
 				continue
 			}
 
-			if err := stream.publisher.Publish(context.Background(), event); err != nil {
+			pubCtx, err := deliveryContext(message.Scope(), event.GetTenantMetadata())
+			if err != nil {
+				engine.rejectPublication(stream.publisher.ID(), event.GetPersistenceId(), message.Scope(), err)
+				continue
+			}
+
+			if err := stream.publisher.Publish(pubCtx, event); err != nil {
 				engine.logger.Error("failed to publish event",
 					"publisher", stream.publisher.ID(),
 					"persistence_id", event.GetPersistenceId(),
@@ -281,7 +369,13 @@ func (engine *Engine) sendState(stream *statesStream) {
 			}
 
 			publisher := stream.publisher
-			if err := publisher.Publish(context.Background(), msg); err != nil {
+			pubCtx, err := deliveryContext(message.Scope(), msg.GetTenantMetadata())
+			if err != nil {
+				engine.rejectPublication(publisher.ID(), msg.GetPersistenceId(), message.Scope(), err)
+				continue
+			}
+
+			if err := publisher.Publish(pubCtx, msg); err != nil {
 				engine.logger.Error("failed to publish durable state",
 					"publisher", publisher.ID(),
 					"persistence_id", msg.GetPersistenceId(),

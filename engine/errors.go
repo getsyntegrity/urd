@@ -76,6 +76,17 @@ var (
 	// was not applied at construction time. Actors that cannot find an
 	// extension they require in PreStart wrap this same value.
 	ErrMissingRequiredExtensions = extensions.ErrMissingRequiredExtensions
+	// ErrPublicationTenantUndetermined is returned by AddEventPublishers,
+	// AddStatePublishers and Subscribe when tenancy is active (a
+	// tenancy.TenantResolver is registered via WithTenantResolver) but the
+	// resolver exposes no fixed tenant (tenancy.FixedTenantResolver), so the
+	// engine cannot tell which tenant's events the publisher or subscriber is
+	// for. Registration fails closed and registers nothing: the engine never
+	// subscribes to every tenant, and has no administrative bypass for it
+	// (EGO-TENANT-005, #96). A resolver whose FixedTenant() reports a tenant, as
+	// tenancy.WithSingleTenant's does, makes registration succeed for that
+	// tenant. A per-tenant registration API is an open owner decision.
+	ErrPublicationTenantUndetermined = errors.New("urd: publication tenant undetermined: a tenant-aware engine needs a fixed tenant to register a publisher or subscriber")
 	// ErrSpawnTenantUndetermined is returned by Entity, DurableStateEntity,
 	// and Saga when tenancy is active (a tenancy.TenantResolver is
 	// registered via WithTenantResolver) but the engine cannot determine
