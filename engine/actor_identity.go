@@ -70,7 +70,7 @@ func (engine *Engine) actorName(tenantID, id string) (string, error) {
 // actorNameFor resolves the actor name of entity id for the already-resolved
 // caller identity tc. A caller with no tenant (administrative or zero scope)
 // cannot name an actor of any tenant, so in a multi-tenant engine it is denied
-// here, before anything is sent; administrative semantics are TENANT-008.
+// here, before anything is sent; no administrative bypass is supported (openspec/changes/ego-tenant-008).
 func (engine *Engine) actorNameFor(tc tenancy.TenantContext, id string) (string, error) {
 	if !qualifiesActorNames(engine.tenantResolver) {
 		return id, nil
