@@ -22,7 +22,11 @@
 
 package projection
 
-import "time"
+import (
+	"time"
+
+	"github.com/getsyntegrity/urd/persistence"
+)
 
 // Options holds the configuration required to run a projection handler.
 type Options struct {
@@ -42,4 +46,17 @@ type Options struct {
 	// DeadLetterHandler receives events that the projection handler failed to process
 	// after exhausting its recovery policy. When nil, failed events are silently discarded.
 	DeadLetterHandler DeadLetterHandler
+	// Scope declares the tenant scope the projection consumes. A nil Scope
+	// means the scope is omitted and the engine resolves it from its tenancy
+	// mode: Unscoped() without tenancy, the fixed tenant with a fixed
+	// single-tenant resolver, and a start failure on a tenant-aware engine
+	// without a fixed tenant. A non-nil Scope is an explicit declaration: an
+	// invalid value is rejected in every mode, an explicit Unscoped() is
+	// rejected on a tenant-aware engine, a tenant scope is rejected on an
+	// engine without tenancy, and a scope different from a fixed resolver's
+	// tenant is rejected.
+	//
+	// The engine copies the value at registration; changing the variable the
+	// pointer refers to afterwards does not change the registered scope.
+	Scope *persistence.Scope
 }

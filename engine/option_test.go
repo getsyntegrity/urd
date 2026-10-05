@@ -391,8 +391,12 @@ func TestOptionWithProjection(t *testing.T) {
 				Recovery:     recovery,
 			}
 			c := NewConfig(nil, WithProjection("accounts", o))
-			ctx.Expect(c.projections != nil).To(specs.BeTrue())
-			ctx.Expect(c.projections["accounts"] == o).To(specs.BeTrue())
+			ctx.Expect(len(c.projections)).ToEqual(1)
+			ctx.Expect(c.projections[0].name).To(specs.Equal("accounts"))
+			// the registration is a copy of the caller's options
+			ctx.Expect(c.projections[0].options.BufferSize).ToEqual(500)
+			ctx.Expect(c.projections[0].options.PullInterval).To(specs.Equal(time.Second))
+			ctx.Expect(c.projections[0].options.Recovery == recovery).To(specs.BeTrue())
 		})
 	})
 }
@@ -407,8 +411,8 @@ func TestOptionWithProjectionMultiple(t *testing.T) {
 				WithProjection("audit", audit),
 			)
 			ctx.Expect(len(c.projections)).ToEqual(2)
-			ctx.Expect(c.projections["accounts"] == accounts).To(specs.BeTrue())
-			ctx.Expect(c.projections["audit"] == audit).To(specs.BeTrue())
+			ctx.Expect(c.projections[0].name).To(specs.Equal("accounts"))
+			ctx.Expect(c.projections[1].name).To(specs.Equal("audit"))
 		})
 	})
 }

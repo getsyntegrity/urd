@@ -58,6 +58,29 @@ var (
 	// actor system. The caller must construct and start the actor system
 	// themselves before plugging Urd in.
 	ErrActorSystemRequired = errors.New("actor system is required")
+	// ErrProjectionScopeUndetermined is returned by NewEngine when a projection
+	// declares no Scope on a tenant-aware engine without a fixed tenant. There
+	// is no unscoped fallback: declare the scope explicitly.
+	ErrProjectionScopeUndetermined = errors.New("projection scope undetermined: a tenant-aware engine without a fixed tenant requires an explicit Scope")
+
+	// ErrProjectionScopeRejected is returned by NewEngine when a projection
+	// declares an explicit Scope the engine's tenancy mode does not admit: an
+	// invalid scope in any mode, Unscoped() on a tenant-aware engine, a tenant
+	// scope on an engine without tenancy, or a tenant different from a fixed
+	// single-tenant resolver's.
+	ErrProjectionScopeRejected = errors.New("projection scope rejected")
+
+	// ErrProjectionDuplicate is returned by NewEngine when the same projection
+	// name is registered twice under the same effective scope.
+	ErrProjectionDuplicate = errors.New("projection registered twice under the same scope")
+
+	// ErrProjectionNameAmbiguous is returned by NewEngine when one projection
+	// name is registered under more than one scope. The registry keeps them
+	// apart, but start, stop and addressing still resolve by name alone, so
+	// the engine refuses to run an ambiguous name until scoped addressing
+	// exists.
+	ErrProjectionNameAmbiguous = errors.New("projection name registered under more than one scope: scoped addressing is not available yet")
+
 	// ErrAmbiguousTenantResolver is returned when NewEngine finds that a
 	// Config recorded more than one non-nil WithTenantResolver registration.
 	// TenantResolver is a security boundary (DP2): the engine never picks

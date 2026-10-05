@@ -157,6 +157,13 @@ func NewEngine(actorSys goakt.ActorSystem, config *Config) (*Engine, error) {
 		return nil, ErrAmbiguousTenantResolver
 	}
 
+	// Projection scopes are validated against the final tenancy mode, after
+	// every option has been applied, so the result does not depend on the
+	// order of WithProjection and WithTenantResolver.
+	if _, err := config.resolveProjections(); err != nil {
+		return nil, err
+	}
+
 	if err := validateActorSystemExtensions(actorSys, config); err != nil {
 		return nil, err
 	}
