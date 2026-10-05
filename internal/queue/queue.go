@@ -23,7 +23,6 @@
 package queue
 
 import (
-	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -33,7 +32,6 @@ type Queue struct {
 	head unsafe.Pointer // pointer to the head of the queue
 	tail unsafe.Pointer // pointer to the tail of the queue
 	len  int64          // length of the queue
-	pool sync.Pool
 }
 
 // item is a single node in the queue.
@@ -50,19 +48,16 @@ func NewQueue() *Queue {
 		head: unsafe.Pointer(dummy), // both head and tail point to the dummy node
 		tail: unsafe.Pointer(dummy),
 		len:  0,
-		pool: sync.Pool{
-			New: func() interface{} {
-				return &item{}
-			},
-		},
 	}
 }
 
 // Enqueue adds a value to the tail of the queue.
 func (q *Queue) Enqueue(v interface{}) {
-	// Get a node from the pool
-	newNode := q.getItem()
-	newNode.v = v
+	// A node is never recycled: a producer can still hold a stale tail or next
+	// pointer to a node that has already been dequeued, and a recycled node
+	// would let it link its value to a node that is no longer in the queue, or
+	// to itself. The garbage collector frees a node once nothing references it.
+	newNode := &item{v: v}
 	newNodePtr := unsafe.Pointer(newNode)
 
 	for {
@@ -105,11 +100,7 @@ func (q *Queue) Dequeue() interface{} {
 
 		// Try to advance the head
 		if atomic.CompareAndSwapPointer(&q.head, unsafe.Pointer(head), next) {
-			// Get the value before potentially releasing the node
 			value := nextNode.v
-
-			// Release the old head node back to the pool
-			q.releaseItem(head)
 
 			// Decrement length atomically
 			atomic.AddInt64(&q.len, -1)
@@ -127,19 +118,4 @@ func (q *Queue) Length() uint64 {
 // IsEmpty returns true when the queue is empty
 func (q *Queue) IsEmpty() bool {
 	return atomic.LoadInt64(&q.len) == 0
-}
-
-// getItem retrieves a node from the pool or creates a new one
-func (q *Queue) getItem() *item {
-	return q.pool.Get().(*item)
-}
-
-// releaseItem returns a node to the pool for reuse
-func (q *Queue) releaseItem(i *item) {
-	// Reset i to prevent memory leaks.
-	// Use atomic store for `next` because concurrent Enqueue/Dequeue
-	// goroutines may still read this field via atomic.LoadPointer.
-	i.v = nil
-	atomic.StorePointer(&i.next, nil)
-	q.pool.Put(i)
 }
