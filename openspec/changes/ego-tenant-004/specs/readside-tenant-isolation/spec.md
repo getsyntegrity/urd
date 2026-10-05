@@ -1,0 +1,97 @@
+# Read-Side Tenant Isolation Specification (acceptance cases READY; design of ports, storage and migration PENDING)
+
+## Purpose
+
+Behavioural, storage-agnostic isolation cases for read-side processors.
+The #71 contract (`ego-read-001`) was approved by the owner on 2026-10-05, so
+the cases below are the acceptance criteria for #93. They still name no key
+shape, filter mechanism, table or migration: those are the #93 design.
+
+## Requirements
+
+R1. Progress of a processor MUST be independent per tenant scope.
+R2. A processor bound to a tenant MUST receive only that tenant's events.
+R3. A processor MUST stay bound to its scope across restart; nothing may change the scope of an instance already registered or active. The same name under two scopes is two instances, not a change.
+R4. A tenant-aware engine MUST fail closed when a processor's scope cannot be determined.
+R5. Single-tenant and no-tenancy use MUST need no extra application plumbing (an omitted scope is resolved automatically; an explicit invalid one is still rejected) and MUST keep prior progress.
+R6. Once the runner has an explicit scope and a scoped subscription, the temporary projection wake-up introduced by #94 MUST be removed, and no public path MAY receive it.
+
+## Acceptance Criteria
+
+| AC | Req | Observable pass/fail |
+|---|---|---|
+| AC-1 | R1 | Tenants A and B, same processor name and same entity ID: progress recorded for A is not visible to B, and conversely. |
+| AC-2 | R2 | Processor for A over a journal holding A and B events: the handler sees only A's; B's events do not alter A's progress. |
+| AC-3 | R1, R3 | A and B at different progress, both restarted: each resumes from its own progress; resetting A leaves B unchanged. |
+| AC-4 | R1, R2 | `Unscoped()` and a tenant named "unscoped" do not share progress or events. |
+| AC-5 | R4 | Scope omitted and undeterminable on a tenant-aware engine; explicitly declared invalid on ANY engine, including legacy and fixed single-tenant; explicit `Unscoped()` on any tenant-aware engine; an explicit scope different from a fixed single-tenant resolver's tenant; or an explicit tenant scope on an engine without tenancy (rules approved in SPEC-READ-001): start fails, nothing is read or recorded, no fallback to `Unscoped()` or to the fixed tenant. |
+| AC-6 | R5 | No-tenancy and fixed single-tenant engines run with the scope OMITTED (bound to `Unscoped()` and to the fixed tenant respectively), and progress made before the change is still honoured. |
+| AC-7 | R6 | Tenant-aware engine, projection bound to tenant A, wake topic absent: it advances on A's scoped publication, reading A's own journal and not an unscoped one. |
+| AC-8 | R6 | Same setup: a publication scoped to tenant B does not advance A's projection. |
+| AC-9 | R6 | After removal, nothing public (topic, subscription, option, exported symbol) delivers or can receive the wake. |
+
+## Deferred to the #93 design (PENDING)
+
+Not decided in this document; the #93 design decides them after reviewing
+existing data and adapters:
+
+- how offset identity is composed;
+- how shard reads are restricted to a scope;
+- any schema change or migration (and its number), including a data
+  migration check for existing rows.
+
+## Human gates
+
+Data-migration gate: PENDING (only if a storage change results). Public API
+gate: APPROVED by the owner on 2026-10-05 (SPEC-READ-001, HEAD `b4d3867` of #315).
+
+## Test plan
+
+AC-1..AC-6 in the unit lane: go-specs, mocks or testkit in-memory stores,
+deterministic clock, no sleeps, no external resources. Any storage-level
+check goes to the Postgres lane under `inttest`. Conformance additions are #95's.
+
+## Risks / Open Questions
+
+Q1-Q6 are decided in `openspec/changes/ego-read-001/proposal.md`; Q6
+(identity vs name-keyed registry and singleton) directly affects AC-1 and
+AC-3. Open: only the #93 design of ports, storage and migration.
+
+## Removal of the temporary wake-up (#94) - R6
+
+Owner decision. #94 introduces a temporary wake-up so a tenant-aware
+projection advances on tenant-scoped publications: the internal topic
+`protocol.ProjectionWakeTopic`, the wrapper the projection actor hands the
+runner (`internal/engine/projection/wake_stream.go`, `withProjectionWake`),
+and the extra post in `protocol.PublishScoped`. These symbols are now in
+`develop` (f21520f, #316), at `internal/engine/protocol/publish.go` and
+`internal/engine/projection/wake_stream.go`; re-verify against the code when
+the task starts.
+
+**When it is removed:** when #93 gives the runner an explicit scope and a
+scoped subscription. Not before.
+
+**Replacement tests** (behavioural, storage-agnostic; AC-7 to AC-9):
+- AC-7: a tenant-aware engine runs a projection bound to tenant A and it
+  advances on A's scoped publication without the wake topic, reading A's own
+  journal, not an unscoped one.
+- AC-8: a publication scoped to tenant B does not advance A's projection.
+- AC-9: no public path receives the wake after removal.
+
+**Test retirement rule:** `TestProjectionWakeStream` and
+`TestProjectionAdvancesOnTenantScopedPublication` (#316) are retired only in
+the same change that adds tests proving AC-7 and AC-8, and the retirement
+MUST NOT reduce coverage of "a tenant-aware projection still advances".
+
+This does not decide offset identity, shard filtering or migration; those
+stay deferred to the #93 design. #93 is no longer blocked by the #71 contract,
+which is approved; #93 stays open until implemented and demonstrated.
+
+## Tasks
+
+| Task | Acceptance |
+|---|---|
+| T0 Owner approves SPEC-READ-001 | DONE: approved 2026-10-05 |
+| T1 Design the deferred items | AC-1..AC-6 |
+| T2 Tests first, then implementation | AC-1..AC-6 |
+| T3 Add replacement tests, then remove the wake-up and retire the two tests | AC-7, AC-8, AC-9 |
