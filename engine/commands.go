@@ -189,6 +189,10 @@ func (engine *Engine) Dispatch(ctx context.Context, entityID string, env command
 
 	ctx = protocol.AttachCarrier(ctx, command.MarshalMetadata(env.Metadata()))
 
+	// Every call is its own request to the entity, even when two calls send the
+	// same envelope: the actor tells them apart by this token.
+	ctx = protocol.AttachRequestToken(ctx)
+
 	reply, sendErr := ref.noSender.SendSync(ctx, actorName, env.Payload(), timeout)
 	if sendErr != nil {
 		// SendSync/goakt's Ask races ctx.Done() against its own internal

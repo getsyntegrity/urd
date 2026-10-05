@@ -187,8 +187,8 @@ func TestResetBatchDropsTheRequestsOfThePreviousRun(t *testing.T) {
 				phase:            phaseReplying,
 				remainingReplies: 2,
 				batchEntries: []batchEntry{
-					{request: directRequest{set: true, message: &testpb.CreditAccount{}, ctx: callCtx("a")}},
-					{request: directRequest{set: true, message: &testpb.CreditAccount{}, ctx: callCtx("b")}},
+					{request: recorded(&testpb.CreditAccount{}, callCtx("a"), nil)},
+					{request: recorded(&testpb.CreditAccount{}, callCtx("b"), nil)},
 				},
 			}
 
