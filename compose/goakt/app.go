@@ -66,6 +66,7 @@ import (
 	"sync/atomic"
 
 	actor "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/remote"
 
 	"github.com/getsyntegrity/urd/compose"
 	"github.com/getsyntegrity/urd/compose/internal/adapters"
@@ -299,6 +300,10 @@ func (a *App) startActorSystem(ctx context.Context) error {
 	actorOpts := config.GoaktOptions()
 	if a.opts.cluster != nil {
 		actorOpts = append(actorOpts, actor.WithCluster(a.opts.cluster.WithKinds(engine.ClusterKinds()...)))
+	}
+	if r := a.opts.remoting; r != nil {
+		remoteOpts := append(config.RemoteOptions(), r.opts...)
+		actorOpts = append(actorOpts, actor.WithRemote(remote.NewConfig(r.host, r.port, remoteOpts...)))
 	}
 	actorOpts = append(actorOpts, a.opts.actorOptions...)
 
