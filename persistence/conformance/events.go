@@ -70,6 +70,7 @@ var EventsStoreChecks = []Check[persistence.EventsStore]{
 	{Name: "ShardReads/PagingNeverSkipsEventsSharingATimestamp", Run: eventsShardPagingKeepsTimestampTies},
 	{Name: "ShardReads/PagingResumesFromACommittedOffsetInsideATie", Run: eventsShardPagingResumesInsideATie},
 	{Name: "ShardReads/PagingStaysInScopeAcrossTies", Run: eventsShardPagingTiesStayInScope},
+	{Name: "ShardReads/LateVisibleEventsBehindACommittedOffsetAreDelivered", Run: eventsShardLateVisibleEventsAreDelivered},
 	{Name: "ShardReads/ShardOffsetsCoverOnlyTheScopesShards", Run: eventsShardOffsetsScoped},
 	{Name: "ShardReads/UnscopedNeverReadsATenantNamedUnscoped", Run: eventsShardReadsUnscopedVersusForgedTenant},
 	{Name: "ShardReads/InvalidScopeIsRejectedAndReadsNothing", Run: eventsShardReadsRejectInvalidScope},
@@ -465,6 +466,55 @@ func eventsShardPagingResumesInsideATie(ctx context.Context, t TestingT, store p
 		offset = next
 	}
 	requireEqual(t, tiedShardEvents, resumed, "resuming from the committed offset must recover the rest of the tie")
+}
+
+// eventsShardLateVisibleEventsAreDelivered is the #332 regression. It is
+// KNOWN RED against the current timestamp cursor, on the in-repo store and on
+// PostgreSQL, and is deliberately not skipped: it turns green only with the
+// journal cursor of #332, whose design is still pending its gates. Do not skip
+// or weaken it to unblock a build.
+// An event's
+// timestamp is stamped before its transaction commits, so a slower writer on
+// the same shard can become visible after a consumer already committed an
+// offset past that timestamp. The sequence is observable without concurrency:
+// what matters is the order in which the events BECOME VISIBLE, not the order
+// of their timestamps.
+//
+//  1. a@100 and b@200 are visible; the consumer reads both and commits.
+//  2. late@200 (a timestamp tie with the committed one) and late@150 (older
+//     than it) become visible afterwards, each from a different entity.
+//  3. reading from the committed progress must deliver both.
+func eventsShardLateVisibleEventsAreDelivered(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	const shard = 9
+	scope := mustTenantScope(t, "tenant-a")
+
+	requireNoError(t, store.WriteEvents(ctx, scope, tiedShardBatch(t, "visible-a", 1, shard, 100), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, scope, tiedShardBatch(t, "visible-b", 1, shard, 200), persistence.Unconditional()))
+
+	first, committed, err := store.GetShardEvents(ctx, scope, shard, 0, 10)
+	requireNoError(t, err)
+	requireEqual(t, []string{"visible-a/1", "visible-b/1"}, shardEventKeys(first), "the consumer reads what is visible before committing")
+
+	requireNoError(t, store.WriteEvents(ctx, scope, tiedShardBatch(t, "late-at-200", 1, shard, 200), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, scope, tiedShardBatch(t, "late-at-150", 1, shard, 150), persistence.Unconditional()))
+
+	var resumed []string
+	offset := committed
+	for page := 0; page < 100; page++ {
+		events, next, err := store.GetShardEvents(ctx, scope, shard, offset, 1)
+		requireNoError(t, err)
+		if len(events) == 0 {
+			break
+		}
+		resumed = append(resumed, shardEventKeys(events)...)
+		offset = next
+	}
+	requireElementsMatch(t, []string{"late-at-150/1", "late-at-200/1"}, resumed, "events that became visible behind the committed progress must still be delivered, exactly once")
+
+	// reading from zero is the reference: nothing may exist that only a full
+	// re-read can see
+	all := drainShard(ctx, t, store, scope, shard, 10)
+	requireEqual(t, 4, len(all), "the journal holds exactly the four events")
 }
 
 func eventsShardPagingTiesStayInScope(ctx context.Context, t TestingT, store persistence.EventsStore) {
