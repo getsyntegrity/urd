@@ -8,7 +8,7 @@
 
 ## 1. Product outcome
 
-Urd should let a Go application persist domain decisions, build recoverable read models, and operate multiple tenants without silent event omissions, uncontrolled queues, or unclear ownership of resources. Application developers should use a coherent programming model over GoAkt; advanced users should be able to consume the public persistence and projection contracts directly.
+Urd should let a Go application persist domain decisions, build recoverable read models, and operate either a single tenant or multiple tenants without silent event omissions, uncontrolled queues, or unclear ownership of resources. Application developers should use a coherent programming model over GoAkt; advanced users should be able to consume the public persistence and projection contracts directly.
 
 This work evolves an existing framework. It does not start a replacement implementation. Persistence, durable state, actors, projection code, publishers, sagas, adapters and testkit facilities already have baseline implementations that must be inventoried before they are preserved, migrated or removed. Their presence does not establish that they satisfy the new contracts. [Baseline verification #346](https://github.com/getsyntegrity/urd/issues/346) records the evidence.
 
@@ -18,6 +18,7 @@ The previous roadmap was retired in [#341](https://github.com/getsyntegrity/urd/
 
 | User | Scenario | Required outcome |
 | --- | --- | --- |
+| Single-tenant developer | Start an application without tenant identities or a tenant catalog, on one node or a cluster. | Default configuration works with an explicit unscoped partition and preserves existing data; multitenancy remains optional. |
 | Backend developer | A command commits, but its response is lost and the client retries. | The same command identity returns the recorded result without emitting another logical decision, within the declared retention window. |
 | Read-side developer | Transactions commit out of order, a handler fails, and the worker restarts. | No committed event is silently omitted; entity order, checkpoints and recovery remain explainable. |
 | Multitenant operator | One tenant saturates storage access while another uses a contracted resource profile. | Bounded admission and explicit shared or dedicated connection policies prevent unrestricted consumption. |
@@ -25,6 +26,33 @@ The previous roadmap was retired in [#341](https://github.com/getsyntegrity/urd/
 | Workflow developer | A saga stops while events arrive or a deadline expires. | Durable consumption, state and timers recover; retries and compensation have explicit identities. |
 | Operator | A projection is paused, rebuilt, or migrated for one tenant. | Authorized operations remain scoped, auditable and safe under ownership changes. |
 | GoAkt/Urd developer | Actors move between nodes and message traffic is hard to understand. | An open source terminal inspector shows observed placement, operational status and sampled interactions with freshness and coverage visible. |
+
+### Supported deployment modes
+
+Single tenancy is a first-class supported deployment model, not a degraded form of multitenancy. The final API names are subject to the ADR; the product supports these three configurations:
+
+| Configuration | Identity and scope | Required composition |
+| --- | --- | --- |
+| Single tenant without tenancy | No tenant ID is required. Records use `Unscoped()`; reads use `OneScope(Unscoped())`. This is the compatibility default when no tenancy configuration is supplied. | Persistence/projection capabilities used by the application, a trivial default-cell router, and bounded deployment-level resource profiles. A tenancy resolver, tenant catalog and tenancy extension are not mandatory. |
+| Single tenant with fixed identity | One validated tenant ID configured at startup maps to a fixed scope. Conflicting explicit identities are rejected. | A fixed binding/provider; dynamic tenant discovery, a catalog and per-tenant routing policies are optional. |
+| Multiple tenants | Each operation resolves and validates its tenant; records and progress retain explicit scope isolation. | The configured tenancy services and policies. Missing or invalid identity is rejected where tenancy is enabled. |
+
+Tenancy mode is independent of single-node versus clustered runtime, cell placement, Shared/Dedicated pool access and PerScope/SharedCell processing. PerScope can process `Unscoped()` in a deployment without tenancy. SharedCell is an explicit privileged selection and never follows implicitly from `Unscoped()`.
+
+Single tenancy does not disable application authentication, operational authorization, admission limits or backpressure. Pools are selected by the default scope, cell and backend role when tenancy is absent; connection budgets still include replicas and physical backend capacity. Optional features must remain usable in single-tenant mode without fabricated tenant IDs. In particular, integration/workflow identities include the explicit unscoped or fixed scope, management operates within the configured scope, and actor inspection must not require Urd tenancy merely to inspect a GoAkt deployment.
+
+Keeping a deployment unscoped through the refactor must preserve stored keys, existing streams and snapshots without a new tenant migration. Moving from unscoped data to a fixed or multitenant identity is a separate explicit adoption/migration decision; changing configuration must not silently reassign old data, reinterpret cursors or grant cross-scope access. [Deployment-mode implementation and acceptance #424](https://github.com/getsyntegrity/urd/issues/424) coordinates the core and feature-specific tests.
+
+```mermaid
+flowchart TD
+  C["Deployment configuration"] --> M{"Tenancy mode"}
+  M -->|Single without tenancy| U["Explicit Unscoped partition"]
+  M -->|Single fixed identity| F["Validated fixed Scope"]
+  M -->|Multiple tenants| T["Resolve tenant per operation"]
+  U --> P["Scoped persistence and projection contracts"]
+  F --> P
+  T --> P
+```
 
 ## 3. Scope and package ownership
 
@@ -34,7 +62,7 @@ The product has eight logical boundaries. During phases 0–2 these are package 
 | --- | --- | --- | --- |
 | Persistence | Journal, snapshots, opaque scopes, logical slices, reader contracts, adapters and conformance. | Runtime/public ports as approved by the ADR; never projection, tenancy or Urd domain. | [#342](https://github.com/getsyntegrity/urd/issues/342) |
 | Projection | Reader execution, destination checkpoints, applied markers, preparation, fencing, parking and recovery. | Public persistence contracts; injected codecs and metrics. | [#343](https://github.com/getsyntegrity/urd/issues/343) |
-| Tenancy | Identity/context, resource profiles, cell routing and tenant lifecycle policies. | Public persistence/projection contracts. | [#344](https://github.com/getsyntegrity/urd/issues/344) |
+| Tenancy | Optional identity/context, resource profiles, cell routing and tenant lifecycle policies when configured. | Public persistence/projection contracts. | [#344](https://github.com/getsyntegrity/urd/issues/344) |
 | Urd | Domain programming model, read-side API, composition and developer experience. | Public contracts of the other boundaries and GoAkt. | [#345](https://github.com/getsyntegrity/urd/issues/345) |
 | Integration | Durable integration envelopes, local outbox intents, relay and existing publisher adapters. | Public persistence/projection and existing `port/publishing`; never root Urd. | [#395](https://github.com/getsyntegrity/urd/issues/395) |
 | Testkit | Existing testkit extensions, deterministic fakes, fault drivers and integration harnesses. | Public contracts and test utilities; no production package imports testkit. | [#396](https://github.com/getsyntegrity/urd/issues/396) |
@@ -47,7 +75,7 @@ The following diagram shows only the foundational dependency relationship; addit
 
 ```mermaid
 flowchart TD
-  U["Urd: API and composition"] --> T["Tenancy: policy"]
+  U["Urd: API and composition"] -->|When configured| T["Tenancy: policy"]
   U --> R["Projection: execution"]
   U --> P["Persistence: contracts"]
   T --> R
@@ -59,6 +87,13 @@ flowchart TD
 ## 4. Functional requirements and acceptance
 
 Requirement IDs provide a stable product reference. Linked issues own implementation detail and evidence; changing a guarantee or boundary requires an explicit decision rather than silently editing a diagram.
+
+### Deployment configuration and compatibility
+
+| ID | Requirement and acceptance | Traceability |
+| --- | --- | --- |
+| D-01 | Single-tenant unscoped is the default without tenancy configuration; fixed single-tenant and multitenant configurations are explicit. Missing optional tenancy is valid; missing required services or conflicting identities fail during configuration/startup. Node count does not determine tenancy mode. | [#424](https://github.com/getsyntegrity/urd/issues/424), [#383](https://github.com/getsyntegrity/urd/issues/383), [#379](https://github.com/getsyntegrity/urd/issues/379) |
+| D-02 | Unscoped compatibility retains existing data identities. Mode changes require explicit adoption/migration; no implicit tenant IDs, wildcard scopes or cursor reuse across identities. Core and available feature tests cover unscoped, fixed and multitenant configurations, including resource limits and authorization. | [#424](https://github.com/getsyntegrity/urd/issues/424), [#349](https://github.com/getsyntegrity/urd/issues/349), [#405](https://github.com/getsyntegrity/urd/issues/405), [#408](https://github.com/getsyntegrity/urd/issues/408) |
 
 ### Persistence and projection
 
@@ -86,14 +121,14 @@ Version cutover pauses the old processor and records its per-slice barrier. The 
 
 | ID | Requirement and acceptance | Traceability |
 | --- | --- | --- |
-| T-01 | Tenant identity is extracted, propagated and validated across commands, events and queries. Scope/cursor validation and authorization reject cross-tenant access; privileged cell-wide selection is explicit. | [#379](https://github.com/getsyntegrity/urd/issues/379), [#368](https://github.com/getsyntegrity/urd/issues/368) |
+| T-01 | When tenancy is configured, tenant identity is extracted, propagated and validated across commands, events and queries; unscoped single-tenant operation does not require a tenant identity. Scope/cursor validation and authorization reject cross-tenant access; privileged cell-wide selection is explicit. | [#379](https://github.com/getsyntegrity/urd/issues/379), [#368](https://github.com/getsyntegrity/urd/issues/368) |
 | T-02 | Rebuild, cell migration and deletion operate on the intended tenant without resetting shared checkpoints or affecting another tenant. Inventory recovery data, snapshots, command IDs and later workflow/outbox state. | [#381](https://github.com/getsyntegrity/urd/issues/381), [#369](https://github.com/getsyntegrity/urd/issues/369), [#382](https://github.com/getsyntegrity/urd/issues/382) |
 | C-01 | Shared access has finite operations and waiters per pool, with generic per-scope admission; tenancy supplies the profile. Cancellation releases permits, full queues reject immediately and metrics distinguish occupancy, wait and rejection. | [#378](https://github.com/getsyntegrity/urd/issues/378), [#380](https://github.com/getsyntegrity/urd/issues/380) |
 | C-02 | Resource selection separates scope, cell, backend and role. Journal/feed and projection destination are independent resources. Shared/Dedicated is an access policy; DedicatedCell combines cell location and exclusive access. | [#390](https://github.com/getsyntegrity/urd/issues/390), [#368](https://github.com/getsyntegrity/urd/issues/368) |
 | C-03 | Dedicated pools have finite maxima, admitted reservations and bounded lazy creation. No silent fallback or lending to another tenant. Concurrent creation, failed creation, eviction, credential rotation and shutdown preserve active transactions and release resources. | [#392](https://github.com/getsyntegrity/urd/issues/392) |
 | C-04 | Deployment validation sums pool maxima by physical backend and replica maximum, including overlapping rolling-update instances, headroom and planned external clients. Over-allocation or unbounded growth is rejected before activation. V1 uses static budgets, not an invented distributed lease coordinator. | [#391](https://github.com/getsyntegrity/urd/issues/391), [#384](https://github.com/getsyntegrity/urd/issues/384) |
 | C-05 | SharedCell may use different tenant pools against a coherent transaction destination. V1 rejects independent destinations under one shared checkpoint. Pool selection happens before a transaction; rollback or saturation never advances progress. | [#393](https://github.com/getsyntegrity/urd/issues/393) |
-| U-01 | Compile-time adapters/services register through GoAkt extensions and resolve in `PreStart`. Minimum capabilities are validated per journal/feed/destination role. ReadSideProcessor exposes identity, version, mode, preparation and a tenant-visible envelope with the destination transaction. | [#383](https://github.com/getsyntegrity/urd/issues/383), [#384](https://github.com/getsyntegrity/urd/issues/384), [#366](https://github.com/getsyntegrity/urd/issues/366) |
+| U-01 | Compile-time adapters/services register through GoAkt extensions and resolve in `PreStart`; tenancy is required only for the configured identity/policy capabilities. Minimum capabilities are validated per journal/feed/destination role. ReadSideProcessor exposes identity, version, mode, preparation and a tenant-visible envelope with the destination transaction. | [#383](https://github.com/getsyntegrity/urd/issues/383), [#384](https://github.com/getsyntegrity/urd/issues/384), [#366](https://github.com/getsyntegrity/urd/issues/366) |
 
 A dedicated pool isolates connection access, not CPU, disk, locks or a shared database horizon. A maximum is a consumption ceiling; an admitted minimum is a budget reservation, with connection warming specified separately. Neither guarantees availability during outage/reconnection. Identity includes a credential identity/version without exposing secrets. Transactions require explicit commit/rollback even after cancellation. Ownership must distinguish borrowed consumer-managed stores from newly owned registry resources; an actor stopping must not close a pool used by other actors. These conditions are verified by [#394](https://github.com/getsyntegrity/urd/issues/394).
 
@@ -116,7 +151,7 @@ flowchart TD
 | I-01 | Integration envelopes have stable producer/scope/source-event-or-command/output-key-or-ordinal identities, version and causation. Multiple outputs/producers do not collide; rebuild/version changes cannot accidentally republish delivered events. | [#399](https://github.com/getsyntegrity/urd/issues/399), [#400](https://github.com/getsyntegrity/urd/issues/400) |
 | I-02 | A confirmed journal event is consumed by the existing reader/runner; destination Tx records intent, applied marker and checkpoint together. The relay uses fencing, bounded polling/retries and declared publisher ACK before recording delivery. Crash after ACK may duplicate delivery and keeps the same ID. | [#400](https://github.com/getsyntegrity/urd/issues/400), [#401](https://github.com/getsyntegrity/urd/issues/401) |
 | I-03 | Existing publisher adapters declare their real ACK/failure capabilities. Lifecycle tests cover duplicate delivery, noisy tenants, retention and coordinated migration/deletion of pending intents. No broker deployment is added. | [#402](https://github.com/getsyntegrity/urd/issues/402), [#403](https://github.com/getsyntegrity/urd/issues/403) |
-| K-01 | Extend existing testkit rather than copying TCK. Fakes, clocks and fault drivers provide reproducible commit, fence, parking, cancellation and pool scenarios without real resources in unit tests. | [#404](https://github.com/getsyntegrity/urd/issues/404), [#405](https://github.com/getsyntegrity/urd/issues/405), [#406](https://github.com/getsyntegrity/urd/issues/406) |
+| K-01 | Extend existing testkit rather than copying TCK. Fakes, clocks and fault drivers provide reproducible commit, fence, parking, cancellation and pool scenarios in unscoped, fixed and multitenant configurations without real resources in unit tests. | [#404](https://github.com/getsyntegrity/urd/issues/404), [#405](https://github.com/getsyntegrity/urd/issues/405), [#406](https://github.com/getsyntegrity/urd/issues/406) |
 | K-02 | A reusable PostgreSQL testcontainers harness provides real integration evidence with isolated fixtures and reliable teardown. Product drivers test PerScope/SharedCell and offer optional outbox/workflow scenarios without making future implementations mandatory dependencies. | [#407](https://github.com/getsyntegrity/urd/issues/407), [#408](https://github.com/getsyntegrity/urd/issues/408) |
 | W-01 | Consolidate existing sagas with scope/workflow/version identity and durable consumption. State, inbox dedupe, command intent and checkpoint use the compatible destination Tx; no independent journal runner or import of root Urd. | [#409](https://github.com/getsyntegrity/urd/issues/409), [#410](https://github.com/getsyntegrity/urd/issues/410) |
 | W-02 | CommandDispatcher delivers at least once using stable command IDs; compensation uses its own stable identity. Timers persist expiry and use CAS/version/fence against cancel/reprogram/fire races. Recovery tests cover events during downtime, uncertain outcomes and restart during compensation. | [#411](https://github.com/getsyntegrity/urd/issues/411), [#412](https://github.com/getsyntegrity/urd/issues/412), [#413](https://github.com/getsyntegrity/urd/issues/413) |
@@ -189,7 +224,7 @@ Metrics use bounded dimensions such as cell, backend role, access policy and cla
 
 | Stage | Deliverable | Exit evidence |
 | --- | --- | --- |
-| Phase 0 | Baseline audit, ADR, reader/scope/slice/checkpoint/command contracts, resource selection and workload model. | Verified baseline and explicit unresolved decisions; [#346](https://github.com/getsyntegrity/urd/issues/346), [#347](https://github.com/getsyntegrity/urd/issues/347), [#390](https://github.com/getsyntegrity/urd/issues/390). |
+| Phase 0 | Baseline audit, ADR, explicit tenancy modes, reader/scope/slice/checkpoint/command contracts, resource selection and workload model. | Verified baseline and explicit unresolved decisions; [#346](https://github.com/getsyntegrity/urd/issues/346), [#347](https://github.com/getsyntegrity/urd/issues/347), [#390](https://github.com/getsyntegrity/urd/issues/390). |
 | Gate A | Select the reader mechanism before committing the new reader schema. | [#387](https://github.com/getsyntegrity/urd/issues/387): omission, eligibility/progress and measured mechanism comparison; xid8 remains a candidate. |
 | Phase 1 | Internal persistence/projection correctness, Shared admission, dependency checks and core testkit/harness. | TCK, migrations and bounded-resource evidence; no new package extraction. |
 | Gate B | Verify the core under conformance and injected faults. | [#388](https://github.com/getsyntegrity/urd/issues/388). Phase-2 public read-side drivers and later features do not become circular prerequisites. |
@@ -200,7 +235,7 @@ Metrics use bounded dimensions such as cell, backend role, access policy and cla
 
 Architecture tests [#353](https://github.com/getsyntegrity/urd/issues/353) enforce approved imports and documented temporary exceptions. Unit tests use mocks/fakes and never call real databases or APIs. PostgreSQL/testcontainers, cluster and failure/load tests belong to explicit integration lanes. Existing code is retained or migrated based on inventory; archived specifications are not an active implementation source. [#386](https://github.com/getsyntegrity/urd/issues/386) gathers examples as capabilities become available without blocking the core guide on every later feature.
 
-Gate B evidence covers memory/testkit and PostgreSQL conformance, with injected failures for scope isolation, valid/mismatched cursors, contiguous append, command idempotency, transaction rollback/crash/dedupe, parking/replay and obsolete fencing. Passing fake scenarios alone is not proof of PostgreSQL behavior. Gate C does not require contacting maintainers.
+Gate B evidence covers single-tenant unscoped/fixed compatibility and the configured multitenant path in memory/testkit and PostgreSQL conformance, with injected failures for scope isolation, valid/mismatched cursors, contiguous append, command idempotency, transaction rollback/crash/dedupe, parking/replay and obsolete fencing. Passing fake scenarios alone is not proof of PostgreSQL behavior. Gate C does not require contacting maintainers.
 
 ## 7. Non-goals and guarantee boundaries
 
@@ -221,7 +256,7 @@ Gate B evidence covers memory/testkit and PostgreSQL conformance, with injected 
 | Dedicated pool catalog or replica growth can over-allocate the backend. | Static budget, bounded catalog, rolling-update reserve and rejection in #391; dynamic global admission requires a future ADR. |
 | SharedCell may hide incompatible destinations. | Enforce coherent destination identity in #384/#393; reject independent destinations with shared checkpoints until a separate checkpoint/aggregation design exists. |
 | Relay crashes, rebuilds or multiple producers cause duplicates/collisions. | Producer/output-aware stable identities, ACK capability and explicit replay/publication policy in #399–#403. |
-| Existing durable state, payload evolution or saga behavior can be lost during refactor. | Baseline preservation inventory in #346, recorded compatibility and targeted follow-up rather than deletion by assumption. |
+| Existing unscoped data, durable state, payload evolution or saga behavior can be lost during refactor. | Baseline preservation inventory in #346, mode compatibility in #424, explicit data adoption/migration and targeted follow-up rather than deletion or reassignment by assumption. |
 | GoAkt fork APIs differ from current public documentation. | #419 audits the effective pinned version/replace and cancellation/remote behavior; report unsupported data instead of guessing. |
 | Inspector attachment or telemetry leaks data or overloads the process. | Opt-in authorized channel, fail-closed permissions, redaction, bounded observation and failure isolation in #419–#422. |
 | Freeze/extraction precedes evidence or new boundaries contradict the ADR. | #347/#353 reconcile rules; Gate C and optional phase 3 decide independently from package naming. |
