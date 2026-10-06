@@ -52,7 +52,11 @@ func TestBaseline346PartitionStandalone(t *testing.T) {
 		if err != nil || rev != 1 {
 			t.Fatalf("write %s: rev=%d err=%v", id, rev, err)
 		}
-		if got := state.(*testpb.Account).GetAccountBalance(); got != 5 {
+		account, ok := state.(*testpb.Account)
+		if !ok {
+			t.Fatalf("write %s: state is %T, want *testpb.Account", id, state)
+		}
+		if got := account.GetAccountBalance(); got != 5 {
 			t.Fatalf("write %s: balance=%v", id, got)
 		}
 	}
@@ -90,11 +94,18 @@ func TestBaseline346CrossKindSpawnSharesOneActorName(t *testing.T) {
 	// One actor exists under the name, so the command is answered by the
 	// first (event-sourced) one; the durable-state entity was never created.
 	_, rev, err := e.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 3}, time.Minute)
-	t.Logf("SendCommand to the shared ID: revision=%d err=%v", rev, err)
-	if err != nil {
-		t.Fatalf("command to the shared ID: %v", err)
+	if err != nil || rev != 1 {
+		t.Fatalf("command to the shared ID: revision=%d err=%v", rev, err)
 	}
-	if got, _ := ds.GetLatestState(bg, persistence.Unscoped(), id); got != nil {
+	event, err := es.GetLatestEvent(bg, persistence.Unscoped(), id)
+	if err != nil || event == nil {
+		t.Fatalf("event store has no event for %s: event=%v err=%v", id, event, err)
+	}
+	durable, err := ds.GetLatestState(bg, persistence.Unscoped(), id)
+	if err != nil {
+		t.Fatalf("durable store lookup for %s: %v", id, err)
+	}
+	if durable != nil {
 		t.Fatalf("durable store has state for %s; the durable-state actor handled the command", id)
 	}
 }
