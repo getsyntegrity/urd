@@ -1,0 +1,11 @@
+start current load1=2.09 36.96 54.64
+done current rc=0 load=3.77 22.16 45.04
+start current+index load1=2.91 20.77 44.01
+done current+index rc=0 load=4.13 13.81 36.92
+start serialized load1=2.86 11.29 34.01
+done serialized rc=0 load=5.37 8.81 28.85
+start serialized-late load1=2.94 7.43 26.86
+done serialized-late rc=0 load=3.81 6.12 22.72
+start horizon load1=2.98 5.54 21.55
+done horizon rc=0 load=4.12 5.16 18.51
+ALLDONE

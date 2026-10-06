@@ -1,0 +1,7 @@
+BENCH|config|PostgreSQL 17.6 fsync=on synchronous_commit=on shared_buffers=128MB max_connections=300|writers=16 events/tx=3 duration=5s reps=3 hold=500ms gap=100ms poll-limit=100 goos/arch=darwin/arm64 host-cpus=16
+BENCH|poll-floor|shard-serialization|idle empty read p50=265.792µs p95=296.667µs
+BENCH|row|shard-serialization|6 hot shard, commit +5ms|tx/s=118 (114..126)|ev/s=355|write p50/p95/p99=95.138ms/365.652083ms/553.693042ms|lock-wait p50/p95/p99=86.523625ms/356.217833ms/543.880209ms|eligibility p50/p95/p99=590.416µs/1.321541ms/1.878833ms|writes=1813 held-tx=0
+BENCH|row|shard-serialization|7 eight shards, commit +5ms|tx/s=1129 (1112..1154)|ev/s=3386|write p50/p95/p99=13.705167ms/17.218459ms/18.982292ms|lock-wait p50/p95/p99=5.476291ms/7.503042ms/8.120917ms|eligibility p50/p95/p99=705.166µs/1.58475ms/2.485167ms|writes=16971 held-tx=0
+BENCH|poll-floor|xid-horizon|idle empty read p50=216.625µs p95=243.458µs
+BENCH|row|xid-horizon|6 hot shard, commit +5ms|tx/s=2007 (1899..2183)|ev/s=6020|write p50/p95/p99=7.669541ms/9.940459ms/10.797375ms|lock-wait p50/p95/p99=337.417µs/757.542µs/1.054291ms|eligibility p50/p95/p99=342.334µs/1.831416ms/9.745ms|writes=30135 held-tx=0
+BENCH|row|xid-horizon|7 eight shards, commit +5ms|tx/s=1929 (1783..2035)|ev/s=5788|write p50/p95/p99=7.971959ms/9.992917ms/12.076ms|lock-wait p50/p95/p99=265.375µs/554.916µs/909.833µs|eligibility p50/p95/p99=691.167µs/1.809917ms/2.946916ms|writes=28990 held-tx=0
