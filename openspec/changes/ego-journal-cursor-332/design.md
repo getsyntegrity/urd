@@ -1,6 +1,6 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 9 (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
+Status: PROPOSED, revision 10 (second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
 enforced per-entity sequence rules, retention without partial deletion and detectable loss, three lag measures, cursor bound to the journal
 instance and generation, progress with compare-and-set and generation; the SPI is NOT approved). Revision 7 stands: **Direction change (agreed with the owner): Urd defines a PORTABLE JOURNAL
 CONTRACT; each adapter implements its guarantees with its own mechanisms. The earlier selection of per-write
@@ -33,7 +33,7 @@ omission.
 | One concrete PostgreSQL strategy: post-commit batch publication | [`postgres-batch-publication.md`](postgres-batch-publication.md) |
 | How is it tested, and what is the next experiment? | [`conformance-and-experiment.md`](conformance-and-experiment.md) |
 | What was measured so far, with its limits? | sections 1-13 below and [`evidence/`](evidence/) |
-| What is decided, suspended and pending? | section 14 |
+| What is decided, suspended and pending? | section 14 and [`decisions.md`](decisions.md) (options and recommendation for each) |
 
 ### Evidence so far (kept as is)
 
@@ -988,10 +988,10 @@ Cursor operations in the contract: zero value, `IsZero`, `Equal` (canonical-form
 versioned serialization with binding, and `ValidateAdvance(from, to)` on the journal side. Out of the contract:
 `Compare`, arithmetic, `int64`, a fixed size. Stream heads are the **published frontier**, not necessarily the
 position of the newest retained event; the zero cursor reads the retained history and does not promise a complete
-rebuild. Progress is proposed as a store with `Load`, `Commit(expectedRevision, generation, commitID, next, fence)`
-and `Reset(expectedRevision)`: CAS stops lost updates, the generation stops commits across a reset, the journal's
+rebuild. Progress is proposed as a store with `Load`, `Commit(expectedRevision, epoch, commitID, next, fence)`
+and `Reset(expectedRevision)`: CAS stops lost updates, the epoch stops commits across a reset, the journal's
 `ValidateAdvance` stops a regression or an invalid cursor even with a current revision, and an unknown commit is
-resolved by generation and `CommitID`, never by comparing positions. Fencing is separate and belongs to #93.
+resolved by epoch and `CommitID`, never by comparing positions. Fencing is separate and belongs to #93.
 
 ### 14.3 Adapter strategies (not mandated)
 
@@ -1015,7 +1015,7 @@ resolved by generation and `CommitID`, never by comparing positions. Fencing is 
 3. **`DeleteEvents` reason (retention versus erasure)** and what a consumer does on `ErrCursorOutsideRetention`
    (stop and report; rebuild is explicit). Erasure must not stall consumers.
 4. **Cursor size:** no limit until the real tokens of the candidate adapters are measured.
-5. **Progress and ownership:** `OffsetStore` becomes `ProgressStore` (bytes, revision, generation), the fencing token
+5. **Progress and ownership:** `OffsetStore` becomes `ProgressStore` (bytes, revision, epoch), the fencing token
    and the ownership mechanism, together with #93; migration of legacy `int64` offsets.
 6. **Journal instance and generation:** how they are created, and what advances the generation (a restore, a
    recreation, a re-publication of history).
@@ -1034,6 +1034,18 @@ resolved by generation and `CommitID`, never by comparing positions. Fencing is 
 12. **Delivery plan** (`conformance-and-experiment.md` section 5): documentation review first, then types and the
     conformance suite behind the public-contract gate, then the adapter and its migration, then runner and offsets
     with #93. Nothing is implemented until the documentation review closes.
+
+### 14.4.1 Added by the second review round
+
+13. **The shard of an entity is fixed for its lifetime** (G5): a column on the revision row, an engine change to use
+    the recorded shard, and an audit of entities that already span shards. (D13)
+14. **Time-based start:** an optional `TimePositioner`, and the existing defect that `WithStartOffset`,
+    `WithResetOffset` and `RebuildProjection(from)` ignore their time (UnixMilli against UnixNano), to be filed on its
+    own. (D14)
+15. **Rollout of the retention check:** report-only first, then enforce; loss before the cutover is undetectable. (D15)
+
+`decisions.md` gives, for every item above, the question, what the review found, the options and a recommendation.
+None of them is decided there.
 
 ### 14.5 What is NOT asserted
 

@@ -1,7 +1,7 @@
 # Portability of the journal contract (#332): Postgres, Oracle, Cassandra
 
 Status: PROPOSED evaluation, revision 3 (follows `contract.md` revision 3: observable atomicity, chains of reads from any frontier, `ValidateAdvance`, fairness independent of clocks; earlier revision 2 covered outcomes and idempotent retry, retention floor,
-cursor bound to the journal instance and generation, progress with CAS and generation). No adapter beyond PostgreSQL is implemented or prototyped; "could comply" below is a
+cursor bound to the journal instance and generation, progress with CAS and an epoch). No adapter beyond PostgreSQL is implemented or prototyped; "could comply" below is a
 design argument from official documentation, not a demonstration. Nothing here approves an SPI or a migration.
 
 The contract being evaluated is `contract.md` (G1-G10). The question per store is: how would each invariant be
@@ -122,7 +122,7 @@ non-blocking consistent reads. That is an argument about the mechanism's ingredi
 5. **Empty pages.** A change-feed source (Cassandra CDC, Oracle redo or Postgres logical decoding) moves over
    changes that are not Urd events, so a page can be empty while the cursor advances. The contract no longer
    promises that an empty page leaves the cursor unchanged; G3 asks for no stall instead.
-6. **Progress needs compare-and-set and a generation.** Every store has a conditional update: a Postgres
+6. **Progress needs compare-and-set and an epoch.** Every store has a conditional update: a Postgres
    `UPDATE .. WHERE revision = $1`, the same in Oracle, and an LWT `IF revision = ?` in Cassandra (Paxos, P). The
    fencing token of an ownership mechanism is separate and belongs to #93. A conditional update does not stop a
    regression: that is `ValidateAdvance` (next item).
@@ -133,6 +133,10 @@ non-blocking consistent reads. That is an argument about the mechanism's ingredi
    Cassandra that rules out ordering a publication queue by write timestamp or `timeuuid` (writer clocks, last write
    wins, P); the claimed-range log must order by an allocator the publisher owns. `timeuuid`'s cross-node behavior is
    unverified (NV), another reason to keep it out of the ordering.
+
+9. **The shard of an entity is recorded with the entity.** A Postgres or Oracle revision row, or a Cassandra entity
+   partition, holds the shard fixed by the first event; an event under another shard is `ErrShardMismatch`. Without
+   it G5 cannot hold, because streams are per shard and carry no order between them.
 
 ### 4.2 What still forces the contract to be stated carefully
 

@@ -1,6 +1,6 @@
 # Portable journal contract (#332) — framework level
 
-Status: PROPOSED, revision 3 (owner review of #338 applied). Design only: no production code, SPI, schema or migration
+Status: PROPOSED, revision 4 (second review round: a rule for the shard of an entity, replay equality defined, progress epoch renamed, enforcement limit of `ValidateAdvance`, time-based start). Revision 3 applied the owner review of #338. Design only: no production code, SPI, schema or migration
 changes. The SPI is NOT approved. The public-contract gate and the data-migration gate are PENDING and nothing here
 approves them. Names and types are open; the semantics are what is under review.
 
@@ -40,7 +40,7 @@ Each guarantee is phrased so a conformance test can observe it without knowing t
 - **definitive rejection**: the adapter knows nothing was persisted, and the batch left no event and no evidence that
   could later make a phantom event available. Typed and classified (for example the existing
   `ConflictError`, `ErrInvalidScope`, `ErrInvalidPrecondition`, `ErrPreconditionScope`, plus the new
-  `ErrSequenceOrder`, `ErrIdentityConflict`, `ErrUnsupportedBatch` below);
+  `ErrSequenceOrder`, `ErrShardMismatch`, `ErrIdentityConflict`, `ErrUnsupportedBatch` below);
 - **unknown outcome**: the adapter cannot tell whether the commit happened (cancellation or timeout around the
   commit, a lost connection, a lost response). Typed as `ErrOutcomeUnknown`, wrapping the cause.
 
@@ -67,17 +67,27 @@ multi-entity batch is the usual case). The contract does not relax G1 for any st
 **Identity and idempotence resolve the retry.** The retry of an unknown outcome is the same call with the same
 batch. Therefore:
 
-1. A batch whose every event identity is already persisted with byte-identical content (payload, manifest and
-   metadata) is an **idempotent replay**: it returns success with no new effect and no second publication. The
-   replay check comes BEFORE the precondition, so the retry of a conditional write that did commit succeeds
-   instead of reporting a revision conflict.
+1. A batch whose every event identity is already persisted with the same content is an **idempotent replay**: it
+   returns success with no new effect and no second publication. "Same content" compares the payload, the manifest,
+   the metadata and the encryption fields, byte for byte. It does NOT compare the event's `Timestamp`: a retry that
+   rebuilt its batch carries a new clock stamp, and the stamp that was persisted stays. The replay check comes BEFORE
+   the precondition, so the retry of a conditional write that did commit succeeds instead of reporting a revision
+   conflict.
 2. An event identity that already exists with different content is a definitive `ErrIdentityConflict`, never a
    silent skip. Overlap that is neither an identical replay nor disjoint is also `ErrIdentityConflict`.
 3. Otherwise the batch is new and is judged by its precondition and by G5.
 
 A caller facing an unknown outcome retries the identical batch until it gets success or a definitive rejection. A
 definitive rejection after an unknown outcome means the earlier attempt did not commit (or conflicts with something
-that did); the caller then reads the entity to decide. This changes the current behavior of unconditional writes,
+that did); the caller then reads the entity to decide.
+
+**Retry the batch you hold, unchanged.** A batch recomposed between attempts (further events merged in) overlaps the
+persisted one only partly and is rejected as `ErrIdentityConflict`; that rejection does not mean the first part was
+lost. The engine's writers must retry the request they hold, not rebuild it (an audit item).
+
+**Giving up is not learning.** A writer that stops retrying has not learned the outcome. Before it writes that entity
+again it must read the entity's persisted state (`ReplayEvents`, `GetLatestEvent`) and compare the identities and the
+content it attempted; it may not assume either outcome. This changes the current behavior of unconditional writes,
 which skip duplicate identities silently whatever their content: public-contract gate.
 
 ### G2 Eventual availability
@@ -148,8 +158,17 @@ current revision", not "no order invariant". The store enforces the entity's seq
 | Within a batch, one entity's sequences | strictly increasing | equal or decreasing |
 | Against the entity's **revision** (the highest sequence ever persisted for it, which retention never lowers) | every new sequence is greater than the revision | a new sequence `<=` the revision: `ErrSequenceOrder` (definitive) |
 | Gaps (a sequence `> revision + 1`) | accepted; the skipped numbers are permanently unavailable: a sequence below the revision can never be persisted later | |
-| An identity that already exists | identical content: idempotent replay (G1) | different content: `ErrIdentityConflict` |
+| An identity that already exists | same content: idempotent replay (G1) | different content: `ErrIdentityConflict` |
+| The event's `Shard` | the same shard as every earlier event of the entity (the first persisted event fixes it) | another shard: `ErrShardMismatch` (definitive) |
 | `ExpectGenesis` / `ExpectRevision(r)` | additionally require the entity's revision to be absent / equal to `r`, as today | |
+
+**The shard of an entity is fixed for its lifetime.** Streams are per `(scope, shard)`, and G4 gives an order per
+stream only. If an entity's events could land in two shards, a consumer reading the two streams could see `n+1`
+before `n`, and G5 would be false. Today the shard is `ActorSystem().Partition(persistence id)`, a function of the
+entity name and of the cluster's partition count; if that count changes, the same entity maps to a different shard.
+The store therefore records the shard of an entity with its first event and rejects any event of that entity that
+carries another; the engine must use the recorded shard, not recompute it (an audit item). Entities that already
+span shards in an existing journal are a migration question (decisions D13).
 
 Gaps are accepted because retention and conditional writes already produce them, and because the guarantee is
 about order, not density: a missing number is simply never available. What a store must not do is accept a late
@@ -340,7 +359,15 @@ type ConsumerBacklogReporter interface {
     ConsumerBacklog(ctx context.Context, scope Scope, shard uint64, after JournalPosition) (ConsumerBacklog, error) // count or unknown
 }
 
-// Typed error set (names open): ErrOutcomeUnknown, ErrSequenceOrder, ErrIdentityConflict, ErrUnsupportedBatch,
+// Optional capability: position a consumer by time (a rebuild or a start "from a moment").
+type TimePositioner interface {
+    // PositionAt returns a cursor from which EVERY available event whose Timestamp is >= t will be delivered. It
+    // may also deliver events with an earlier Timestamp that lie after it in stream order; it never skips one that
+    // qualifies. Conservative on purpose: Timestamp is writer time, not stream order (G4).
+    PositionAt(ctx context.Context, scope Scope, shard uint64, t time.Time) (JournalPosition, error)
+}
+
+// Typed error set (names open): ErrOutcomeUnknown, ErrSequenceOrder, ErrShardMismatch, ErrIdentityConflict, ErrUnsupportedBatch,
 // ErrRetentionPending, ErrCursorMismatch, ErrCursorInvalidated, ErrCursorOutsideRetention, ErrCursorRegression,
 // ErrCursorBeyondHead, ErrProgressConflict, plus the existing ones.
 ```
@@ -353,6 +380,9 @@ Notes:
   whether to keep them for one release is a public-contract decision.
 - `WriteEvents`' signature does not change; the outcome taxonomy is carried by the error types (`errors.Is`).
 - `DeleteEvents` may gain a reason parameter (G8 open question).
+- `TimePositioner` exists because the engine offers time-based starts (`WithStartOffset`, `WithResetOffset`,
+  `RebuildProjection(from)`) and a cursor with no time meaning cannot express them. See decisions D14, which also
+  records that today those features do not work as intended (the "from" time is ignored).
 
 ## 6. Progress (proposal, not approved)
 
@@ -367,20 +397,22 @@ wrong with a bare `Commit(id, position)`, and each has its own mechanism:
    this: a consumer that commits an older page's `Next` after a newer commit of its own still holds a valid
    revision.
 
-Names and types are open.
+Names and types are open. The word **epoch** is used here on purpose: the progress epoch counts the resets of one
+consumer's progress, and it is unrelated to the **journal generation** of G7, which invalidates the cursors of a
+whole journal.
 
 ```go
 // ProgressID is owned by #93: projection identity, scope, shard.
 type ProgressID struct { Projection string; Scope Scope; Shard uint64 }
 
 type Revision uint64   // changes on every successful Commit or Reset; the CAS token
-type Generation uint64 // changes on every Reset; invalidates commits made before it
+type Epoch uint64      // changes on every Reset; invalidates commits made before it (not the journal generation of G7)
 type CommitID [16]byte // chosen by the caller, unique per commit attempt; stored with the progress
 
 type Progress struct {
     Position     JournalPosition // zero when nothing was committed
     Revision     Revision
-    Generation   Generation
+    Epoch        Epoch
     LastCommitID CommitID        // the CommitID of the commit that produced this revision; zero after Reset or when none
 }
 
@@ -388,17 +420,17 @@ type ProgressStore interface {
     // Load never fails for an unknown id: it returns the zero position with revision 0.
     Load(ctx context.Context, id ProgressID) (Progress, error)
 
-    // Commit stores next iff the stored revision equals expectedRevision AND the stored generation equals
-    // generation, recording commitID as the progress's LastCommitID. On success it returns the new revision.
+    // Commit stores next iff the stored revision equals expectedRevision AND the stored epoch equals
+    // epoch, recording commitID as the progress's LastCommitID. On success it returns the new revision.
     // Otherwise it fails with ErrProgressConflict carrying the current Progress, and stores nothing.
     // The store does not interpret `next`: it cannot tell whether it continues the stored position (see below).
     // fence is optional and used only when ownership is distributed.
-    Commit(ctx context.Context, id ProgressID, expectedRevision Revision, generation Generation,
+    Commit(ctx context.Context, id ProgressID, expectedRevision Revision, epoch Epoch,
            commitID CommitID, next JournalPosition, fence Fence) (Revision, error)
 
-    // Reset returns the progress to the zero position under a NEW generation, iff the stored revision equals
-    // expectedRevision. Commits prepared under an earlier generation then fail.
-    Reset(ctx context.Context, id ProgressID, expectedRevision Revision) (Generation, error)
+    // Reset returns the progress to the zero position under a NEW epoch, iff the stored revision equals
+    // expectedRevision. Commits prepared under an earlier epoch then fail.
+    Reset(ctx context.Context, id ProgressID, expectedRevision Revision) (Epoch, error)
 }
 ```
 
@@ -417,12 +449,18 @@ relation still holds. The consumer runtime performs the validation; the conforma
 `ValidateAdvance` (a regression, a cursor beyond the frontier, and one of another stream instance or generation are
 refused) and tests the runtime's use of it (a runtime that commits an unvalidated older `Next` fails the check).
 
+**The limit of this rule.** It binds consumers: a store holding opaque bytes cannot enforce it against a consumer
+that skips the validation. Two ways to close it, to be chosen by the owners (decisions D5): keep it a rule that the
+conformance suite tests in the runtime, or let an adapter whose progress lives in the same database validate inside
+the commit itself (a co-located capability that needs no token and no public comparison). A signed advance token
+returned by `ValidateAdvance` and required by `Commit` would also close it and is judged too heavy for now.
+
 ### What each mechanism solves, and what it does not
 
 | Mechanism | Solves | Does not solve |
 |---|---|---|
 | **Revision (CAS)** | a delayed or concurrent `Commit` overwriting newer progress; lost updates | a committed cursor that regresses or is invalid while the revision is current; a deposed owner that loaded fresh progress and keeps working |
-| **Generation** | a `Commit` prepared before a `Reset` landing after it and restoring old progress | who is allowed to write; the validity of `next` |
+| **Epoch** | a `Commit` prepared before a `Reset` landing after it and restoring old progress | who is allowed to write; the validity of `next` |
 | **`ValidateAdvance`** (journal side) | `next` before the loaded position, beyond the published frontier, or from another stream instance or generation, even with a current revision | stale writers (CAS) and ownership (fence) |
 | **Fence** (monotone owner token from the ownership mechanism of #93, checked by the store) | a deposed or zombie owner committing at all | stale values, invalid cursors, nor duplicate processing |
 
@@ -432,10 +470,10 @@ distributed, `fence` is the zero value and is ignored. The ownership and claim m
 
 ### Resolving a `Commit` whose outcome is unknown
 
-`Equal(next)` is not enough: another worker, or a later generation, can hold the same position. The caller
+`Equal(next)` is not enough: another worker, or a later epoch, can hold the same position. The caller
 attaches a fresh `CommitID` to each attempt, and on an unknown outcome it `Load`s and applies, in order:
 
-1. `current.Generation != generation`: a reset intervened. Our commit is void; start again from the loaded state.
+1. `current.Epoch != epoch`: a reset intervened. Our commit is void; start again from the loaded state.
 2. `current.LastCommitID == commitID`: our commit was applied. Success.
 3. `current.Revision == expectedRevision`: it was not applied. Validate again (`ValidateAdvance`) and retry.
 4. Otherwise (the revision moved and the last commit is not ours): someone else committed. Our commit may have been
@@ -452,7 +490,7 @@ must not assume that an empty page leaves `Next` unchanged.
 ### Storage
 
 `offsets_store.current_offset` and `egopb.Offset.value` become bytes carrying the serialized cursor, plus revision,
-generation and last-commit-id columns, keyed by the identity of #93. Migration of legacy `int64` offsets is the
+epoch and last-commit-id columns, keyed by the identity of #93. Migration of legacy `int64` offsets is the
 data-migration gate.
 
 ## 7. How each guarantee is observed
@@ -469,10 +507,14 @@ reads a timestamp offset or names a mechanism of any one database.
 3. The behavior change of unconditional writes: idempotent replay, `ErrIdentityConflict` and `ErrSequenceOrder`
    (and the audit of callers).
 4. A reason on `DeleteEvents` (retention versus erasure) and what a consumer does on `ErrCursorOutsideRetention`.
-5. How `OffsetStore` becomes `ProgressStore` (bytes, revision, generation), the fencing token and the ownership
+5. How `OffsetStore` becomes `ProgressStore` (bytes, revision, epoch), the fencing token and the ownership
    mechanism, together with #93; migration of legacy offsets (data-migration gate).
 6. Whether publication and consumer backlog are required metrics or optional capabilities.
 7. How journal instance and generation are created and advanced, and what advances the generation.
+
+8. The rule that an entity's shard is fixed for its lifetime and the audit of how the engine derives it (D13).
+9. A time-based start capability (`TimePositioner`) and the existing defect in the time-based starts (D14).
+10. How retention enforcement is rolled out, and what cannot be detected retroactively (D15).
 
 Decided (owner, on #338): the #332 regression check enters `develop` together with the implementation that makes it
 pass; the experiments may keep an explicit expected failure; the production CI is not changed to accept that

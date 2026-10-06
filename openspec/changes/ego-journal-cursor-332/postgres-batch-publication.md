@@ -1,6 +1,6 @@
 # PostgreSQL strategy: post-commit batch publication (#332)
 
-Status: PROPOSED design of ONE adapter strategy, revision 3 (follows `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
+Status: PROPOSED design of ONE adapter strategy, revision 4 (second review round: the entity's shard is recorded and fixed, no claim about reuse of `pub_seq`, fairness across streams, migration audits and rollout; revision 3 followed `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
 measured, no performance claim. It implements `contract.md` (G1-G10 and the progress rules) for the PostgreSQL adapter and is one of several strategies (`design.md` keeps
 the measured alternatives: per-write serialization, xid horizon). Nothing here approves the SPI or the migration.
 
@@ -23,6 +23,8 @@ journal_pos BIGINT        NULL,      -- NULL = pending; set once, by the publish
 pub_seq     BIGINT        NOT NULL,  -- arrival order of the row, from a sequence; no default: the writer sets it (3.2)
 
 CREATE SEQUENCE journal_pub_seq CACHE 1 NO CYCLE;   -- CACHE 1 is a requirement, see 3.2
+
+-- events_store_revisions gains shard_number BIGINT: the shard of the entity, fixed by its first event (G5)
 
 -- pending set, ordered for the publisher
 CREATE INDEX events_pending ON events_store (tenant_id, shard_number, pub_seq)
@@ -66,6 +68,9 @@ the write evaluates in this order (all under the entity row lock, so no other wr
 2. **Sequence protocol (G5).** Within the batch an entity's sequences must strictly increase; each must be greater
    than the entity's `revision` (the highest sequence ever persisted, which retention never lowers); otherwise
    `ErrSequenceOrder` (definitive). Gaps above `revision + 1` are accepted.
+   The entity's **shard** is checked in the same step: the first event of an entity records its shard in the revision
+   row; any later event carrying a different shard is `ErrShardMismatch` (definitive). Replay (step 1) compares
+   content, not `Timestamp`.
 3. **Precondition** (`ExpectGenesis`, `ExpectRevision`), as today.
 4. **Insert** the rows with `journal_pos = NULL` and `pub_seq = nextval('journal_pub_seq')`, one row at a time in
    the entity's sequence order; advance the revision row. A replayed batch allocates nothing.
@@ -103,7 +108,9 @@ timestamp therefore does not prove G2: under continuous load a skewed entity can
    receive a distinct sequence value" and that values are not reclaimed on abort; the monotonic-in-time wording is
    not quoted. The stress test of the experiment asserts it (per-entity `pub_seq` increasing with the sequence number).
 2. **Independent of clocks.** Nothing about a timestamp enters it.
-3. **Never reused.** Gaps (rollbacks, crashes) are harmless: the publisher reads whichever rows exist.
+3. **Not required to be unique or gapless.** Gaps (rollbacks, crashes) are harmless: the publisher reads whichever
+   rows exist, and the design relies only on property 1. Were two rows ever to share a value, ties are broken by
+   `(persistence_id, sequence_number)`, which keeps an entity's rows in sequence order.
 
 The batch is the `N` rows with the smallest `pub_seq` among the committed pending rows of the stream, a **prefix of
 every entity it touches** (property 1): if `(entity, n+1)` is selected, `(entity, n)` has a smaller `pub_seq`, so it
@@ -132,6 +139,16 @@ cycles between its commit and its availability and asserts it is no larger than 
 observed at its commit. It runs deterministically in the unit lane (a counted, simulated publisher in the testkit
 harness) and against PostgreSQL with the real publisher, and a negative control that orders by timestamp must fail
 it.
+
+### 3.2.2 Fairness across streams
+
+The argument above is per stream. A publisher that serves several streams must also visit each stream that has
+pending rows within bounded time; a loop that keeps returning to a busy stream would starve a quiet one. The
+scheduler therefore serves the streams that have pending rows in round-robin order (or oldest pending `pub_seq`
+first, which gives the same bound), taking one cycle of at most `N` rows per visit. With `S` streams holding pending
+rows, a stream is visited within `S` cycles, and an event waits at most `S * ceil(M / N)` cycles, `M` being the
+backlog ahead of it in its own stream. Several publishers lower the constant, not the bound. C21 includes several
+streams so the bound is tested across them, not only inside one.
 
 Cost of the key: one `nextval` per event written; the sequence is a single shared counter. Not measured.
 
@@ -339,6 +356,37 @@ delivered again, which at-least-once allows. The mapping never skips an event th
 Events that the old cursor omitted remain unrecoverable except by rebuild from the zero cursor, as before. The legacy
 key is kept in a temporary column until every offset has been mapped, then dropped; offsets are mapped in the same
 maintenance step as the backfill, per `(projection, shard)` and, once #93 lands, per scope.
+
+**Audits to run before the migration (they decide whether it can proceed).** They read the data; none was run for
+this document, there is no production data here.
+
+1. *Entities that span shards.* `SELECT tenant_id, persistence_id FROM events_store GROUP BY 1, 2 HAVING
+   COUNT(DISTINCT shard_number) > 1`. The shard of an entity is fixed by its first event (G5), and an entity whose
+   events already sit in two shards has no single stream, so no cross-stream order exists for it. Each such entity is
+   either re-homed (its earlier events are moved to the shard of its first event, which changes stream membership
+   and needs its own offset mapping) or the migration refuses to proceed until the owners decide (D13).
+2. *Units of the legacy offsets.* The event-sourced actor stamps events in UnixNano, while the runner's
+   `WithStartOffset`, `WithResetOffset` and `RebuildProjection(from)` store UnixMilli (verified in the code, and
+   demonstrated on the in-memory store: a "from" one year in the future, in milliseconds, still returned an event
+   stamped in nanoseconds; not run against PostgreSQL, whose query applies the same comparison). So
+   `offsets_store.current_offset` can hold nanoseconds (committed progress) or milliseconds (a reset or a time-based
+   start). The mapping handles both without special cases: a millisecond value is below every nanosecond timestamp,
+   so `LegacyOffset` returns the zero cursor, which is exactly what such an offset already meant in practice (read
+   from the beginning). The audit lists the magnitude of every stored offset so the owners see which projections are
+   affected.
+3. *Offsets have no scope today.* `offsets_store` is keyed by `(projection_name, shard_number)`; a scope arrives with
+   #93. A legacy offset can be mapped only into a stream, so the offsets must be migrated after #93 gives progress its
+   scope (or each is assigned the scope its projection is registered under, with the ambiguity of a name used under
+   several scopes). The migration depends on #93.
+4. *Retention history.* Events deleted before the cutover cannot be reconstructed: the retention floor starts at
+   zero and loss before the cutover stays undetectable. State it in the runbook.
+
+**Rollout of the retention check.** Raising `ErrCursorOutsideRetention` turns silent loss into a stopped consumer.
+Today the janitor deletes events after snapshots (retention count may be zero), so a consumer that lags will hit the
+error on its first read. The adapter ships the check in a **report-only mode** first: it records and logs every read
+that would have failed (a counter per projection and stream) and continues; enforcement is switched on once the
+owners have seen which projections are affected. This is an operational switch of the adapter, not part of the
+contract, and the contract's guarantee holds only in enforcing mode (D15).
 
 - A new `journal_id` is created with the schema and `generation` starts at 1; cursors issued after the cutover carry
   both. Positions assigned by the backfill belong to generation 1.
