@@ -97,7 +97,8 @@ type Runner struct {
 	// pull interval. Events are fetched with this interval
 	// the default value is 1s
 	pullInterval time.Duration
-	// defines how many events are fetched
+	// defines how many events are fetched per pull: a target, not a cap, as the store
+	// extends a batch to finish the group of events sharing its last timestamp
 	// the default value is 500
 	maxBufferSize int
 	// defines the timestamp where to start consuming events

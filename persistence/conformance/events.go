@@ -67,6 +67,9 @@ var EventsStoreChecks = []Check[persistence.EventsStore]{
 	{Name: "Enumeration/PersistenceIDsPaginationCoversEveryIDExactlyOnce", Run: eventsPersistenceIDsPaginationCoversEveryIDExactlyOnce},
 	{Name: "Unscoped/NeverCollidesWithTenantNamedUnscoped", Run: eventsUnscopedNeverCollidesWithForgedTenant},
 	{Name: "ShardReads/GetShardEventsReturnsOnlyTheScopesEvents", Run: eventsGetShardEventsScoped},
+	{Name: "ShardReads/PagingNeverSkipsEventsSharingATimestamp", Run: eventsShardPagingKeepsTimestampTies},
+	{Name: "ShardReads/PagingResumesFromACommittedOffsetInsideATie", Run: eventsShardPagingResumesInsideATie},
+	{Name: "ShardReads/PagingStaysInScopeAcrossTies", Run: eventsShardPagingTiesStayInScope},
 	{Name: "ShardReads/ShardOffsetsCoverOnlyTheScopesShards", Run: eventsShardOffsetsScoped},
 	{Name: "ShardReads/UnscopedNeverReadsATenantNamedUnscoped", Run: eventsShardReadsUnscopedVersusForgedTenant},
 	{Name: "ShardReads/InvalidScopeIsRejectedAndReadsNothing", Run: eventsShardReadsRejectInvalidScope},
@@ -367,6 +370,116 @@ func eventsGetShardEventsScoped(ctx context.Context, t TestingT, store persisten
 	after, _, err := store.GetShardEvents(ctx, tenantA, shard, 100, 10)
 	requireNoError(t, err)
 	requireEqual(t, []string{"shard-a-2"}, shardEventIDs(after), "an offset earlier than another scope's event must not bring it back")
+}
+
+// tiedShardBatch writes count consecutive events of one persistence ID, all on
+// the same shard and the same timestamp: what a multi-event command produces.
+func tiedShardBatch(t TestingT, persistenceID string, count int, shard uint64, timestamp int64) []*egopb.Event {
+	var events []*egopb.Event
+	for seq := 1; seq <= count; seq++ {
+		event := eventBatch(t, persistenceID, uint64(seq), float64(seq))[0]
+		event.Shard = shard
+		event.Timestamp = timestamp
+		events = append(events, event)
+	}
+	return events
+}
+
+// writeTiedShard lays out the journal the paging checks read: three
+// persistence IDs and four events at one timestamp (tie-b holds two
+// sequences), a later event, and a second tie after it.
+func writeTiedShard(ctx context.Context, t TestingT, store persistence.EventsStore, scope persistence.Scope, shard uint64) {
+	for _, w := range []struct {
+		id        string
+		count     int
+		timestamp int64
+	}{{"tie-a", 1, 100}, {"tie-b", 2, 100}, {"tie-c", 1, 100}, {"tie-d", 1, 200}, {"tie-e", 1, 300}, {"tie-f", 1, 300}} {
+		requireNoError(t, store.WriteEvents(ctx, scope, tiedShardBatch(t, w.id, w.count, shard, w.timestamp), persistence.Unconditional()))
+	}
+}
+
+// tiedShardEvents is the delivery order writeTiedShard's journal must page
+// out in: timestamp, then persistence ID, then sequence number.
+var tiedShardEvents = []string{"tie-a/1", "tie-b/1", "tie-b/2", "tie-c/1", "tie-d/1", "tie-e/1", "tie-f/1"}
+
+func shardEventKeys(events []*egopb.Event) []string {
+	keys := make([]string, 0, len(events))
+	for _, event := range events {
+		keys = append(keys, fmt.Sprintf("%s/%d", event.GetPersistenceId(), event.GetSequenceNumber()))
+	}
+	return keys
+}
+
+// drainShard pages a shard exactly as the projection runner does: the offset
+// returned by one call is passed to the next, until a call returns nothing.
+// It returns the keys in delivery order, so a skipped event is simply absent.
+func drainShard(ctx context.Context, t TestingT, store persistence.EventsStore, scope persistence.Scope, shard uint64, limit uint64) []string {
+	var delivered []string
+	var offset int64
+	for page := 0; page < 100; page++ {
+		events, next, err := store.GetShardEvents(ctx, scope, shard, offset, limit)
+		requireNoError(t, err)
+		if len(events) == 0 {
+			return delivered
+		}
+		delivered = append(delivered, shardEventKeys(events)...)
+		offset = next
+	}
+	t.Errorf("paging a shard with limit %d did not terminate within 100 pages", limit)
+	t.FailNow()
+	return nil
+}
+
+func eventsShardPagingKeepsTimestampTies(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	const shard = 9
+	scope := mustTenantScope(t, "tenant-a")
+	writeTiedShard(ctx, t, store, scope, shard)
+
+	// limit 1 cuts the four-event tie at timestamp 100 after its first event
+	for _, limit := range []uint64{1, 2, 3, 4, 7, 100} {
+		got := drainShard(ctx, t, store, scope, shard, limit)
+		requireEqual(t, tiedShardEvents, got, fmt.Sprintf("draining with limit %d must deliver every event exactly once, in order", limit))
+	}
+}
+
+func eventsShardPagingResumesInsideATie(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	const shard = 9
+	scope := mustTenantScope(t, "tenant-a")
+	writeTiedShard(ctx, t, store, scope, shard)
+
+	// A runner that commits the offset of a page and restarts resumes from
+	// that offset alone: nothing but the offset survives the restart.
+	first, committed, err := store.GetShardEvents(ctx, scope, shard, 0, 1)
+	requireNoError(t, err)
+	requireGreaterOrEqual(t, len(first), 1, "the first page must deliver something")
+
+	resumed := shardEventKeys(first)
+	offset := committed
+	for page := 0; page < 100; page++ {
+		events, next, err := store.GetShardEvents(ctx, scope, shard, offset, 1)
+		requireNoError(t, err)
+		if len(events) == 0 {
+			break
+		}
+		resumed = append(resumed, shardEventKeys(events)...)
+		offset = next
+	}
+	requireEqual(t, tiedShardEvents, resumed, "resuming from the committed offset must recover the rest of the tie")
+}
+
+func eventsShardPagingTiesStayInScope(ctx context.Context, t TestingT, store persistence.EventsStore) {
+	const shard = 9
+	tenantA := mustTenantScope(t, "tenant-a")
+	tenantB := mustTenantScope(t, "tenant-b")
+	writeTiedShard(ctx, t, store, tenantA, shard)
+	// other scopes hold an event at the very same timestamp: finishing the
+	// tie must not pull it into tenant A's pages, nor the other way round
+	requireNoError(t, store.WriteEvents(ctx, tenantB, tiedShardBatch(t, "tie-other", 1, shard, 100), persistence.Unconditional()))
+	requireNoError(t, store.WriteEvents(ctx, persistence.Unscoped(), tiedShardBatch(t, "tie-unscoped", 1, shard, 100), persistence.Unconditional()))
+
+	requireEqual(t, tiedShardEvents, drainShard(ctx, t, store, tenantA, shard, 1))
+	requireEqual(t, []string{"tie-other/1"}, drainShard(ctx, t, store, tenantB, shard, 1))
+	requireEqual(t, []string{"tie-unscoped/1"}, drainShard(ctx, t, store, persistence.Unscoped(), shard, 1))
 }
 
 func eventsShardOffsetsScoped(ctx context.Context, t TestingT, store persistence.EventsStore) {

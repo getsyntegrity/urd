@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1759,6 +1760,100 @@ func TestArchitectureProjectionRunnerStaysRuntimeNeutral(t *testing.T) {
 			ctx.Expect(deps).To(specs.NoElement(specs.Satisfy(
 				"the GoAkt adapter internals (internal/extensions): internal/projectionrunner must not depend on them",
 				func(dep any) bool { return strings.HasSuffix(dep.(string), "/internal/extensions") })))
+		})
+	})
+}
+
+// recordingHandler records "<persistence id>/<revision>" for every event it handles.
+type recordingHandler struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (x *recordingHandler) Handle(_ context.Context, persistenceID string, _ *anypb.Any, revision uint64) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.seen = append(x.seen, fmt.Sprintf("%s/%d", persistenceID, revision))
+	return nil
+}
+
+func (x *recordingHandler) handled() func() any {
+	return func() any {
+		x.mu.Lock()
+		defer x.mu.Unlock()
+		return append([]string(nil), x.seen...)
+	}
+}
+
+// tiedJournal writes, on one shard, events that share a timestamp across
+// persistence IDs and sequences, then a later one: the journal a batch size of
+// one cuts in the middle of a timestamp group.
+func tiedJournal(ctx *specs.Context, store persistence.EventsStore, shard uint64) []string {
+	payload, err := anypb.New(&testpb.AccountCredited{})
+	ctx.Expect(err).To(specs.BeNil())
+	layout := []struct {
+		id        string
+		count     uint64
+		timestamp int64
+	}{{"tie-a", 1, 100}, {"tie-b", 2, 100}, {"tie-c", 1, 100}, {"tie-d", 1, 200}}
+	var want []string
+	for _, l := range layout {
+		var events []*egopb.Event
+		for seq := uint64(1); seq <= l.count; seq++ {
+			events = append(events, &egopb.Event{PersistenceId: l.id, SequenceNumber: seq, Event: payload, Timestamp: l.timestamp, Shard: shard})
+			want = append(want, fmt.Sprintf("%s/%d", l.id, seq))
+		}
+		ctx.Expect(store.WriteEvents(context.TODO(), runnerTestScope, events, persistence.Unconditional())).To(specs.BeNil())
+	}
+	return want
+}
+
+func TestRunnerPagesThroughTimestampTies(t *testing.T) {
+	specs.Describe(t, "a Runner whose batch size cuts a group of events sharing a timestamp", func(s *specs.Spec) {
+		s.It("handles every event of the group, none skipped", func(ctx *specs.Context) {
+			bg := context.TODO()
+			const shard = uint64(9)
+			eventsStore := testkit2.NewEventsStore()
+			offsetStore := testkit2.NewOffsetStore()
+			ctx.Expect(offsetStore.Connect(bg)).To(specs.BeNil())
+			want := tiedJournal(ctx, eventsStore, shard)
+
+			handler := &recordingHandler{}
+			runner := New("tie-writer", handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond), WithLogger(discardLogger))
+			runner.maxBufferSize = 1
+			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
+			runner.Run(bg, nil)
+
+			ctx.Eventually(handler.handled(), specs.ContainTheSameElementsAs(want), poll...)
+			ctx.Expect(runner.Stop()).To(specs.BeNil())
+		})
+
+		s.It("resumes after a restart from the committed offset and recovers the rest", func(ctx *specs.Context) {
+			bg := context.TODO()
+			const shard = uint64(9)
+			eventsStore := testkit2.NewEventsStore()
+			offsetStore := testkit2.NewOffsetStore()
+			ctx.Expect(offsetStore.Connect(bg)).To(specs.BeNil())
+			want := tiedJournal(ctx, eventsStore, shard)
+
+			// the first run delivered one page of size one and committed its offset
+			first, committed, err := eventsStore.GetShardEvents(bg, runnerTestScope, shard, 0, 1)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(offsetStore.WriteOffset(bg, &egopb.Offset{ShardNumber: shard, ProjectionName: "tie-writer", Value: committed})).To(specs.BeNil())
+
+			// a new runner on the same offset store starts from that offset alone
+			handler := &recordingHandler{}
+			runner := New("tie-writer", handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond), WithLogger(discardLogger))
+			runner.maxBufferSize = 1
+			ctx.Expect(runner.Start(bg)).To(specs.BeNil())
+			runner.Run(bg, nil)
+
+			var delivered []string
+			for _, event := range first {
+				delivered = append(delivered, fmt.Sprintf("%s/%d", event.GetPersistenceId(), event.GetSequenceNumber()))
+			}
+			ctx.Eventually(func() any { return append(append([]string(nil), delivered...), handler.handled()().([]string)...) }, specs.ContainTheSameElementsAs(want), poll...)
+			ctx.Expect(runner.Stop()).To(specs.BeNil())
 		})
 	})
 }

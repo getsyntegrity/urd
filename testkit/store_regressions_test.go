@@ -214,9 +214,10 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 			}
 		})
 
-		s.It("orders ties by persistence ID and applies the limit after sorting, on every call", func(ctx *specs.Context) {
-			// same timestamp for every event: only the tie-break decides which
-			// ones the limit keeps.
+		s.It("orders ties by persistence ID and never cuts a timestamp group, on every call", func(ctx *specs.Context) {
+			// same timestamp for every event: only the tie-break orders them, and
+			// the limit must not leave part of the group behind, because the
+			// returned offset is that timestamp and the next read is after it.
 			timestamps := make([]int64, 12)
 			for i := range timestamps {
 				timestamps[i] = 100
@@ -227,12 +228,40 @@ func TestEventStore_GetShardEventsLimitAndOrder(t *testing.T) {
 				got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 5)
 
 				ctx.Expect(err).To(specs.BeNil())
-				ctx.Expect(got).To(specs.HaveLen(5))
+				ctx.Expect(got).To(specs.HaveLen(12))
 				for i, event := range got {
 					ctx.Expect(event.GetPersistenceId()).To(specs.Equal(fmt.Sprintf("pid-%02d", i)))
 				}
 				ctx.Expect(next).To(specs.Equal(int64(100)))
 			}
+		})
+
+		s.It("applies the limit between timestamp groups and extends it to finish the last one", func(ctx *specs.Context) {
+			write(ctx, 1, 100, 100, 100, 200, 200, 300)
+
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 2)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(got).To(specs.HaveLen(3))
+			ctx.Expect(next).To(specs.Equal(int64(100)))
+
+			got, next, err = fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, next, 2)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(got).To(specs.HaveLen(2))
+			ctx.Expect(next).To(specs.Equal(int64(200)))
+
+			got, next, err = fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, next, 2)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(got).To(specs.HaveLen(1))
+			ctx.Expect(next).To(specs.Equal(int64(300)))
+		})
+
+		s.It("returns nothing for a zero limit", func(ctx *specs.Context) {
+			write(ctx, 1, 100, 100)
+
+			got, next, err := fx.store.GetShardEvents(bg, persistence.Unscoped(), 1, 0, 0)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(got).To(specs.BeEmpty())
+			ctx.Expect(next).To(specs.Equal(int64(0)))
 		})
 
 		s.It("does not modify the stored events", func(ctx *specs.Context) {
