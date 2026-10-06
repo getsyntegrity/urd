@@ -1,7 +1,8 @@
 # Batch publication on PostgreSQL: prototype report (#332)
 
-Status: a PROTOTYPE on the real adapter, behind the `journalexp` build tag, off the production path. It is not a
-proposal to merge and not an SPI. Code and tests: branch `exp/332-batch-publication`, published for review and not
+Status: a PROTOTYPE on the real adapter, behind the `journalexp` build tag, off the production path. This document is
+**evidence and a proposal**: it does not approve the mechanism, a migration or any production change, and it is not an
+SPI. Code and tests: branch `exp/332-batch-publication`, published for review and not
 for merge, at exactly commit `e596ee66332eaa499fbbd551d08b83a589f91460`. Raw results: `evidence/batch/`.
 
 **What it is.** A write persists its events exactly as today, with a pending position. A publisher takes the stream's
@@ -49,11 +50,12 @@ median and is corrected here. A
 held write transaction does not delay delivery. **At saturation the publisher falls behind**: 20,000 to 43,000 events
 pending and delivery in seconds to a minute.
 
-**What limits it (partly isolated).** My first explanation, a slow stream-discovery query, was wrong: the corrected run
-matches the first. A diagnostic that gives the publisher its own connection pool (the adapter's fixed pool of 20 is
-shared by writers, the reader and the publisher) improved saturated W1 from p95 58 s to 8.3 s and from 2407 to 2862
-tx/s (a single comparison, 3 repetitions each), so pool contention is a major cause. It is not the only one:
-delivery still lags by seconds at about 2,900 tx/s, and the remaining limit was not isolated.
+**Saturation is not solved.** My first explanation, a slow stream-discovery query, was wrong: the corrected run matches
+the first. A diagnostic that gives the publisher its own connection pool (the adapter's fixed pool of 20 is shared by
+writers, the reader and the publisher) **reduced the lag but it remained seconds**: saturated W1 went from p95 58 s to
+8.3 s (median 16 s to 6.2 s) and from 2407 to 2862 tx/s, a single comparison of 3 repetitions each. So pool contention
+is a significant cause and not the only one, and a separate pool does not by itself make saturated load acceptable:
+delivery still lags by about 8 s at about 2,900 tx/s, and the remaining limit was not isolated.
 
 ## Backlog recovery (B1: publisher stopped 10 s at 300 tx/s, then resumed)
 
@@ -84,43 +86,76 @@ table) would trade it for an insert, a delete and a join; it was not built or me
   order, as today.
 - The first run is kept and named: it used a slow discovery query and gave the same saturated numbers.
 
-## Minimal contract change (a proposal, not approved)
+## Minimal contract change and transition (a proposal, not approved)
 
-Documentation of the existing `persistence.EventsStore` methods; **no signature changes**, no new types.
+**This is a change to the public contract even though no signature changes.** Every existing adapter, including any
+external implementation, interprets the `int64` offset of `GetShardEvents` and `ShardOffsets` as an event timestamp;
+stored offsets are timestamps; the runner computes lag from the offset and passes dates as offsets. Changing a comment
+would reinterpret all of it silently. The change therefore needs an explicit transition, written below. The proposal
+keeps `int64` for the current adapters, with its meaning documented. It does not claim to settle future cursor types,
+such as the change-feed cursors of #333.
 
-1. **The offset is a position, not a timestamp.** `GetShardEvents` and `ShardOffsets` keep their `int64` offset, but it
-   is assigned by the adapter in publication order and callers treat it as opaque: no arithmetic, no time meaning.
-   The returned next offset is the position of the last event returned; `ShardOffsets` is the newest *published*
-   position.
-2. **Events are available after they are published.** `GetShardEvents` returns only published events. Every persisted,
-   retained event is eventually published, under conditions the adapter documents (for example that its publisher
-   runs). An event published later always has a position above any offset already returned. This is the guarantee #332
-   needs (G2 and G3 of the earlier contract, in two sentences).
-3. **Adapters document** their publication mechanism, its conditions, and make the publication backlog visible (at
-   least the age of the oldest pending event; an exact count is not required), as decided in D9.
-4. **The consumer side changes in two places.** Lag is computed from event timestamps and not from the offset (today
-   the runner computes `now - offset`). And the time-based starts (`WithStartOffset`, `WithResetOffset`,
-   `RebuildProjection(from)`) can no longer pass a time as an offset: until D14b defines "rebuild from a date", only a
-   rebuild from the beginning is supported on an adapter with position offsets.
-5. **Conformance.** The #332 regression stays and enters with the implementation. The three checks that assert a
-   timestamp offset (`GetShardEventsReturnsOnlyTheScopesEvents`, `ShardOffsetsCoverOnlyTheScopesShards`,
-   `UnscopedNeverReadsATenantNamedUnscoped`) are rewritten to assert the same isolation without assuming a timestamp.
-   The in-repo `testkit` store publishes at write time, so its observable behavior does not change.
-6. **Existing offsets.** Stored timestamp offsets need a mapping to positions. That is the data-migration decision
-   (D7, pending the joint design with #93) and is not decided here.
+### The guarantee: a safe frontier, with no publication order imposed
 
-**What the write contract does not need.** `WriteEvents` does not change for omission-free reads. The prototype
-changes no write semantics. The identity, replay and sequence rules of the earlier contract answer a different
-problem (an unknown outcome and out-of-order writes) and are separate from #332.
+An offset returned by a read is a **safe frontier**. Continuing to read from the offsets that reads return (starting
+from 0 or from any offset previously returned) never omits an event that was confirmed and is retained: every such
+event is delivered by the chain of reads, including one confirmed after the offsets were returned, however late. It is
+delivered eventually, under operating conditions the adapter documents. The proposal imposes no order of publication,
+no order between independent entities and no relation between an offset and a time; how an adapter keeps its
+frontier safe (post-commit publication, a visibility horizon, or something else) is its own matter. The per-entity
+order that exists today is neither strengthened nor weakened by this proposal.
 
-**Not needed to fix #332:** a cursor type, `Page`, progress with CAS, epochs, generations, cursor binding, a retention
-floor, `ValidateAdvance`, or the logical-stream machinery. They stay documented as open questions.
+### Explicit transition
 
-**The change is the same whichever mechanism publishes.** Points 1 to 6 describe what readers may rely on; they hold for
-post-commit batch publication and for the xid horizon measured earlier. The choice between them is an operating
-decision: batch publication costs WAL and storage and needs a publisher but is not delayed by a long transaction
-elsewhere on the server; the horizon costs almost nothing in writes and has no publisher but is delayed by the oldest
-open transaction of the whole server.
+1. **An adapter opts in.** An adapter declares that its offsets are positions with the safe-frontier guarantee through a
+   small optional capability. An adapter that does not declare it is a **legacy timestamp-offset adapter**: nothing
+   about it changes, it keeps its current behavior, and it is documented as not providing the guarantee (#332). The
+   addition is compatible; the `api` check would classify it as adding API.
+2. **The runner behaves by capability.** For a legacy adapter, everything stays as it is today, including the lag
+   gauge and the time-based starts (their separate unit defect, D14a, is its own change). For a position adapter, see
+   items 3 and 4.
+3. **Lag is not renamed.** The runner stops computing `now - offset` for a position adapter and this proposal defines
+   **no replacement called lag**. A timestamp-based number is the *age of the last processed event*: it grows while
+   the projection is fully up to date, so it is named age and is informational. "The projection is caught up" is
+   determined by a read, not by arithmetic: a read from the committed offset returns nothing. Real delivery latency and
+   backlog measures stay with D9 (publication backlog visibility mandatory, exact count not; consumer backlog optional)
+   and are not defined here.
+4. **A date-based start is an error, never ignored and never converted.** With a position adapter, a configuration that
+   carries a date (`WithStartOffset`, `WithResetOffset`, `RebuildProjection(from)` with a non-zero `from`) fails with
+   an explicit error when it is configured or started. It is not silently dropped and the date is not converted into an
+   offset. Absent or zero means "from the beginning" and is supported. Dates stay unsupported with positions until D14b
+   defines "rebuild from a date".
+5. **Stored offsets are not reinterpreted.** An offset written under timestamp semantics must not be used under position
+   semantics. The first deployment that switches an adapter to positions therefore needs an explicit operator step:
+   either the data-migration decision (D7, pending the joint design with #93) or a reset of the projection's offsets
+   (a rebuild from the beginning). This proposal cannot detect a mixed offset by itself, because the offsets table
+   carries no marker of its semantics and adding one is a schema change under the migration gate. It states the
+   requirement and leaves the mechanism to D7.
+6. **Two conformance suites during the transition.** The legacy suite is today's. The position suite asserts the safe
+   frontier and the isolation guarantees without assuming a timestamp: the three checks that assert a timestamp offset
+   (`GetShardEventsReturnsOnlyTheScopesEvents`, `ShardOffsetsCoverOnlyTheScopesShards`,
+   `UnscopedNeverReadsATenantNamedUnscoped`) are rewritten for it, and the #332 regression belongs to it and enters
+   with the implementation that makes it pass. An adapter claims one suite. Legacy semantics would be deprecated for
+   removal in a later major release.
+7. **The in-repo `testkit` store changes its observable behavior, and that is the fix.** As a position adapter, an event
+   with an old timestamp that is persisted after a consumer's committed offset **will appear after that offset**,
+   where today it does not. Tests that depend on timestamp ordering of its offsets must change with it.
 
-**Costs to state with the change:** WAL 2.1 to 2.4x and storage 1.5 to 2.0x per event; delivery about 1 to 1.5 ms slower at the median and up to 10 ms slower at p99
-at the median up to 500 tx/s; at saturation the publisher can lag by seconds unless it has its own connections.
+### What does not change, and what is not claimed
+
+- `WriteEvents` does not change for omission-free reads; the prototype changes no write semantics. The identity, replay
+  and sequence rules of the earlier contract answer a different problem and stay separate from #332.
+- Not needed to fix #332 and deferred, not withdrawn: a cursor type, `Page`, progress with CAS, epochs, generations,
+  cursor binding, a retention floor, `ValidateAdvance` and the logical-stream machinery.
+- The change is the same whichever mechanism keeps the frontier safe. It holds for post-commit batch publication and
+  for the xid horizon measured earlier. The choice is an operating decision: batch publication costs WAL and storage and
+  needs a publisher but is not delayed by a long transaction elsewhere on the server; the horizon costs almost nothing
+  in writes and has no publisher but is delayed by the oldest open transaction of the whole server.
+- Keeping `int64` is a choice for the current adapters. It does not resolve the cursor of a change feed (#333), whose
+  position may not fit a single integer.
+
+### Costs to state with the change
+
+WAL 2.1 to 2.4x and storage 1.5 to 2.0x per event (batch publication); delivery slower by 1.0 to 1.5 ms at the median
+and up to 9.8 ms at p99 up to 500 tx/s; at saturation the publisher lags by seconds, and a separate connection pool
+reduces that lag without eliminating it.
