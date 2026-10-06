@@ -1,6 +1,6 @@
 # Portable journal contract (#332) — framework level
 
-Status: PROPOSED, revision 2 (owner review applied). Design only: no production code, SPI, schema or migration
+Status: PROPOSED, revision 3 (owner review of #338 applied). Design only: no production code, SPI, schema or migration
 changes. The SPI is NOT approved. The public-contract gate and the data-migration gate are PENDING and nothing here
 approves them. Names and types are open; the semantics are what is under review.
 
@@ -37,7 +37,8 @@ Each guarantee is phrased so a conformance test can observe it without knowing t
 **Three outcomes.** Every `WriteEvents` ends in exactly one of:
 
 - **success** (`nil`): the whole batch is persisted and the obligation to make it available is durable;
-- **definitive rejection**: the adapter knows nothing was persisted. Typed and classified (for example the existing
+- **definitive rejection**: the adapter knows nothing was persisted, and the batch left no event and no evidence that
+  could later make a phantom event available. Typed and classified (for example the existing
   `ConflictError`, `ErrInvalidScope`, `ErrInvalidPrecondition`, `ErrPreconditionScope`, plus the new
   `ErrSequenceOrder`, `ErrIdentityConflict`, `ErrUnsupportedBatch` below);
 - **unknown outcome**: the adapter cannot tell whether the commit happened (cancellation or timeout around the
@@ -48,10 +49,19 @@ adapter returns a definitive rejection only when it can prove nothing was commit
 failure, or a cancellation before any commit was issued). **Every error that is not classified as definitive MUST
 be treated by the caller as unknown** (fail safe).
 
-**Atomicity is not weakened.** Whatever the outcome, the state is eventually all of the batch or none of it: a
-partial batch is never left visible, and a rejected or failed write leaves no event and no evidence that could
-later make a phantom event available. An adapter whose store cannot make a given batch atomic MUST reject it with
-`ErrUnsupportedBatch` (definitive) instead of weakening this guarantee, and declares which batches it supports (a
+**Observable atomicity.** No read of any kind observes a partially committed batch. An entity-level read
+(`ReplayEvents`, `GetLatestEvent`, `PersistenceIDs`) sees all the events of a batch or none of them, whatever
+outcome the writer was told. The "nothing was left" statement belongs to a **definitive rejection** only: after an
+**unknown outcome** the batch is, or will be, either persisted entirely or not persisted at all, and no read can
+distinguish a third state; until the retry resolves it, a read may see the batch absent and later present, never
+partly. After a success the batch is persisted entirely.
+
+Availability is a separate, later step and is not partial commitment. The events of a persisted batch may become
+available in different pages and at different times (G2, G5); each of them is already persisted and none can be
+lost, and the contract promises their order, not their simultaneity.
+
+An adapter whose store cannot make a given batch atomic in this observable sense MUST reject it with
+`ErrUnsupportedBatch` (definitive) instead of weakening the guarantee, and declares which batches it supports (a
 multi-entity batch is the usual case). The contract does not relax G1 for any store.
 
 **Identity and idempotence resolve the retry.** The retry of an unknown outcome is the same call with the same
@@ -77,19 +87,33 @@ example: its publisher is running, its database is reachable, no transaction it 
 bound). "Eventually" is bounded only by those documented conditions; the contract does not promise a latency. The
 adapter exposes whether it is meeting them (G10).
 
-### G3 Safe advance: successive reads deliver every retained event
+**Fairness.** Availability must not depend on the event's `Timestamp` or on any clock of the writer. Under
+continuous load that stays below the adapter's publication capacity, how long a pending event waits is bounded by
+the backlog that was ahead of it when it was persisted, never by its timestamp: an entity whose actor clock runs
+hours or years ahead cannot be kept pending indefinitely behind newer writes of other entities. An adapter states
+the bound and the selection rule that gives it, and the conformance suite tests it with misaligned clocks.
+
+### G3 Safe advance: successive reads deliver every retained event after the cursor
 
 A read with a limit does not return all pending or available events, and the contract does not ask it to. What it
 asks is about the chain of reads a consumer actually performs.
 
-Let a **chain** start from the zero cursor or from any cursor a read issued, and let each next read start at the
-cursor the previous read returned, with any limit `>= 1`. Then:
+**The frontier.** A cursor `c` issued by a read, or the zero cursor, stands for a **frontier** in the stream:
+`before(c)` is the set of events that lie at or before it in stream order when it was issued (for the zero cursor,
+the empty set). Everything else that is retained is `after(c)`: the events available beyond the frontier **and the
+events that were not available yet when `c` was issued**, whether still pending or committed late. A late-committed
+event that has not received a position is therefore always `after` every cursor already issued: that is the whole
+point of the guarantee.
 
-- **No skipped event:** every retained event of the stream that is, or later becomes, available is returned by some
-  read of the chain, and never ends up behind a cursor the chain has already passed. Equivalently: committing the
-  cursor of a page never discards an event that was not returned.
-- **No stall:** a chain cannot loop forever without progress while an available, undelivered, retained event
-  exists: each read either returns an event or returns a cursor that moves the chain forward.
+A **chain** starts at `c` and each next read starts at the cursor the previous read returned, with any limit `>= 1`.
+Then:
+
+- **No skipped event after the frontier:** every retained event of `after(c)` is returned by some read of the chain,
+  including events that become available long after `c` was issued. The chain is not required to return events of
+  `before(c)`; a read may or may not repeat them (G6). Equivalently: committing the cursor of a page never discards
+  an event that was not returned by the chain, nor an event still waiting for its place.
+- **No stall:** a chain cannot loop forever without progress while an available, undelivered, retained event of
+  `after(c)` exists: each read either returns an event or returns a cursor that moves the chain forward.
 - **Monotonic reads:** a read from a cursor is at least as fresh as the read that issued it, so an eventually
   consistent store cannot hand back an older view after a newer one (an adapter on such a store must say which
   consistency it reads at).
@@ -159,7 +183,10 @@ A read given a cursor whose binding does not match fails closed with a typed err
 - the same journal at an older generation: `ErrCursorInvalidated` (the consumer must restart from zero).
 
 **The zero cursor is the exception:** it is unbound and means "the beginning of the retained history of whichever
-stream it is presented to".
+stream it is presented to". That is a statement about the cursor, not about completeness: after retention has
+removed events, reading from zero returns only what is still retained, so it does NOT guarantee that a projection
+can be rebuilt in full. Whether a rebuild is complete depends on the retention policy, which this contract does not
+set (G8).
 
 ### G8 Retention barrier and detectable loss
 
@@ -235,9 +262,10 @@ backlog.
 | **Equal** | Yes, with the semantics below | idempotent progress writes, the "reached the observed head" test, conformance checks |
 | **Serialization** (`MarshalBinary` / `UnmarshalBinary`) | Yes | progress lives outside the journal and must survive restart, upgrades and process moves; the bytes are opaque to the consumer |
 | **Binding validation** | Yes (G7) | adapter kind, journal instance, generation, scope, shard; typed errors |
-| **Compare / Before / After** | **No** | the adapter alone relates two frontiers; exposing it would force every adapter to order composite or vector cursors and would invite consumers to treat the order as meaningful. Rejecting stale progress is the job of CAS and fencing (section 6), not of comparing cursors |
+| **Compare / Before / After** | **No** | the adapter alone relates two frontiers; exposing it would force every adapter to order composite or vector cursors and would invite consumers to treat the order as meaningful. Refusing a regression is the job of the journal adapter's `ValidateAdvance` (section 5), which answers yes or no without exposing an order; stale writers are the job of CAS and deposed owners the job of fencing (section 6) |
 | **Arithmetic, successor, distance** | No | undefined for some stores; gaps are legitimate |
 | **Text** (`String()`) | Adapter, for logs | stable, no payload, no parseable meaning |
+| **Validating an advance** (`ValidateAdvance(from, to)`) | Yes, on the journal side | the adapter answers whether `to` is a valid continuation of `from` (same stream instance and generation, not before `from`, not beyond the published frontier). The comparison stays inside the adapter; the core sees only an error. Section 5 |
 | **Mapping from the legacy `int64` offset** | Adapter hook, migration only | one-way `LegacyOffset(int64) -> cursor` for the data-migration gate |
 
 ### Equal: what it means, and what it does not
@@ -250,7 +278,9 @@ identically.
 
 **What it does not prove.** A published head `Equal` to the progress means only that the consumer **reached the
 available head as it was observed by that read**. It does NOT mean that publication has finished, that no persisted
-event is pending, or that no write happened since. It must not be used as a completeness test.
+event is pending, or that no write happened since. It must not be used as a completeness test. A stream head is a
+**published frontier**: it marks how far publication has gone, and it need not be the position of the newest event
+that is still retained, because that event may since have been removed by retention.
 
 ### Why not `int64`, and the size of a cursor
 
@@ -288,9 +318,18 @@ type StreamReader interface {
     // Errors: ErrCursorMismatch, ErrCursorInvalidated, ErrCursorOutsideRetention, scope errors.
     ReadStream(ctx context.Context, scope Scope, shard uint64, after JournalPosition, limit uint64) (Page, error)
 
-    // StreamHeads returns, per shard of scope, the cursor of the newest AVAILABLE event as observed by the call.
-    // Equal to a consumer's progress it means "reached the observed head", nothing more (section 4).
+    // StreamHeads returns, per shard of scope, the PUBLISHED FRONTIER as observed by the call: how far publication
+    // has gone. It is not necessarily the position of the newest retained event (that event may have been
+    // removed), and it never moves backwards. Equal to a consumer's progress it means "reached the observed
+    // frontier", nothing more (section 4).
     StreamHeads(ctx context.Context, scope Scope) (map[uint64]JournalPosition, error)
+
+    // ValidateAdvance reports whether `to` is a valid continuation of `from` for this stream: both bound to the
+    // same stream instance and generation (ErrCursorMismatch / ErrCursorInvalidated otherwise), `to` not before
+    // `from` (ErrCursorRegression) and not beyond the published frontier (ErrCursorBeyondHead). `from == to` is
+    // valid. The adapter makes the comparison; the caller sees only the error. A consumer commits progress only for
+    // a cursor this accepted against the position it loaded.
+    ValidateAdvance(ctx context.Context, scope Scope, shard uint64, from, to JournalPosition) error
 }
 
 // Optional capabilities (G10).
@@ -302,7 +341,8 @@ type ConsumerBacklogReporter interface {
 }
 
 // Typed error set (names open): ErrOutcomeUnknown, ErrSequenceOrder, ErrIdentityConflict, ErrUnsupportedBatch,
-// ErrRetentionPending, ErrCursorMismatch, ErrCursorInvalidated, ErrCursorOutsideRetention, plus the existing ones.
+// ErrRetentionPending, ErrCursorMismatch, ErrCursorInvalidated, ErrCursorOutsideRetention, ErrCursorRegression,
+// ErrCursorBeyondHead, ErrProgressConflict, plus the existing ones.
 ```
 
 Notes:
@@ -317,9 +357,17 @@ Notes:
 ## 6. Progress (proposal, not approved)
 
 Progress is the committed cursor of one consumer of one stream. Its identity is #93's (who the progress belongs
-to); the contract owns what the stored value means and how it is updated safely. A bare `Commit(id, position)`
-would let a delayed update overwrite newer progress or revive progress cancelled by a reset, so the update is a
-compare-and-set and a reset starts a new generation. Names and types are open.
+to); the contract owns what the stored value means and how it is updated safely. Three different things can go
+wrong with a bare `Commit(id, position)`, and each has its own mechanism:
+
+1. a **delayed or concurrent update** overwrites newer progress (lost update);
+2. a **reset** (rebuild) is undone by a commit prepared before it;
+3. the cursor being committed is **not a continuation** of the stored one: it is before it (a regression), beyond
+   the published frontier, or from another stream instance or generation. A current revision does not prevent
+   this: a consumer that commits an older page's `Next` after a newer commit of its own still holds a valid
+   revision.
+
+Names and types are open.
 
 ```go
 // ProgressID is owned by #93: projection identity, scope, shard.
@@ -327,11 +375,13 @@ type ProgressID struct { Projection string; Scope Scope; Shard uint64 }
 
 type Revision uint64   // changes on every successful Commit or Reset; the CAS token
 type Generation uint64 // changes on every Reset; invalidates commits made before it
+type CommitID [16]byte // chosen by the caller, unique per commit attempt; stored with the progress
 
 type Progress struct {
-    Position   JournalPosition // zero when nothing was committed
-    Revision   Revision
-    Generation Generation
+    Position     JournalPosition // zero when nothing was committed
+    Revision     Revision
+    Generation   Generation
+    LastCommitID CommitID        // the CommitID of the commit that produced this revision; zero after Reset or when none
 }
 
 type ProgressStore interface {
@@ -339,10 +389,12 @@ type ProgressStore interface {
     Load(ctx context.Context, id ProgressID) (Progress, error)
 
     // Commit stores next iff the stored revision equals expectedRevision AND the stored generation equals
-    // generation. On success it returns the new revision. Otherwise it fails with ErrProgressConflict carrying
-    // the current Progress, and stores nothing.
-    // fence is optional and used only when ownership is distributed (see below).
-    Commit(ctx context.Context, id ProgressID, expectedRevision Revision, generation Generation, next JournalPosition, fence Fence) (Revision, error)
+    // generation, recording commitID as the progress's LastCommitID. On success it returns the new revision.
+    // Otherwise it fails with ErrProgressConflict carrying the current Progress, and stores nothing.
+    // The store does not interpret `next`: it cannot tell whether it continues the stored position (see below).
+    // fence is optional and used only when ownership is distributed.
+    Commit(ctx context.Context, id ProgressID, expectedRevision Revision, generation Generation,
+           commitID CommitID, next JournalPosition, fence Fence) (Revision, error)
 
     // Reset returns the progress to the zero position under a NEW generation, iff the stored revision equals
     // expectedRevision. Commits prepared under an earlier generation then fail.
@@ -350,28 +402,58 @@ type ProgressStore interface {
 }
 ```
 
-What each mechanism solves, and what it does not:
+### Who validates that `next` continues the loaded position
+
+The progress store holds opaque bytes and has no public order to apply, and the core must not gain one. The party
+that can answer is the **journal adapter**, which already relates its own frontiers. The rule is:
+
+> A consumer commits only a cursor that `StreamReader.ValidateAdvance(scope, shard, loaded, next)` accepted, where
+> `loaded` is the position it read with `Load` under the revision it passes to `Commit`.
+
+This composition is sound without making the two operations atomic: `ValidateAdvance` depends only on `(loaded,
+next)`, and the compare-and-set on `expectedRevision` guarantees that `loaded` is still the stored position when the
+commit lands. If the revision moved, the commit fails and the validation is moot; if it did not, the validated
+relation still holds. The consumer runtime performs the validation; the conformance suite tests the adapter's
+`ValidateAdvance` (a regression, a cursor beyond the frontier, and one of another stream instance or generation are
+refused) and tests the runtime's use of it (a runtime that commits an unvalidated older `Next` fails the check).
+
+### What each mechanism solves, and what it does not
 
 | Mechanism | Solves | Does not solve |
 |---|---|---|
-| **Revision (CAS)** | a delayed or concurrent `Commit` overwriting newer progress; lost updates | a deposed owner that loaded fresh progress and keeps working |
-| **Generation** | a `Commit` prepared before a `Reset` (rebuild) landing after it and restoring old progress | who is allowed to write |
-| **Fence** (monotone owner token from the ownership mechanism of #93, checked by the store) | a deposed or zombie owner committing at all | stale values (that is the CAS) nor duplicate processing |
+| **Revision (CAS)** | a delayed or concurrent `Commit` overwriting newer progress; lost updates | a committed cursor that regresses or is invalid while the revision is current; a deposed owner that loaded fresh progress and keeps working |
+| **Generation** | a `Commit` prepared before a `Reset` landing after it and restoring old progress | who is allowed to write; the validity of `next` |
+| **`ValidateAdvance`** (journal side) | `next` before the loaded position, beyond the published frontier, or from another stream instance or generation, even with a current revision | stale writers (CAS) and ownership (fence) |
+| **Fence** (monotone owner token from the ownership mechanism of #93, checked by the store) | a deposed or zombie owner committing at all | stale values, invalid cursors, nor duplicate processing |
 
-**Fencing and CAS solve different problems and one does not replace the other.** None of them prevents a zombie
-from processing events twice; handlers stay idempotent (G6). If ownership is not distributed, `fence` is the zero
-value and is ignored. The ownership and claim mechanism itself belongs to #93.
+**Fencing and CAS solve different problems and one does not replace the other**, and neither validates the cursor.
+None of them prevents a zombie from processing events twice; handlers stay idempotent (G6). If ownership is not
+distributed, `fence` is the zero value and is ignored. The ownership and claim mechanism itself belongs to #93.
 
-**Retrying a `Commit` whose outcome is unknown.** The retry fails with `ErrProgressConflict` if the first attempt
-did commit (the revision moved). The conflict carries the current progress; if its position is `Equal` to `next`,
-the caller treats the earlier attempt as having succeeded. That is safe because progress is a state, not an event.
+### Resolving a `Commit` whose outcome is unknown
 
-**Empty pages.** A consumer may commit the `Next` of a page with no events when the source advanced; it must not
-assume that an empty page leaves `Next` unchanged.
+`Equal(next)` is not enough: another worker, or a later generation, can hold the same position. The caller
+attaches a fresh `CommitID` to each attempt, and on an unknown outcome it `Load`s and applies, in order:
 
-Consequence for storage: `offsets_store.current_offset` and `egopb.Offset.value` become bytes carrying the
-serialized cursor, plus revision and generation columns, keyed by the identity of #93. Migration of legacy `int64`
-offsets is the data-migration gate.
+1. `current.Generation != generation`: a reset intervened. Our commit is void; start again from the loaded state.
+2. `current.LastCommitID == commitID`: our commit was applied. Success.
+3. `current.Revision == expectedRevision`: it was not applied. Validate again (`ValidateAdvance`) and retry.
+4. Otherwise (the revision moved and the last commit is not ours): someone else committed. Our commit may have been
+   applied before theirs and then superseded, or never applied; it does not matter, because progress is a state.
+   Reload, recompute from the current position, and continue; events between are redelivered (G6).
+
+Matching on position alone is never used to claim success.
+
+### Empty pages
+
+A consumer may commit the `Next` of a page with no events when the source advanced (after `ValidateAdvance`); it
+must not assume that an empty page leaves `Next` unchanged.
+
+### Storage
+
+`offsets_store.current_offset` and `egopb.Offset.value` become bytes carrying the serialized cursor, plus revision,
+generation and last-commit-id columns, keyed by the identity of #93. Migration of legacy `int64` offsets is the
+data-migration gate.
 
 ## 7. How each guarantee is observed
 
@@ -381,7 +463,8 @@ reads a timestamp offset or names a mechanism of any one database.
 
 ## 8. Decisions this contract leaves to the owners
 
-1. The SPI shape, replace or extend the old methods, and the names (public-contract gate). Not approved.
+1. The SPI shape, replace or extend the old methods, and the names (public-contract gate). Not approved. This includes
+   `ValidateAdvance` and its error names.
 2. The serialized-cursor size limit and format, after measuring real tokens of the adapters.
 3. The behavior change of unconditional writes: idempotent replay, `ErrIdentityConflict` and `ErrSequenceOrder`
    (and the audit of callers).
@@ -390,3 +473,7 @@ reads a timestamp offset or names a mechanism of any one database.
    mechanism, together with #93; migration of legacy offsets (data-migration gate).
 6. Whether publication and consumer backlog are required metrics or optional capabilities.
 7. How journal instance and generation are created and advanced, and what advances the generation.
+
+Decided (owner, on #338): the #332 regression check enters `develop` together with the implementation that makes it
+pass; the experiments may keep an explicit expected failure; the production CI is not changed to accept that
+omission.

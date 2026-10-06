@@ -1,8 +1,13 @@
 # Evidence for design.md sections 10-13 (#332)
 
 The code that produced these files (`TestJournalBench`, `TestJournalAdapterBench`, the `journalexp` adapter variants)
-is NOT part of this change: it is on the local branch `exp/332-adapter-shard-serialization` (`6d03c1d`). The commands
-below reproduce the runs from that branch.
+is NOT part of this change. It is on the branch `exp/332-adapter-shard-serialization`, published for review and not for
+merge, at exactly this commit:
+
+    6d03c1d404a2b41cb4e3efd0213d400885f4a5af
+
+Every file here was produced by that commit (the earlier commits of the branch, `1aef84b` and `fb21b34`, hold the
+conformance check and the scratch-table prototypes). The commands below reproduce the runs from that branch.
 
 Raw output of `TestJournalBench` (`inttest/flows/eventstore/journal_bench_test.go`), one `BENCH|...` line per
 result, exactly as the test printed them. Nothing was edited except dropping the Go test and Testcontainers

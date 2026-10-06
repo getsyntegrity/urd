@@ -1,6 +1,6 @@
 # PostgreSQL strategy: post-commit batch publication (#332)
 
-Status: PROPOSED design of ONE adapter strategy, revision 2 (follows `contract.md` revision 2). Not implemented, not
+Status: PROPOSED design of ONE adapter strategy, revision 3 (follows `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
 measured, no performance claim. It implements `contract.md` (G1-G10 and the progress rules) for the PostgreSQL adapter and is one of several strategies (`design.md` keeps
 the measured alternatives: per-write serialization, xid horizon). Nothing here approves the SPI or the migration.
 
@@ -20,10 +20,12 @@ time an event spends pending.
 ```sql
 -- events_store gains two columns (names illustrative)
 journal_pos BIGINT        NULL,      -- NULL = pending; set once, by the publisher
-pub_key     BIGINT        NOT NULL,  -- publication order key, see 3.2
+pub_seq     BIGINT        NOT NULL,  -- arrival order of the row, from a sequence; no default: the writer sets it (3.2)
+
+CREATE SEQUENCE journal_pub_seq CACHE 1 NO CYCLE;   -- CACHE 1 is a requirement, see 3.2
 
 -- pending set, ordered for the publisher
-CREATE INDEX events_pending ON events_store (tenant_id, shard_number, pub_key, persistence_id, sequence_number)
+CREATE INDEX events_pending ON events_store (tenant_id, shard_number, pub_seq)
     WHERE journal_pos IS NULL;
 -- stream read
 CREATE INDEX events_journal ON events_store (tenant_id, shard_number, journal_pos)
@@ -33,8 +35,6 @@ CREATE INDEX events_journal ON events_store (tenant_id, shard_number, journal_po
 CREATE TABLE journal_streams (
     tenant_id TEXT NOT NULL, shard_number BIGINT NOT NULL, last_pos BIGINT NOT NULL,
     PRIMARY KEY (tenant_id, shard_number));
-
--- events_store_revisions gains last_pub_key BIGINT, advanced under the entity row lock
 
 -- the identity of this journal instance and its generation (G7): one row, created with the schema
 CREATE TABLE journal_meta (journal_id UUID NOT NULL, generation BIGINT NOT NULL);
@@ -67,7 +67,8 @@ the write evaluates in this order (all under the entity row lock, so no other wr
    than the entity's `revision` (the highest sequence ever persisted, which retention never lowers); otherwise
    `ErrSequenceOrder` (definitive). Gaps above `revision + 1` are accepted.
 3. **Precondition** (`ExpectGenesis`, `ExpectRevision`), as today.
-4. **Insert** the rows with `journal_pos = NULL` and a `pub_key`; advance the revision row.
+4. **Insert** the rows with `journal_pos = NULL` and `pub_seq = nextval('journal_pub_seq')`, one row at a time in
+   the entity's sequence order; advance the revision row. A replayed batch allocates nothing.
 5. **Commit.**
 
 A failed or rolled-back write leaves no row, hence no pending evidence (G1). **Outcome classification.** An error
@@ -79,17 +80,60 @@ removes the events of a committed write before the retry arrives, step 2 reports
 did succeed; the retry window must be shorter than the retention delay, or the caller must read the entity, and an
 idempotency window of recent batches is an open design point.
 
-### 3.2 The publication order key
+### 3.2 The publication key: arrival order, independent of every clock
 
-`pub_key = GREATEST(event timestamp, the entity's last_pub_key)`, and the revision row's `last_pub_key` is advanced
-to it, all under the entity row lock the writer already holds. Within an entity the key never decreases with
-commit order, even if the actor clock steps backwards, so ordering pending rows by `(pub_key, persistence_id,
-sequence_number)` always lists an entity's rows in the order they were committed (sequence order for writers that
-follow the sequence protocol). Across entities the key is only a fairness device: oldest first, no promise.
+`pub_seq` is allocated from a database sequence at insert time. It orders the pending rows for the publisher and
+nothing else; the event `Timestamp` plays no part in publication.
 
-Why a stored key and not a window function over the pending set: a truncated candidate set could include
-`(entity, n+1)` and exclude `(entity, n)` when timestamps skew. With a monotone stored key, "the first N by key" is
-a prefix of every entity it touches, and the batch query reads N index entries, not the whole backlog.
+**An earlier draft keyed publication on the actor timestamps and is withdrawn.** A key derived from `Timestamp`
+lets a writer's clock decide when an event is published. An entity whose actor clock runs ahead is listed after the
+newer events of every other entity for as long as the skew lasts, and a monotone per-entity key (`GREATEST` with the
+previous key) would even carry one bad timestamp forward to every later event of that entity. "Oldest first" by
+timestamp therefore does not prove G2: under continuous load a skewed entity can wait indefinitely.
+
+`pub_seq` has three properties, and each is used below:
+
+1. **Monotone per entity.** A writer of sequence `n+1` of an entity allocates its `pub_seq` after it took the entity
+   revision lock, which it only gets after the writer of `n` committed (3.3), and `n`'s `pub_seq` was allocated
+   before that commit. The sequence is created with `CACHE 1`: with a cache each session reserves a block, so a later
+   allocation in one session can be lower than an earlier one in another, which would break the property. Within a
+   batch the writer inserts an entity's rows in sequence order.
+   *Verification status:* that non-overlapping `nextval` calls return increasing values with `CACHE 1` is the
+   standard behavior, but the PostgreSQL page read for this review documents only that concurrent calls "safely
+   receive a distinct sequence value" and that values are not reclaimed on abort; the monotonic-in-time wording is
+   not quoted. The stress test of the experiment asserts it (per-entity `pub_seq` increasing with the sequence number).
+2. **Independent of clocks.** Nothing about a timestamp enters it.
+3. **Never reused.** Gaps (rollbacks, crashes) are harmless: the publisher reads whichever rows exist.
+
+The batch is the `N` rows with the smallest `pub_seq` among the committed pending rows of the stream, a **prefix of
+every entity it touches** (property 1): if `(entity, n+1)` is selected, `(entity, n)` has a smaller `pub_seq`, so it
+is either already published or selected too. The query reads `N` index entries, not the whole backlog.
+
+### 3.2.1 No starvation (the fairness argument)
+
+Let `r` be a row with `pub_seq = k`. The rows that can ever be selected before `r` are those with `pub_seq < k`, a
+finite set fixed when `r` was inserted: it contains the backlog ahead of `r` and the writers that were still in
+flight with older allocations. Rows inserted after `r` have larger `pub_seq` and are never ahead of it, whatever
+their timestamps, their entity or how fast they arrive.
+
+While `r` is committed and pending, every successful publisher cycle that does not select `r` selects `N` rows with
+`pub_seq < k` (otherwise `r` would be among the `N` smallest). Each such row is published once. So `r` is selected
+after at most `ceil(M / N)` successful cycles, where `M` is the number of rows with `pub_seq < k` that are still
+unpublished when `r` becomes visible, counting those that commit later. `M` does not grow with the load that arrives
+after `r`. Together with the documented condition of G2 (the publisher keeps running and its cycles commit), the wait
+of any event is bounded by the backlog ahead of it, independently of its timestamp. If offered load exceeds the
+publisher's capacity the backlog grows and waits grow with it, but each event's wait stays bounded by the backlog
+that preceded it: nothing is passed over indefinitely.
+
+**How it is tested** (`conformance-and-experiment.md` C21): entities whose actors stamp timestamps with offsets of
+-100 years, -1 year, 0, +1 hour, +1 year and +100 years are written continuously alongside many other entities at
+about 80% of the publisher's capacity, with `N = 100`. For every event the harness records the number of publisher
+cycles between its commit and its availability and asserts it is no larger than `ceil(M / N) + c` for the `M`
+observed at its commit. It runs deterministically in the unit lane (a counted, simulated publisher in the testkit
+harness) and against PostgreSQL with the real publisher, and a negative control that orders by timestamp must fail
+it.
+
+Cost of the key: one `nextval` per event written; the sequence is a single shared counter. Not measured.
 
 ### 3.3 Why a snapshot that sees `n+1` sees `n`
 
@@ -106,7 +150,7 @@ BEGIN
   last := SELECT last_pos FROM journal_streams WHERE (tenant, shard) FOR UPDATE      -- row lock; create the row if absent
   rows := SELECT pk FROM events_store
           WHERE tenant=$t AND shard=$s AND journal_pos IS NULL
-          ORDER BY pub_key, persistence_id, sequence_number LIMIT N
+          ORDER BY pub_seq LIMIT N
   UPDATE events_store SET journal_pos = last + rank(row)   -- rank 1..n in the order above
   UPDATE journal_streams SET last_pos = last + n
 COMMIT
@@ -138,10 +182,13 @@ read-committed visibility of committed row versions, and atomic commit.
 
 ### 4.2 Per-entity order (G5)
 
-Within a batch the order key lists each entity's rows in commit order and the batch is a prefix (3.2). Across
-batches, a row of `n+1` can only be selected if `n` was committed (3.3), so `n` is either already published or
-earlier in the same batch. Out-of-order commits by a caller that writes `n+1` before `n` with unconditional writes
-are outside the sequence protocol: such an entity is published in commit order (`contract.md` G5 scope).
+G5 is enforced when the write is accepted (3.1 step 2), whatever its precondition: an entity's sequences are
+strictly increasing in the batch and each is greater than the entity's revision, so a row of `n+1` can never be
+persisted before `n`, and a late number below the revision is rejected with `ErrSequenceOrder`. There is therefore
+no entity written out of sequence order to publish in some other order. Given that, `pub_seq` order within an
+entity is sequence order (3.2), the batch is a prefix of each entity it touches, and a row of `n+1` is only visible
+to the publisher if `n` was committed (3.3), so `n` is already published or earlier in the same batch. Availability
+order of an entity is its sequence order.
 
 ## 5. Publisher lifecycle and scheduling
 
@@ -239,8 +286,14 @@ Retention against slow consumers is not prevented here: it is made detectable (G
   limit `>= 1` cannot stall. A page of events is never empty while the cursor moves, in this adapter; the contract
   does not rely on that.
 - `StreamHeads`: the `last_pos` of each `journal_streams` row of the scope, a constant-time read that does not scan
-  events: the newest AVAILABLE position as observed by the call. A consumer whose progress is `Equal` to it has
-  reached the observed head; that says nothing about events still pending or written since.
+  events. It is the **published frontier**: how far publication has gone, as observed by the call. It is not
+  necessarily the position of the newest retained event, because the event that received `last_pos` may since have
+  been deleted by retention; it never moves backwards. A consumer whose progress is `Equal` to it has reached the
+  observed frontier; that says nothing about events still pending or written since.
+- `ValidateAdvance(from, to)`: checks the binding of both cursors, that `to`'s position is not below `from`'s, and
+  that it is not above `last_pos`; the comparison is of two integers inside the adapter.
+- The zero cursor reads the retained history from its beginning. After retention has removed events that is all it
+  can return; it does not promise to rebuild a projection in full.
 - Publication backlog: the count and the age of the oldest pending row, from the pending index. Consumer backlog:
   a count of rows with `journal_pos` after the cursor, which is not free and may be reported as unknown.
 - A restore of the database to an earlier point restores `journal_meta` too, so it keeps the old generation: the
@@ -253,7 +306,7 @@ Retention against slow consumers is not prevented here: it is made detectable (G
 |---|---|---|
 | A second write per event (the position update) | a new row version plus index entries; the `journal_pos` index prevents a HOT update | a separate append-only `journal_log` table and a small `journal_pending` table, so event rows are never updated (variant B below) |
 | Autovacuum pressure on dead versions | one dead version per event | tune autovacuum for the table; variant B |
-| 16 more bytes per row, two partial indexes | `journal_pos`, `pub_key` | none needed unless measured as a problem |
+| 16 more bytes per row, two partial indexes, one `nextval` per event | `journal_pos`, `pub_seq` | none needed unless measured as a problem |
 | Event latency to availability = publisher cadence + batch time | events wait pending | in-process trigger after commit; `NOTIFY` hint |
 | One publisher transaction per stream at a time | row lock | batch size; more streams |
 | Backlog under overload | publisher capacity below write rate | more publishers do not help one stream; reduce `N` stalls, raise `N`, or shard |
@@ -265,16 +318,33 @@ trades the update amplification for an insert and a delete of small rows and a j
 
 ## 11. Migration notes (gates PENDING)
 
-- Existing rows: one run of the publisher in `(timestamp, persistence_id, sequence_number)` order per stream assigns
-  their positions, with `pub_key = timestamp`.
-- A legacy `int64` offset `T` maps to the position of the last row with timestamp `<= T` (adapter hook
-  `LegacyOffset`), so a projection resumes exactly where it stood; events omitted before the migration are not
-  recoverable except by rebuild (a read from the zero cursor), as before.
+Existing rows must enter the new order without breaking G5, and existing consumer offsets must keep their meaning.
+
+**Backfill that preserves per-entity order.** Ordering the legacy rows by timestamp is not safe: an actor clock that
+stepped backwards left an entity whose sequence `n+1` has a smaller timestamp than `n`, and a timestamp order would
+publish them out of sequence. The backfill computes, per entity and in sequence order, a **legacy key**
+`max(timestamp) OVER (PARTITION BY tenant_id, persistence_id ORDER BY sequence_number)`, which is non-decreasing in
+the sequence by construction. It assigns `pub_seq` to the legacy rows in the order `(legacy key, persistence_id,
+sequence_number)`, then lets the publisher assign positions in `pub_seq` order. An entity is therefore published in
+sequence order even if its history was committed in another order; whether a legacy entity was ever committed out of
+order cannot be detected, and the backfill does not need to. The sequence `journal_pub_seq` is advanced above the
+largest legacy `pub_seq` before writers restart, so every new row sorts after every legacy row.
+
+**Legacy offsets.** An old offset `T` is a timestamp cursor: "everything with a timestamp up to `T` was delivered".
+`LegacyOffset(T)` for a stream is the position of the last legacy row whose **legacy key** is `<= T`; because
+positions follow the legacy-key order, those rows are a prefix. This is conservative in the right direction: every
+row with a legacy key `<= T` has a timestamp `<= T` and counts as consumed, as it did before; a row whose timestamp
+is `<= T` but whose legacy key is above `T` (an entity whose clock stepped back) receives a later position and is
+delivered again, which at-least-once allows. The mapping never skips an event that the old cursor had not skipped.
+Events that the old cursor omitted remain unrecoverable except by rebuild from the zero cursor, as before. The legacy
+key is kept in a temporary column until every offset has been mapped, then dropped; offsets are mapped in the same
+maintenance step as the backfill, per `(projection, shard)` and, once #93 lands, per scope.
+
 - A new `journal_id` is created with the schema and `generation` starts at 1; cursors issued after the cutover carry
   both. Positions assigned by the backfill belong to generation 1.
-- `pub_key NOT NULL` with no default fences old writers: after the cutover an old binary fails loudly instead of
-  writing rows no publisher can order. The cutover is a one-way door and needs the maintenance window already
-  described in `design.md` section 7.2.
+- `pub_seq NOT NULL` with no default fences old writers: after the cutover an old binary fails loudly instead of
+  writing rows that skip the sequence protocol and the identity checks. The cutover is a one-way door and needs the
+  maintenance window already described in `design.md` section 7.2.
 
 ## 12. What this strategy does not claim
 

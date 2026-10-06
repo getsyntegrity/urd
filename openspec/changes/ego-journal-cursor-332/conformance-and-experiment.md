@@ -1,10 +1,11 @@
 # Conformance suite and minimal comparison experiment (#332)
 
-Status: PROPOSED, revision 2 (follows `contract.md` revision 2). Nothing here is implemented. The suite specified in sections 1-3 is what an adapter must pass to
+Status: PROPOSED, revision 3 (follows `contract.md` revision 3). Nothing here is implemented. The suite specified in sections 1-3 is what an adapter must pass to
 claim `contract.md`; section 4 proposes the smallest experiment that can say whether PostgreSQL batch publication
 (`postgres-batch-publication.md`) is worth building next to the variants already measured (`design.md` sections
-10-13). The existing real-adapter regression `LateVisibleEventsBehindACommittedOffsetAreDelivered` stays as it
-is, red against the current adapter and untouched, until a contract-conforming adapter exists.
+10-13). The existing real-adapter regression `LateVisibleEventsBehindACommittedOffsetAreDelivered` lives on the experimental
+branch and enters `develop` together with the implementation that makes it pass (decided by the owner on #338); the
+experiments keep it as an explicit expected failure, and the production CI is not changed to accept that omission.
 
 ## 1. Principles
 
@@ -67,19 +68,21 @@ publisher (events stay pending until the harness runs it), so the pending states
 | C09 | G7 | Tenant A, tenant B, `Unscoped()` and a tenant named "unscoped"; shards 1 and 2 | events never cross; a cursor of one stream presented for another (scope or shard) fails with `ErrCursorMismatch` and returns nothing; one scope's pending events never delay another's availability beyond the adapter's documented bound | none |
 | C10 | G8 | Persist events and call `DeleteEvents` while some of them are still pending | with pending events up to the sequence the call fails with `ErrRetentionPending`, deletes NOTHING (no partial deletion) and publishes nothing as a side effect; after `AwaitPublished` the same call succeeds and no event `<=` the sequence remains; events above it are untouched and delivered | PauseResumePublish |
 | C11 | cursor | Zero cursor, cursors from different reads | `IsZero` only for zero; `Equal` is reflexive, symmetric and survives a serialization round trip; two routes to the same frontier serialize to identical bytes (canonical form); different frontiers are not equal; `String()` carries no payload | none |
-| C12 | G2, heads | Drain a stream, then persist more | `StreamHeads` is the newest AVAILABLE cursor as observed; `Equal` to the consumer's progress means only "reached the observed head": the test persists an event right after and shows the consumer is no longer at the head, and pauses publication to show a pending event does not move the head | PauseResumePublish for the pending half |
+| C12 | G2, heads | Drain a stream, then persist more; then remove the newest published event by retention | `StreamHeads` is the PUBLISHED FRONTIER as observed: it never moves backwards, it is not necessarily the position of the newest retained event (the check deletes that event and the head does not regress), and `Equal` to the consumer's progress means only "reached the observed frontier": the check persists an event right after and shows the consumer is no longer at it, and pauses publication to show a pending event does not move it | PauseResumePublish for the pending half |
 | C13 | G10 | Pause publication, persist, wait, resume; process events with old timestamps | event age grows with the clock whether or not anything is wrong; publication backlog (count and oldest age) grows while paused and returns to zero after publication; none of them is read from a cursor value | PublicationLag + PauseResumePublish |
 | C14 | G2-G5, G7 | Seeded randomized interleaving: writes (conditional and unconditional, multi-entity, multi-shard), reads with random limits and cursor persistence, restarts, publications, injected failures, deletions, against an in-memory oracle of the persisted set | the oracle's invariants hold after every step and at the end; the seed of a failure is printed and replays it | whatever hooks exist |
 | C15 | G1 | A write whose acknowledgement is lost (`AfterCommitBeforeAck`), then the identical batch is retried; a write cancelled before any commit; a write rejected by its precondition | the lost-ack write surfaces as `ErrOutcomeUnknown`; the identical retry returns success with no duplicate and no second publication, also for a conditional write whose precondition no longer holds (replay before precondition); a pre-commit failure is a definitive rejection and leaves nothing; any unclassified error is treated as unknown by the harness | FailureInjection: AfterCommitBeforeAck |
 | C16 | G1 | Same identity, different content; a batch overlapping another one partly; a batch the adapter declares unsupported (multi-entity where it cannot be atomic) | `ErrIdentityConflict` and `ErrUnsupportedBatch` are definitive and leave nothing; a store never writes part of a batch | none |
 | C17 | G5 | Unconditional writes: a sequence `<=` the entity's revision, a decreasing batch, a gap, the same after retention deleted older events | `ErrSequenceOrder` for the first two; the gap is accepted and the skipped numbers can never be persisted later; retention does not lower the revision; the entity is delivered in sequence order whatever the precondition | none |
 | C18 | G7 | Two journal instances with identical scope and shard labels; a journal restored or rebuilt (generation advanced) | a cursor from instance A presented to instance B fails with `ErrCursorMismatch`; a cursor from before the generation change fails with `ErrCursorInvalidated`; the zero cursor works on both | a way to create two instances and to advance the generation |
-| C19 | G8 | Retention removes events a slow consumer has not read; erasure removes others (if the reason parameter exists) | the next read of the slow consumer fails with `ErrCursorOutsideRetention` and returns nothing; the zero cursor does not; a consumer already past the removed events is not affected; if erasure is distinguished it does not raise the error | none |
+| C19 | G8 | Retention removes events a slow consumer has not read; erasure removes others (if the reason parameter exists) | the next read of the slow consumer fails with `ErrCursorOutsideRetention` and returns nothing; the zero cursor does not; a consumer already past the removed events is not affected; if erasure is distinguished it does not raise the error; reading from the zero cursor after retention returns only the retained events, so a rebuild is not complete (documented, asserted) | none |
 | C20 | G3 | Chains of reads with limits 1, 2, 3 and 100 under concurrent writes and publications, including a source whose page may be empty with a moving cursor | every retained event is delivered by the chain; the chain never stalls while an undelivered event exists; reads never go back to an older view | none |
 | P01 | progress | Two committers load the same progress; the second commits first; the first commits afterwards | the stale `Commit` fails with `ErrProgressConflict` carrying the current progress and stores nothing; the winner's value stands | none |
 | P02 | progress | Commit, `Reset`, then a `Commit` prepared before the reset | the late commit fails (generation changed); progress is the zero position under a new generation; a reset with a stale revision fails | none |
-| P03 | progress | `Commit` whose answer is lost, retried | the retry conflicts and the current position is `Equal` to `next`, which the caller reads as its own success; no duplicate effect | failure injection on the progress store |
+| P03 | progress | `Commit` whose answer is lost, retried, with the resolution rule of `contract.md` section 6 | the caller applies the four-step resolution: generation changed means start over; `LastCommitID` equal to its own means success; revision unchanged means retry after validating; anything else means reload. Success is never inferred from the position alone: a check where ANOTHER worker has committed the very same position under a different `CommitID` must not be read as the caller's success | failure injection on the progress store |
 | P04 | progress | A deposed owner commits with an old fence token while the revision still matches (only if the store supports fences) | the commit is refused by the fence although the CAS would have passed; fencing and CAS are tested separately | fencing support |
+| C21 | G2 fairness | Entities whose actors stamp timestamps offset by -100 years, -1 year, 0, +1 hour, +1 year and +100 years are written continuously next to many others at about 80% of the publication capacity | for every event the number of publication cycles between its commit and its availability is at most `ceil(M / N) + c`, `M` being the backlog ahead of it at its commit; positions and availability never depend on a timestamp. Runs in the unit lane with a counted simulated publisher and against PostgreSQL with the real one | PauseResumePublish helps; a way to count cycles |
+| P05 | progress | A runtime commits a `Next` older than the loaded position while holding the CURRENT revision; a `Next` beyond the published frontier; a `Next` of another stream instance or generation | `ValidateAdvance` refuses each (`ErrCursorRegression`, `ErrCursorBeyondHead`, `ErrCursorMismatch` / `ErrCursorInvalidated`); a runtime that commits without validating fails the check; `from == to` is accepted | none |
 
 C14 is the strongest evidence for G3 and G5 because the hand-written interleavings above cannot enumerate the
 schedules a publisher and a writer can take.
@@ -98,6 +101,9 @@ schedules a publisher and a writer can take.
 | a cursor bound only to adapter, scope and shard (two journals accept each other's cursors) | C18 |
 | retention that removes unread events without raising an error | C19 |
 | a progress store whose `Commit` overwrites without comparing the revision, or ignores a reset | P01, P02 |
+| a publication order derived from event timestamps (the withdrawn `pub_key` design) | C21 |
+| a runtime that commits progress without `ValidateAdvance`, or an adapter whose `ValidateAdvance` accepts a regression | P05 |
+| a progress store that resolves an unknown commit by comparing positions only | P03 |
 | a cursor that changes meaning after restart | C08 |
 
 ### Lanes
@@ -131,6 +137,7 @@ immediate trigger after a local commit.
 | H1-H3: a transaction held in the same shard, another scope, another database | the failure modes measured so far |
 | HP1, HP2: the PUBLISHER's transaction held (same stream, another stream) | what a stuck publisher costs writers and delivery |
 | B1: publisher stopped for 10 s at 300 tx/s offered, then restarted | backlog size, time to drain, delivery latency during recovery |
+| F1: fairness with misaligned actor clocks (C21's scenario) at 80% of capacity | wait per event against the backlog ahead of it; whether the bound of `postgres-batch-publication.md` 3.2.1 holds in practice |
 | S1: sensitivity of `N` in {10, 100, 1000} and `tau` in {trigger only, 5 ms, 50 ms}, only if the first table warrants it | latency against cost of the knobs |
 
 ### 4.3 Measurements per variant and scenario

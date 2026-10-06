@@ -1,6 +1,6 @@
 # Portability of the journal contract (#332): Postgres, Oracle, Cassandra
 
-Status: PROPOSED evaluation, revision 2 (follows `contract.md` revision 2: outcomes and idempotent retry, retention floor,
+Status: PROPOSED evaluation, revision 3 (follows `contract.md` revision 3: observable atomicity, chains of reads from any frontier, `ValidateAdvance`, fairness independent of clocks; earlier revision 2 covered outcomes and idempotent retry, retention floor,
 cursor bound to the journal instance and generation, progress with CAS and generation). No adapter beyond PostgreSQL is implemented or prototyped; "could comply" below is a
 design argument from official documentation, not a demonstration. Nothing here approves an SPI or a migration.
 
@@ -100,8 +100,11 @@ non-blocking consistent reads. That is an argument about the mechanism's ingredi
 ### 4.1 Corrections applied after the owner review
 
 1. **G1 is NOT weakened for Cassandra.** The first revision allowed a store with only "eventually all or none"
-   cross-partition atomicity to claim a weaker G1. That is withdrawn. A Cassandra adapter meets G1 only with an
-   event and its pending evidence in the SAME partition (atomic and isolated, Q), and rejects with
+   cross-partition atomicity to claim a weaker G1. That is withdrawn, and the contract no longer says "eventually":
+   it requires OBSERVABLE atomicity, so that no read ever sees a partially committed batch. A logged batch across
+   partitions is not isolated (Q), so a read can see part of it; such a batch is therefore unsupported. A Cassandra
+   adapter meets G1 only with an event and its pending evidence in the SAME partition (atomic and isolated, Q), and
+   rejects with
    `ErrUnsupportedBatch` any batch it cannot make atomic (a multi-entity batch spans partitions). A stream-level
    index of pending events, if used, is only a discovery aid: the authoritative evidence is in the entity's
    partition and an anti-entropy scan must be able to rebuild the index, so a late or missing index entry delays
@@ -121,7 +124,15 @@ non-blocking consistent reads. That is an argument about the mechanism's ingredi
    promises that an empty page leaves the cursor unchanged; G3 asks for no stall instead.
 6. **Progress needs compare-and-set and a generation.** Every store has a conditional update: a Postgres
    `UPDATE .. WHERE revision = $1`, the same in Oracle, and an LWT `IF revision = ?` in Cassandra (Paxos, P). The
-   fencing token of an ownership mechanism is separate and belongs to #93.
+   fencing token of an ownership mechanism is separate and belongs to #93. A conditional update does not stop a
+   regression: that is `ValidateAdvance` (next item).
+7. **A comparison can stay inside the adapter.** `ValidateAdvance` (does `to` continue `from`?) needs each adapter to
+   relate its own frontiers: two integers in Postgres and Oracle, a (bucket, position) pair for a Cassandra log, a
+   per-source vector for a change feed. The core sees only an error, so a composite cursor stays admissible.
+8. **Fairness must not use clocks.** Publication order cannot be derived from event or write timestamps. In
+   Cassandra that rules out ordering a publication queue by write timestamp or `timeuuid` (writer clocks, last write
+   wins, P); the claimed-range log must order by an allocator the publisher owns. `timeuuid`'s cross-node behavior is
+   unverified (NV), another reason to keep it out of the ordering.
 
 ### 4.2 What still forces the contract to be stated carefully
 

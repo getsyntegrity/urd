@@ -1,6 +1,6 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 8 (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
+Status: PROPOSED, revision 9 (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
 enforced per-entity sequence rules, retention without partial deletion and detectable loss, three lag measures, cursor bound to the journal
 instance and generation, progress with compare-and-set and generation; the SPI is NOT approved). Revision 7 stands: **Direction change (agreed with the owner): Urd defines a PORTABLE JOURNAL
 CONTRACT; each adapter implements its guarantees with its own mechanisms. The earlier selection of per-write
@@ -14,13 +14,15 @@ conformance check is a known, deliberately red regression against the current ad
 ### Scope of this change: documentation only
 
 This directory is the whole content of the change. **The code, tests and benchmarks cited in sections 1-13 are NOT
-part of it and do not exist in `develop`.** They live on the local branch `exp/332-adapter-shard-serialization`
-(`6d03c1d`, which also contains the two earlier commits `1aef84b` and `fb21b34`): the conformance check
+part of it and do not exist in `develop`.** They live on the branch `exp/332-adapter-shard-serialization`
+(published for review, not for merge: commit `6d03c1d404a2b41cb4e3efd0213d400885f4a5af`, which also contains the two
+earlier commits `1aef84b` and `fb21b34`): the conformance check
 `LateVisibleEventsBehindACommittedOffsetAreDelivered`, the scratch-table prototypes, the `journalexp` build-tag
 adapter variants and the benchmark harness. The raw results those experiments produced are included here under
 `evidence/`, so the numbers can be read without the code. When this document says a check is "red" it refers to
-that branch; adding the check to `develop` while the adapter still fails it is a decision of its own (it would turn
-CI red), listed in section 14.4.
+that branch. The check enters `develop` together with the implementation that makes it pass (decided by the owner on
+#338): the experiments keep it as an explicit expected failure and the production CI is not changed to accept that
+omission.
 
 ### How to read this document set
 
@@ -950,8 +952,9 @@ data-migration gate and the coordination with #93.
 
 - Urd defines a **portable journal contract** (`contract.md`). Adapters implement it with their own mechanisms.
 - The **selection of per-write serialization is suspended**; so are the recommendations of 10.7, 12.8 and 13.9.
-- The experiments are **evidence**, not the mandatory architecture. Preserved: branch
-  `exp/332-adapter-shard-serialization` at `6d03c1d` and everything under `evidence/`.
+- The experiments are **evidence**, not the mandatory architecture. Preserved and published for review, not for
+  merge: branch `exp/332-adapter-shard-serialization` at `6d03c1d404a2b41cb4e3efd0213d400885f4a5af`, and everything
+  under `evidence/`.
 - The contract separates the **persisted** event from the **available** event, makes the cursor an **opaque
   `JournalPosition`** separate from the event timestamp, guarantees eventual availability under documented
   conditions, and demands no permanent omission when a cursor advances.
@@ -959,15 +962,18 @@ data-migration gate and the coordination with #93.
   comparison of cursors, any database mechanism (transaction ids, WAL, advisory locks, `SKIP LOCKED`, SQL
   transactions, sequences, counters), or a single publication mechanism.
 
-### 14.2 Framework contract (portable; see `contract.md`, revision 2)
+### 14.2 Framework contract (portable; see `contract.md`, revision 3)
 
 Guarantees G1-G10, as revised after the owner review:
 
-- **G1** three write outcomes (success, definitive rejection, unknown), event identity and idempotent replay checked
-  before the precondition, atomicity not weakened for any store (an adapter that cannot make a batch atomic rejects
-  it with `ErrUnsupportedBatch`).
-- **G2** eventual availability under documented operating conditions.
-- **G3** safe advance stated over chains of reads with limits: no skipped event, no stall, monotonic reads.
+- **G1** three write outcomes (success, definitive rejection, unknown); "nothing was left" is said only of a
+  definitive rejection; OBSERVABLE atomicity: no read sees a partially committed batch, while availability is a later
+  step that may span pages; event identity and idempotent replay checked before the precondition; an adapter that
+  cannot make a batch atomic rejects it with `ErrUnsupportedBatch`.
+- **G2** eventual availability under documented operating conditions, and **fairness**: a wait bounded by the backlog
+  ahead of the event, never by its timestamp or any writer clock.
+- **G3** safe advance stated over chains of reads from any frontier: every retained event AFTER the frontier,
+  including late-committed events that have no position yet, is delivered; no stall; monotonic reads.
 - **G4** stable order per stream; a composite cursor is admissible if it is a safe frontier; the core never compares.
 - **G5** per-entity order enforced for every write including `Unconditional()`: sequences strictly increasing,
   greater than the revision, gaps accepted and permanent, `ErrSequenceOrder` and `ErrIdentityConflict` otherwise.
@@ -979,9 +985,13 @@ Guarantees G1-G10, as revised after the owner review:
   as separate measures.
 
 Cursor operations in the contract: zero value, `IsZero`, `Equal` (canonical-form equality, not a completeness test),
-versioned serialization with binding. Out of the contract: `Compare`, arithmetic, `int64`, a fixed size. Progress is
-proposed as a store with `Load`, `Commit(expectedRevision, generation, next, fence)` and `Reset(expectedRevision)`
-(CAS and generation; fencing is separate and belongs to #93).
+versioned serialization with binding, and `ValidateAdvance(from, to)` on the journal side. Out of the contract:
+`Compare`, arithmetic, `int64`, a fixed size. Stream heads are the **published frontier**, not necessarily the
+position of the newest retained event; the zero cursor reads the retained history and does not promise a complete
+rebuild. Progress is proposed as a store with `Load`, `Commit(expectedRevision, generation, commitID, next, fence)`
+and `Reset(expectedRevision)`: CAS stops lost updates, the generation stops commits across a reset, the journal's
+`ValidateAdvance` stops a regression or an invalid cursor even with a current revision, and an unknown commit is
+resolved by generation and `CommitID`, never by comparing positions. Fencing is separate and belongs to #93.
 
 ### 14.3 Adapter strategies (not mandated)
 
@@ -989,7 +999,7 @@ proposed as a store with `Load`, `Commit(expectedRevision, generation, next, fen
 |---|---|---|
 | PostgreSQL | per-write serialization (stream counter row lock held to commit) | measured on the real adapter; suspended as the selection |
 | PostgreSQL | xid8 position with an xmin horizon | measured on the real adapter; suspended as the selection |
-| PostgreSQL | post-commit batch publication | designed (`postgres-batch-publication.md`), not implemented, not measured |
+| PostgreSQL | post-commit batch publication (arrival-order key `pub_seq`, independent of clocks) | designed (`postgres-batch-publication.md`) with a no-starvation argument and a fairness test; not implemented, not measured |
 | PostgreSQL | logical decoding of the journal | noted in `portability.md`, not evaluated |
 | Oracle | batch publication; Advanced Queuing with commit-time ordering | argued in `portability.md`; not prototyped |
 | Cassandra | LWT-claimed publication log with a barrier | sketched in `portability.md`; two facts unverified; not prototyped |
@@ -1013,12 +1023,14 @@ proposed as a store with `Load`, `Commit(expectedRevision, generation, next, fen
    one-way-door rollback.
 8. **Whether and which PostgreSQL strategy to adopt**, decided with the experiment of `conformance-and-experiment.md`
    section 4 after the owners agree its decision rules, and after the operating facts of 13.9 are known.
-9. **Backlog metrics** as required or optional capabilities.
+9. **Backlog metrics** as required or optional capabilities. **Verification owed:** that `nextval` with `CACHE 1`
+   returns increasing values for non-overlapping calls is standard but not quoted in the PostgreSQL page read; the
+   experiment's stress asserts it.
 10. **The index issue:** `evidence/issue-draft-timestamp-index.md` is a draft, not opened; it speeds reads and does
     not fix #332.
-11. **How and when the #332 regression lands in `develop`.** It fails against the current adapter by design, so
-    adding it now would turn CI red; options are to land it with the first conforming adapter, or as a declared
-    expected failure that cannot be silently skipped. Not decided.
+11. **~~How and when the #332 regression lands in `develop`~~ DECIDED by the owner on #338:** it enters together
+    with the implementation that makes it pass; the experiments may keep an explicit expected failure; the
+    production CI is not changed to accept the omission.
 12. **Delivery plan** (`conformance-and-experiment.md` section 5): documentation review first, then types and the
     conformance suite behind the public-contract gate, then the adapter and its migration, then runner and offsets
     with #93. Nothing is implemented until the documentation review closes.
