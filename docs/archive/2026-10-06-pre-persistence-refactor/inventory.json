@@ -1,0 +1,408 @@
+{
+  "baseline": "c279719285b826174d506b16f9106930dd79585b",
+  "reason": "Superseded by the Urd Persistence modular refactor; closed items are not claimed fixed.",
+  "issues": [
+    {
+      "number": 339,
+      "title": "[RUNTIME/BUG] Actualizar GoAkt con el fix de #1449 y retirar el fork temporal",
+      "url": "https://github.com/getsyntegrity/urd/issues/339"
+    },
+    {
+      "number": 336,
+      "title": "[READ-SIDE/CDC] Consumir cambios confirmados mediante una fuente CDC reanudable",
+      "url": "https://github.com/getsyntegrity/urd/issues/336"
+    },
+    {
+      "number": 337,
+      "title": "[READ-SIDE/BROKER] Consumir eventos mediante broker durable con publicación consistente",
+      "url": "https://github.com/getsyntegrity/urd/issues/337"
+    },
+    {
+      "number": 335,
+      "title": "[READ-SIDE/NOTIFICACIONES] Activar proyecciones mediante notificaciones con recuperación durable",
+      "url": "https://github.com/getsyntegrity/urd/issues/335"
+    },
+    {
+      "number": 334,
+      "title": "[READ-SIDE/POLLING] Extraer el polling actual como estrategia inyectable",
+      "url": "https://github.com/getsyntegrity/urd/issues/334"
+    },
+    {
+      "number": 333,
+      "title": "[READ-SIDE] Estrategias inyectables de activación y consumo: polling, notificaciones, CDC y broker",
+      "url": "https://github.com/getsyntegrity/urd/issues/333"
+    },
+    {
+      "number": 332,
+      "title": "[CORRECTNESS] Evitar omisión de eventos confirmados detrás del cursor del journal",
+      "url": "https://github.com/getsyntegrity/urd/issues/332"
+    },
+    {
+      "number": 330,
+      "title": "[EGO-TENANT/CORRECTNESS] GetShardEvents omite eventos con timestamp repetido en el límite de página",
+      "url": "https://github.com/getsyntegrity/urd/issues/330"
+    },
+    {
+      "number": 329,
+      "title": "[EGO-TENANT/CORRECTNESS] Cerrar gaps de offsets por tenant, paginación del journal y spawn remoto",
+      "url": "https://github.com/getsyntegrity/urd/issues/329"
+    },
+    {
+      "number": 308,
+      "title": "[EGO-BATCH] Una entidad batcheada a veces no recibe la confirmación de su escritura (timeout en el escenario de estrés de #306)",
+      "url": "https://github.com/getsyntegrity/urd/issues/308"
+    },
+    {
+      "number": 307,
+      "title": "[EGO-CORRECTNESS] Responder a callers pendientes cuando falla una escritura event-sourced",
+      "url": "https://github.com/getsyntegrity/urd/issues/307"
+    },
+    {
+      "number": 305,
+      "title": "[EGO-TENANT] Propagar identidad tenant entre nodos con boundary de confianza explícito",
+      "url": "https://github.com/getsyntegrity/urd/issues/305"
+    },
+    {
+      "number": 303,
+      "title": "[URD-UPSTREAM] Borrado durable-state con tombstone, scope y concurrencia explícitos",
+      "url": "https://github.com/getsyntegrity/urd/issues/303"
+    },
+    {
+      "number": 301,
+      "title": "[URD-UPSTREAM] Persistir estado de lifecycle y deadline de sagas para recovery",
+      "url": "https://github.com/getsyntegrity/urd/issues/301"
+    },
+    {
+      "number": 302,
+      "title": "[URD-UPSTREAM] Alimentar sagas desde journal durable y tenant-scoped en multinodo",
+      "url": "https://github.com/getsyntegrity/urd/issues/302"
+    },
+    {
+      "number": 300,
+      "title": "[URD-UPSTREAM] Acotar publicación externa: timeout, backpressure y fallos observables",
+      "url": "https://github.com/getsyntegrity/urd/issues/300"
+    },
+    {
+      "number": 276,
+      "title": "bug(engine): RebuildProjection can leave the projection stopped (Kill + immediate Spawn race)",
+      "url": "https://github.com/getsyntegrity/urd/issues/276"
+    },
+    {
+      "number": 275,
+      "title": "chore(lint): clear pre-existing golangci-lint findings in nested modules",
+      "url": "https://github.com/getsyntegrity/urd/issues/275"
+    },
+    {
+      "number": 213,
+      "title": "[EGO-TEST] Agregar integración real para publishers Kafka, NATS y Pulsar",
+      "url": "https://github.com/getsyntegrity/urd/issues/213"
+    },
+    {
+      "number": 209,
+      "title": "[EGO-TEST] Añadir lanes fast/integration/examples al pipeline vigente y al gate",
+      "url": "https://github.com/getsyntegrity/urd/issues/209"
+    },
+    {
+      "number": 208,
+      "title": "[EGO-TEST] Separar pruebas de arquitectura y subprocesos de las suites unitarias",
+      "url": "https://github.com/getsyntegrity/urd/issues/208"
+    },
+    {
+      "number": 190,
+      "title": "P2: ci: prueba pública automatizada del consumidor después de publicar",
+      "url": "https://github.com/getsyntegrity/urd/issues/190"
+    },
+    {
+      "number": 173,
+      "title": "releaseplan: writeOutputs borra un plan.json previo si falla el segundo rename",
+      "url": "https://github.com/getsyntegrity/urd/issues/173"
+    },
+    {
+      "number": 166,
+      "title": "[EGO-RUNTIME] EraseEntity does not crypto-shred: DeleteKey is never called",
+      "url": "https://github.com/getsyntegrity/urd/issues/166"
+    },
+    {
+      "number": 159,
+      "title": "[EGO-ARCH/CI] Ejecución modular: límites de librerías, CI por impacto y raíz sin archivos Go",
+      "url": "https://github.com/getsyntegrity/urd/issues/159"
+    },
+    {
+      "number": 148,
+      "title": "[EGO-RUNTIME] RUNTIME-005: in-memory runtime and compose/inmem (#105 IMPL-6)",
+      "url": "https://github.com/getsyntegrity/urd/issues/148"
+    },
+    {
+      "number": 124,
+      "title": "[EGO-ARCH] Final repository layout: no Go files at repository root",
+      "url": "https://github.com/getsyntegrity/urd/issues/124"
+    },
+    {
+      "number": 122,
+      "title": "[EGO-ARCH] Remove GoAkt from publisher test closures and measure module cost",
+      "url": "https://github.com/getsyntegrity/urd/issues/122"
+    },
+    {
+      "number": 112,
+      "title": "[CI-011] Replace fixed waits and reduce root test latency",
+      "url": "https://github.com/getsyntegrity/urd/issues/112"
+    },
+    {
+      "number": 105,
+      "title": "[EGO-ARCH-003] Establish explicit composition root and dependency injection model",
+      "url": "https://github.com/getsyntegrity/urd/issues/105"
+    },
+    {
+      "number": 102,
+      "title": "[EGO-ARCH-006] Physical Go modules and impact-aware CI",
+      "url": "https://github.com/getsyntegrity/urd/issues/102"
+    },
+    {
+      "number": 99,
+      "title": "Flaky panic: unchecked extension assertion in eventsWriterActor.PreStart aborts the root test suite",
+      "url": "https://github.com/getsyntegrity/urd/issues/99"
+    },
+    {
+      "number": 97,
+      "title": "[EGO-TENANT-009] Tenant-aware actor identity and addressing",
+      "url": "https://github.com/getsyntegrity/urd/issues/97"
+    },
+    {
+      "number": 96,
+      "title": "[EGO-TENANT-008] Administrative and system tenant context semantics",
+      "url": "https://github.com/getsyntegrity/urd/issues/96"
+    },
+    {
+      "number": 95,
+      "title": "[EGO-TENANT-007] Cross-tenant architecture and conformance suite",
+      "url": "https://github.com/getsyntegrity/urd/issues/95"
+    },
+    {
+      "number": 94,
+      "title": "[EGO-TENANT-005] Topic and publication tenant isolation",
+      "url": "https://github.com/getsyntegrity/urd/issues/94"
+    },
+    {
+      "number": 93,
+      "title": "[EGO-TENANT-004] ReadSide and offset tenant isolation",
+      "url": "https://github.com/getsyntegrity/urd/issues/93"
+    },
+    {
+      "number": 75,
+      "title": "[EGO-QUERY-001] Canonical query envelope, QueryBus and handler contracts",
+      "url": "https://github.com/getsyntegrity/urd/issues/75"
+    },
+    {
+      "number": 72,
+      "title": "[EGO-QUERY-001] Typed QueryBus (contract-first)",
+      "url": "https://github.com/getsyntegrity/urd/issues/72"
+    },
+    {
+      "number": 71,
+      "title": "[EGO-READ-001] First-class ReadSide API and registration",
+      "url": "https://github.com/getsyntegrity/urd/issues/71"
+    },
+    {
+      "number": 69,
+      "title": "[EGO-WRITE-008] Aggregate lifecycle and metadata",
+      "url": "https://github.com/getsyntegrity/urd/issues/69"
+    },
+    {
+      "number": 67,
+      "title": "[EGO-WRITE-006] Atomic multi-event append semantics",
+      "url": "https://github.com/getsyntegrity/urd/issues/67"
+    },
+    {
+      "number": 66,
+      "title": "[EGO-WRITE-005] Command idempotency and deduplication",
+      "url": "https://github.com/getsyntegrity/urd/issues/66"
+    },
+    {
+      "number": 44,
+      "title": "[EPIC EGO-ROADMAP] Ego next-generation CQRS/ES transformation program",
+      "url": "https://github.com/getsyntegrity/urd/issues/44"
+    },
+    {
+      "number": 43,
+      "title": "[EPIC EGO-CORRECTNESS] Persistence atomicity, crash consistency and recovery invariants",
+      "url": "https://github.com/getsyntegrity/urd/issues/43"
+    },
+    {
+      "number": 42,
+      "title": "[EPIC EGO-REFERENCE] Production reference architecture and end-to-end sample application",
+      "url": "https://github.com/getsyntegrity/urd/issues/42"
+    },
+    {
+      "number": 41,
+      "title": "[EPIC EGO-BATCH] Durable event batching, flush and crash semantics",
+      "url": "https://github.com/getsyntegrity/urd/issues/41"
+    },
+    {
+      "number": 40,
+      "title": "[EPIC EGO-PERF] Performance model, hot-path budgets and regression protection",
+      "url": "https://github.com/getsyntegrity/urd/issues/40"
+    },
+    {
+      "number": 39,
+      "title": "[EPIC EGO-RELEASE] Official Getsyntegrity Ego distribution, module identity and release governance",
+      "url": "https://github.com/getsyntegrity/urd/issues/39"
+    },
+    {
+      "number": 38,
+      "title": "[EPIC EGO-CI] Multi-module CI, security gates and Shipwright pipeline",
+      "url": "https://github.com/getsyntegrity/urd/issues/38"
+    },
+    {
+      "number": 37,
+      "title": "[EPIC EGO-COMPAT] Public API/SPI compatibility and framework evolution policy",
+      "url": "https://github.com/getsyntegrity/urd/issues/37"
+    },
+    {
+      "number": 36,
+      "title": "[EPIC EGO-ADMIN] Operational administration and recovery surface",
+      "url": "https://github.com/getsyntegrity/urd/issues/36"
+    },
+    {
+      "number": 35,
+      "title": "[EPIC EGO-CONFIG] Typed, validated and adapter-aware configuration model",
+      "url": "https://github.com/getsyntegrity/urd/issues/35"
+    },
+    {
+      "number": 34,
+      "title": "[EPIC EGO-DEVX] Framework developer experience, scaffolding and local development",
+      "url": "https://github.com/getsyntegrity/urd/issues/34"
+    },
+    {
+      "number": 33,
+      "title": "[EPIC EGO-PLUGINS] Stable adapter/plugin ecosystem and ego-contrib governance",
+      "url": "https://github.com/getsyntegrity/urd/issues/33"
+    },
+    {
+      "number": 32,
+      "title": "[EPIC EGO-TESTKIT] Deterministic testing, conformance and crash-recovery toolkit",
+      "url": "https://github.com/getsyntegrity/urd/issues/32"
+    },
+    {
+      "number": 31,
+      "title": "[EPIC EGO-OBS] Framework-wide observability contract and telemetry model",
+      "url": "https://github.com/getsyntegrity/urd/issues/31"
+    },
+    {
+      "number": 30,
+      "title": "[EPIC EGO-TIME] Durable timers, scheduling and delayed commands",
+      "url": "https://github.com/getsyntegrity/urd/issues/30"
+    },
+    {
+      "number": 29,
+      "title": "[EPIC EGO-DIST] Runtime-neutral distributed placement, sharding and cluster semantics",
+      "url": "https://github.com/getsyntegrity/urd/issues/29"
+    },
+    {
+      "number": 28,
+      "title": "[EPIC EGO-SECURITY] Framework security context, authorization hooks and encryption lifecycle",
+      "url": "https://github.com/getsyntegrity/urd/issues/28"
+    },
+    {
+      "number": 27,
+      "title": "[EPIC EGO-SCHEMA] Event, command, query and snapshot schema evolution",
+      "url": "https://github.com/getsyntegrity/urd/issues/27"
+    },
+    {
+      "number": 26,
+      "title": "[EPIC EGO-SNAPSHOT] Production snapshot, retention and recovery semantics",
+      "url": "https://github.com/getsyntegrity/urd/issues/26"
+    },
+    {
+      "number": 25,
+      "title": "[EPIC EGO-HEALTH] Framework-level liveness, readiness and degraded-state model",
+      "url": "https://github.com/getsyntegrity/urd/issues/25"
+    },
+    {
+      "number": 24,
+      "title": "[EPIC EGO-LIFECYCLE] Unified startup, readiness, drain and graceful shutdown lifecycle",
+      "url": "https://github.com/getsyntegrity/urd/issues/24"
+    },
+    {
+      "number": 23,
+      "title": "[EPIC EGO-TENANT] Native multi-tenancy and isolation contracts",
+      "url": "https://github.com/getsyntegrity/urd/issues/23"
+    },
+    {
+      "number": 22,
+      "title": "[EPIC EGO-EFFECTS] Durable external side-effect execution",
+      "url": "https://github.com/getsyntegrity/urd/issues/22"
+    },
+    {
+      "number": 21,
+      "title": "[EPIC EGO-CONSISTENCY] Distributed idempotency, concurrency and effectively-once primitives",
+      "url": "https://github.com/getsyntegrity/urd/issues/21"
+    },
+    {
+      "number": 20,
+      "title": "[EPIC EGO-SERVICE] Declarative service/component model for commands, queries and topics",
+      "url": "https://github.com/getsyntegrity/urd/issues/20"
+    },
+    {
+      "number": 19,
+      "title": "[EPIC EGO-TRANSPORT] Runtime-neutral command, query and event transport abstraction",
+      "url": "https://github.com/getsyntegrity/urd/issues/19"
+    },
+    {
+      "number": 18,
+      "title": "[EPIC EGO-SAGA] Durable process managers and saga execution model",
+      "url": "https://github.com/getsyntegrity/urd/issues/18"
+    },
+    {
+      "number": 17,
+      "title": "[EPIC EGO-PUBSUB] First-class event topics, publication and transactional outbox",
+      "url": "https://github.com/getsyntegrity/urd/issues/17"
+    },
+    {
+      "number": 16,
+      "title": "[EPIC EGO-CHANGEFEED] Runtime-neutral durable journal ChangeFeed",
+      "url": "https://github.com/getsyntegrity/urd/issues/16"
+    },
+    {
+      "number": 15,
+      "title": "[EPIC EGO-QUERY] First-class CQRS Query Side and typed query bus",
+      "url": "https://github.com/getsyntegrity/urd/issues/15"
+    },
+    {
+      "number": 14,
+      "title": "[EPIC EGO-READ] First-class durable Read Side and projection processing model",
+      "url": "https://github.com/getsyntegrity/urd/issues/14"
+    },
+    {
+      "number": 13,
+      "title": "[EPIC EGO-STORE] Production-grade EventStore SPI and persistence contracts",
+      "url": "https://github.com/getsyntegrity/urd/issues/13"
+    },
+    {
+      "number": 12,
+      "title": "[EPIC EGO-WRITE] First-class runtime-neutral CQRS write side",
+      "url": "https://github.com/getsyntegrity/urd/issues/12"
+    },
+    {
+      "number": 11,
+      "title": "[EPIC EGO-RUNTIME] Runtime-agnostic execution model and interchangeable runtime SPI",
+      "url": "https://github.com/getsyntegrity/urd/issues/11"
+    },
+    {
+      "number": 10,
+      "title": "[EPIC EGO-ARCH] Hexagonalize the framework and establish enforceable architectural boundaries",
+      "url": "https://github.com/getsyntegrity/urd/issues/10"
+    }
+  ],
+  "pull_requests": [
+    {
+      "number": 340,
+      "title": "build(deps): bump the minor-patch group across 2 directories with 8 updates",
+      "url": "https://github.com/getsyntegrity/urd/pull/340"
+    },
+    {
+      "number": 338,
+      "title": "docs(persistence): propose a portable journal contract for #332",
+      "url": "https://github.com/getsyntegrity/urd/pull/338"
+    }
+  ]
+}
