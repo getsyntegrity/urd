@@ -1,6 +1,6 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 10 (second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
+Status: PROPOSED, revision 11 (the owner's objections to D13, D14 and D15 applied: stream identity separate from actor placement, the unit defect and the interface decided apart, no conformant report-only mode; revision 10 was the second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
 enforced per-entity sequence rules, retention without partial deletion and detectable loss, three lag measures, cursor bound to the journal
 instance and generation, progress with compare-and-set and generation; the SPI is NOT approved). Revision 7 stands: **Direction change (agreed with the owner): Urd defines a PORTABLE JOURNAL
 CONTRACT; each adapter implements its guarantees with its own mechanisms. The earlier selection of per-write
@@ -1037,12 +1037,14 @@ resolved by epoch and `CommitID`, never by comparing positions. Fencing is separ
 
 ### 14.4.1 Added by the second review round
 
-13. **The shard of an entity is fixed for its lifetime** (G5): a column on the revision row, an engine change to use
-    the recorded shard, and an audit of entities that already span shards. (D13)
-14. **Time-based start:** an optional `TimePositioner`, and the existing defect that `WithStartOffset`,
-    `WithResetOffset` and `RebuildProjection(from)` ignore their time (UnixMilli against UnixNano), to be filed on its
-    own. (D14)
-15. **Rollout of the retention check:** report-only first, then enforce; loss before the cutover is undetectable. (D15)
+13. **A stable stream identity per entity, separate from where its actor runs** (G5): the owners decide how it is
+    derived and whether the number of logical streams can change; a column on the revision row; an audit of entities
+    that already span streams. (D13)
+14. **Time-based start, two decisions:** (D14a) the existing defect that `WithStartOffset`, `WithResetOffset` and
+    `RebuildProjection(from)` ignore their time (UnixMilli against UnixNano), decided on its own and fixable on the
+    current SPI; (D14b) whether the contract offers a time-positioning interface, which does not follow from D14a.
+15. **Retention check and existing deployments:** enforcing from the start, preceded by a read-only audit; a mode that
+    detects loss and continues is not conformant; loss before the cutover is undetectable. (D15)
 
 `decisions.md` gives, for every item above, the question, what the review found, the options and a recommendation.
 None of them is decided there.

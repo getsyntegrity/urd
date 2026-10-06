@@ -1,6 +1,6 @@
 # Portable journal contract (#332) — framework level
 
-Status: PROPOSED, revision 4 (second review round: a rule for the shard of an entity, replay equality defined, progress epoch renamed, enforcement limit of `ValidateAdvance`, time-based start). Revision 3 applied the owner review of #338. Design only: no production code, SPI, schema or migration
+Status: PROPOSED, revision 5 (the stream identity of an entity is stable and separate from actor placement; revision 4 added: replay equality defined, progress epoch renamed, enforcement limit of `ValidateAdvance`, time-based start). Revision 3 applied the owner review of #338. Design only: no production code, SPI, schema or migration
 changes. The SPI is NOT approved. The public-contract gate and the data-migration gate are PENDING and nothing here
 approves them. Names and types are open; the semantics are what is under review.
 
@@ -159,16 +159,18 @@ current revision", not "no order invariant". The store enforces the entity's seq
 | Against the entity's **revision** (the highest sequence ever persisted for it, which retention never lowers) | every new sequence is greater than the revision | a new sequence `<=` the revision: `ErrSequenceOrder` (definitive) |
 | Gaps (a sequence `> revision + 1`) | accepted; the skipped numbers are permanently unavailable: a sequence below the revision can never be persisted later | |
 | An identity that already exists | same content: idempotent replay (G1) | different content: `ErrIdentityConflict` |
-| The event's `Shard` | the same shard as every earlier event of the entity (the first persisted event fixes it) | another shard: `ErrShardMismatch` (definitive) |
+| The event's stream (`Shard` field) | the same stream as every earlier event of the entity (the first persisted event fixes it) | another stream: `ErrShardMismatch` (definitive; the name is open) |
 | `ExpectGenesis` / `ExpectRevision(r)` | additionally require the entity's revision to be absent / equal to `r`, as today | |
 
-**The shard of an entity is fixed for its lifetime.** Streams are per `(scope, shard)`, and G4 gives an order per
-stream only. If an entity's events could land in two shards, a consumer reading the two streams could see `n+1`
-before `n`, and G5 would be false. Today the shard is `ActorSystem().Partition(persistence id)`, a function of the
-entity name and of the cluster's partition count; if that count changes, the same entity maps to a different shard.
-The store therefore records the shard of an entity with its first event and rejects any event of that entity that
-carries another; the engine must use the recorded shard, not recompute it (an audit item). Entities that already
-span shards in an existing journal are a migration question (decisions D13).
+**The stream of an entity is fixed for its lifetime.** Streams are per `(scope, shard)`, and G4 gives an order per
+stream only. If an entity's events could land in two streams, a consumer reading both could see `n+1` before `n`, and
+G5 would be false. The contract therefore requires a **stable stream identity** per entity: it is fixed when the
+entity's first event is persisted and does not change afterwards. It must not depend on where an actor runs: the
+placement of actors may change with the cluster's topology, and the stream identity may not follow it. How the stable
+identity is derived, how many logical streams a journal has and whether that number can ever change are open
+(decisions D13). Today the `Shard` field is filled from the actor system's partition, which does not meet this
+requirement across a change of partition count. Entities that already span streams in an existing journal are a
+migration question (D13).
 
 Gaps are accepted because retention and conditional writes already produce them, and because the guarantee is
 about order, not density: a missing number is simply never available. What a store must not do is accept a late
@@ -380,9 +382,9 @@ Notes:
   whether to keep them for one release is a public-contract decision.
 - `WriteEvents`' signature does not change; the outcome taxonomy is carried by the error types (`errors.Is`).
 - `DeleteEvents` may gain a reason parameter (G8 open question).
-- `TimePositioner` exists because the engine offers time-based starts (`WithStartOffset`, `WithResetOffset`,
-  `RebuildProjection(from)`) and a cursor with no time meaning cannot express them. See decisions D14, which also
-  records that today those features do not work as intended (the "from" time is ignored).
+- `TimePositioner` is a proposal for one question only: whether time-based starts must survive the move to opaque
+  cursors (D14b). It is independent of the unit defect those features have today, which is decided separately
+  (D14a).
 
 ## 6. Progress (proposal, not approved)
 
@@ -512,9 +514,10 @@ reads a timestamp offset or names a mechanism of any one database.
 6. Whether publication and consumer backlog are required metrics or optional capabilities.
 7. How journal instance and generation are created and advanced, and what advances the generation.
 
-8. The rule that an entity's shard is fixed for its lifetime and the audit of how the engine derives it (D13).
-9. A time-based start capability (`TimePositioner`) and the existing defect in the time-based starts (D14).
-10. How retention enforcement is rolled out, and what cannot be detected retroactively (D15).
+8. How the stable stream identity of an entity is defined, separate from the placement of actors (D13).
+9. The unit defect of the time-based starts, decided on its own (D14a), and separately whether the contract offers a
+   time-positioning interface (D14b).
+10. How an existing deployment is prepared for the retention check, which is enforcing or not conformant (D15).
 
 Decided (owner, on #338): the #332 regression check enters `develop` together with the implementation that makes it
 pass; the experiments may keep an explicit expected failure; the production CI is not changed to accept that

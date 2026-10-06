@@ -1,6 +1,6 @@
 # PostgreSQL strategy: post-commit batch publication (#332)
 
-Status: PROPOSED design of ONE adapter strategy, revision 4 (second review round: the entity's shard is recorded and fixed, no claim about reuse of `pub_seq`, fairness across streams, migration audits and rollout; revision 3 followed `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
+Status: PROPOSED design of ONE adapter strategy, revision 5 (the stream identity of an entity is stable and separate from actor placement, the retention check has no conformant report-only mode; revision 4 added: the entity's shard is recorded and fixed, no claim about reuse of `pub_seq`, fairness across streams, migration audits and rollout; revision 3 followed `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
 measured, no performance claim. It implements `contract.md` (G1-G10 and the progress rules) for the PostgreSQL adapter and is one of several strategies (`design.md` keeps
 the measured alternatives: per-write serialization, xid horizon). Nothing here approves the SPI or the migration.
 
@@ -24,7 +24,8 @@ pub_seq     BIGINT        NOT NULL,  -- arrival order of the row, from a sequenc
 
 CREATE SEQUENCE journal_pub_seq CACHE 1 NO CYCLE;   -- CACHE 1 is a requirement, see 3.2
 
--- events_store_revisions gains shard_number BIGINT: the shard of the entity, fixed by its first event (G5)
+-- events_store_revisions gains shard_number BIGINT: the stream key of the entity, fixed by its first event (G5);
+-- how that key is derived is open (decisions D13): not necessarily GoAkt's partition
 
 -- pending set, ordered for the publisher
 CREATE INDEX events_pending ON events_store (tenant_id, shard_number, pub_seq)
@@ -360,11 +361,11 @@ maintenance step as the backfill, per `(projection, shard)` and, once #93 lands,
 **Audits to run before the migration (they decide whether it can proceed).** They read the data; none was run for
 this document, there is no production data here.
 
-1. *Entities that span shards.* `SELECT tenant_id, persistence_id FROM events_store GROUP BY 1, 2 HAVING
-   COUNT(DISTINCT shard_number) > 1`. The shard of an entity is fixed by its first event (G5), and an entity whose
-   events already sit in two shards has no single stream, so no cross-stream order exists for it. Each such entity is
-   either re-homed (its earlier events are moved to the shard of its first event, which changes stream membership
-   and needs its own offset mapping) or the migration refuses to proceed until the owners decide (D13).
+1. *Entities that span streams.* `SELECT tenant_id, persistence_id FROM events_store GROUP BY 1, 2 HAVING
+   COUNT(DISTINCT shard_number) > 1`. The stream of an entity is fixed by its first event (G5), and an entity whose
+   events already sit in two streams has no single stream, so no cross-stream order exists for it. Each such entity is
+   either re-homed (its earlier events move to the stream of its first event, which changes stream membership and
+   needs its own offset mapping) or the migration refuses to proceed until the owners decide (D13).
 2. *Units of the legacy offsets.* The event-sourced actor stamps events in UnixNano, while the runner's
    `WithStartOffset`, `WithResetOffset` and `RebuildProjection(from)` store UnixMilli (verified in the code, and
    demonstrated on the in-memory store: a "from" one year in the future, in milliseconds, still returned an event
@@ -381,12 +382,14 @@ this document, there is no production data here.
 4. *Retention history.* Events deleted before the cutover cannot be reconstructed: the retention floor starts at
    zero and loss before the cutover stays undetectable. State it in the runbook.
 
-**Rollout of the retention check.** Raising `ErrCursorOutsideRetention` turns silent loss into a stopped consumer.
-Today the janitor deletes events after snapshots (retention count may be zero), so a consumer that lags will hit the
-error on its first read. The adapter ships the check in a **report-only mode** first: it records and logs every read
-that would have failed (a counter per projection and stream) and continues; enforcement is switched on once the
-owners have seen which projections are affected. This is an operational switch of the adapter, not part of the
-contract, and the contract's guarantee holds only in enforcing mode (D15).
+**Preparing a deployment for the retention check.** Raising `ErrCursorOutsideRetention` turns silent loss into a
+stopped consumer. Today the janitor deletes events after snapshots (retention count may be zero), so a consumer that
+lags will hit the error on its first read. A runtime mode that detects the loss and then continues keeps the silent
+omission the contract forbids; it is **not a conformant mode** and the adapter does not offer one. What can be done
+before enabling is a **read-only audit**: for each projection and stream, how far its progress lags and how much has
+been deleted since; it informs the owners and changes nothing. The check is then enforcing from the adapter's first
+release. A transitional switch, if the owners ever want one, is a migration aid labelled non-conformant and
+time-limited (D15).
 
 - A new `journal_id` is created with the schema and `generation` starts at 1; cursors issued after the cutover carry
   both. Positions assigned by the backfill belong to generation 1.

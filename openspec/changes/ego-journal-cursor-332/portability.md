@@ -134,9 +134,10 @@ non-blocking consistent reads. That is an argument about the mechanism's ingredi
    wins, P); the claimed-range log must order by an allocator the publisher owns. `timeuuid`'s cross-node behavior is
    unverified (NV), another reason to keep it out of the ordering.
 
-9. **The shard of an entity is recorded with the entity.** A Postgres or Oracle revision row, or a Cassandra entity
-   partition, holds the shard fixed by the first event; an event under another shard is `ErrShardMismatch`. Without
-   it G5 cannot hold, because streams are per shard and carry no order between them.
+9. **The stream of an entity is recorded with the entity.** A Postgres or Oracle revision row, or a Cassandra entity
+   partition, holds the stream key fixed by the first event; an event under another key is `ErrShardMismatch`.
+   Without it G5 cannot hold, because streams carry no order between them. The key is a logical stream identity and
+   does not follow where an actor is placed (decisions D13).
 
 ### 4.2 What still forces the contract to be stated carefully
 
