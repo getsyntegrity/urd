@@ -1,6 +1,6 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 11 (the owner's objections to D13, D14 and D15 applied: stream identity separate from actor placement, the unit defect and the interface decided apart, no conformant report-only mode; revision 10 was the second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
+Status: PROPOSED, revision 12 (the owner's resolutions of D1-D15 recorded in `decisions.md`; the batch-publication experiment is AUTHORIZED as an experiment, the migration and a production change of the SPI are NOT). Revision 11: the owner's objections to D13, D14 and D15 applied: stream identity separate from actor placement, the unit defect and the interface decided apart, no conformant report-only mode; revision 10 was the second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
 enforced per-entity sequence rules, retention without partial deletion and detectable loss, three lag measures, cursor bound to the journal
 instance and generation, progress with compare-and-set and generation; the SPI is NOT approved). Revision 7 stands: **Direction change (agreed with the owner): Urd defines a PORTABLE JOURNAL
 CONTRACT; each adapter implements its guarantees with its own mechanisms. The earlier selection of per-write
@@ -1004,7 +1004,19 @@ resolved by epoch and `CommitID`, never by comparing positions. Fencing is separ
 | Oracle | batch publication; Advanced Queuing with commit-time ordering | argued in `portability.md`; not prototyped |
 | Cassandra | LWT-claimed publication log with a barrier | sketched in `portability.md`; two facts unverified; not prototyped |
 
-### 14.4 Pending decisions
+### 14.4 Decisions
+
+**Resolved by the owner on #338; the full record, with options, is in [`decisions.md`](decisions.md).** The numbered
+items below are the questions as they were put; read each one together with its resolution there. Summary of the
+state: D1 semantics first; D2 objective subject to audit, with an unresolved unknown outcome after retention; D3
+retention only on the first delivery, reasons deferred; D4 per-adapter limit with input validation; D5 consumer-side
+advance validation plus CAS and epoch; D6 UUID, generation, documented restore and a validation before resuming; D7
+pending the joint design with #93 and not fixed to land first; D8 experiment authorized with provisional targets and
+full reporting; D9 backlog visibility mandatory; D10 pending, no issue; D11 confirmed; D12 slices (conformance,
+experimental implementation, measurement, production integration); D13 logical streams of Urd with a stable
+versioned algorithm and an audited, not inferred, adoption for existing journals; D14a nanoseconds with a permanent
+regression, an observable behavior change, stored offsets open; D14b deferred; D15 mandatory check preceded by an
+audit.
 
 1. **Public-contract gate (SPI NOT approved):** the shape (`StreamReader`, `ReadStream`, `StreamHeads`, `Page`,
    `JournalPosition`, `ProgressStore`, the typed errors), replace or extend the old methods, and the names.
@@ -1023,7 +1035,7 @@ resolved by epoch and `CommitID`, never by comparing positions. Fencing is separ
    one-way-door rollback.
 8. **Whether and which PostgreSQL strategy to adopt**, decided with the experiment of `conformance-and-experiment.md`
    section 4 after the owners agree its decision rules, and after the operating facts of 13.9 are known.
-9. **Backlog metrics** as required or optional capabilities. **Verification owed:** that `nextval` with `CACHE 1`
+9. **Backlog metrics: resolved (D9)**: publication-backlog visibility is mandatory, an exact count is not, consumer backlog is optional. **Verification owed:** that `nextval` with `CACHE 1`
    returns increasing values for non-overlapping calls is standard but not quoted in the PostgreSQL page read; the
    experiment's stress asserts it.
 10. **The index issue:** `evidence/issue-draft-timestamp-index.md` is a draft, not opened; it speeds reads and does
@@ -1031,9 +1043,9 @@ resolved by epoch and `CommitID`, never by comparing positions. Fencing is separ
 11. **~~How and when the #332 regression lands in `develop`~~ DECIDED by the owner on #338:** it enters together
     with the implementation that makes it pass; the experiments may keep an explicit expected failure; the
     production CI is not changed to accept the omission.
-12. **Delivery plan** (`conformance-and-experiment.md` section 5): documentation review first, then types and the
-    conformance suite behind the public-contract gate, then the adapter and its migration, then runner and offsets
-    with #93. Nothing is implemented until the documentation review closes.
+12. **Delivery plan: resolved (D12)** (`conformance-and-experiment.md` section 5): small slices in this order,
+    conformance, experimental implementation, measurement, and only then production integration, which needs the
+    public-contract and data-migration gates and is not authorized.
 
 ### 14.4.1 Added by the second review round
 

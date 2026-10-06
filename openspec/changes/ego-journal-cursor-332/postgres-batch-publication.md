@@ -1,6 +1,6 @@
 # PostgreSQL strategy: post-commit batch publication (#332)
 
-Status: PROPOSED design of ONE adapter strategy, revision 5 (the stream identity of an entity is stable and separate from actor placement, the retention check has no conformant report-only mode; revision 4 added: the entity's shard is recorded and fixed, no claim about reuse of `pub_seq`, fairness across streams, migration audits and rollout; revision 3 followed `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
+Status: PROPOSED design of ONE adapter strategy, revision 6 (the owner's resolutions recorded in `decisions.md`: no migration order is fixed and progress is migrated once, the stream assignment is a stable versioned algorithm, an unknown outcome after retention is an OPEN problem; revision 5: the stream identity of an entity is stable and separate from actor placement, the retention check has no conformant report-only mode; revision 4 added: the entity's shard is recorded and fixed, no claim about reuse of `pub_seq`, fairness across streams, migration audits and rollout; revision 3 followed `contract.md` revision 3: arrival-order publication key independent of clocks, a proof of no starvation, the sequence rules enforced for every write, a backfill that preserves per-entity order). Not implemented, not
 measured, no performance claim. It implements `contract.md` (G1-G10 and the progress rules) for the PostgreSQL adapter and is one of several strategies (`design.md` keeps
 the measured alternatives: per-write serialization, xid horizon). Nothing here approves the SPI or the migration.
 
@@ -24,8 +24,11 @@ pub_seq     BIGINT        NOT NULL,  -- arrival order of the row, from a sequenc
 
 CREATE SEQUENCE journal_pub_seq CACHE 1 NO CYCLE;   -- CACHE 1 is a requirement, see 3.2
 
--- events_store_revisions gains shard_number BIGINT: the stream key of the entity, fixed by its first event (G5);
--- how that key is derived is open (decisions D13): not necessarily GoAkt's partition
+-- events_store_revisions gains shard_number BIGINT: the stream key of the entity, fixed by its first event (G5).
+-- The key is a LOGICAL stream owned by Urd, independent of GoAkt (decided, D13). The algorithm is stable and
+-- versioned: journal_meta records stream_count K and stream_assignment (algorithm id and version); under one
+-- version the same persistence id maps to the same stream on every node and release. Open: the algorithm itself,
+-- the choice of K for a new journal, and the adoption audit for existing ones.
 
 -- pending set, ordered for the publisher
 CREATE INDEX events_pending ON events_store (tenant_id, shard_number, pub_seq)
@@ -40,7 +43,8 @@ CREATE TABLE journal_streams (
     PRIMARY KEY (tenant_id, shard_number));
 
 -- the identity of this journal instance and its generation (G7): one row, created with the schema
-CREATE TABLE journal_meta (journal_id UUID NOT NULL, generation BIGINT NOT NULL);
+CREATE TABLE journal_meta (journal_id UUID NOT NULL, generation BIGINT NOT NULL,
+                           stream_count BIGINT NOT NULL, stream_assignment TEXT NOT NULL);  -- K, algorithm id and version
 
 -- the retention floor of each stream (G8): newest position removed by retention; written only by DeleteEvents
 CREATE TABLE journal_retention (
@@ -81,10 +85,15 @@ A failed or rolled-back write leaves no row, hence no pending evidence (G1). **O
 before the `COMMIT` statement was issued is a definitive rejection. An error, cancellation or timeout while the
 commit is in flight or after it was sent is `ErrOutcomeUnknown`: the transaction may have committed. Only a server
 error that proves the transaction aborted (a serialization failure, a constraint violation raised by the commit) is
-definitive. The retry of an unknown outcome is the identical batch, resolved by step 1. Known limit: if retention
-removes the events of a committed write before the retry arrives, step 2 reports `ErrSequenceOrder` for a write that
-did succeed; the retry window must be shorter than the retention delay, or the caller must read the entity, and an
-idempotency window of recent batches is an open design point.
+definitive. The retry of an unknown outcome is the identical batch, resolved by step 1.
+
+**Unresolved (owner, `decisions.md` O1).** If retention removes the events of a committed write before the retry
+arrives, step 1 finds nothing to compare and step 2 reports `ErrSequenceOrder` for a write that did succeed. The
+entity's revision (which retention never lowers) shows only that some writer reached that sequence, not that this
+batch did. A configured window ("the retry arrives before the retention delay") does not prove what happened, so it
+is not offered as the resolution. Directions to study, none chosen: retention waits for the writer's acknowledgement;
+a durable per-entity record of recent batch identities that outlives retention; retention never removes the last K
+sequences of an entity.
 
 ### 3.2 The publication key: arrival order, independent of every clock
 
@@ -315,8 +324,10 @@ Retention against slow consumers is not prevented here: it is made detectable (G
 - Publication backlog: the count and the age of the oldest pending row, from the pending index. Consumer backlog:
   a count of rows with `journal_pos` after the cursor, which is not free and may be reported as unknown.
 - A restore of the database to an earlier point restores `journal_meta` too, so it keeps the old generation: the
-  restore procedure must advance the generation explicitly (an operational requirement), and the cursor-ahead-of-head
-  check is a safety net, not a guarantee.
+  restore procedure must advance the generation explicitly and be documented (decided, D6), and **a validation runs
+  before consumers resume** (each stored cursor is checked against the journal's generation and published frontier; a
+  mismatch is `ErrCursorInvalidated`, never a silent resume). The cursor-ahead-of-head check is a safety net, not a
+  guarantee.
 
 ## 10. Costs to measure (no claim made)
 
@@ -361,12 +372,15 @@ maintenance step as the backfill, per `(projection, shard)` and, once #93 lands,
 **Audits to run before the migration (they decide whether it can proceed).** They read the data; none was run for
 this document, there is no production data here.
 
-1. *Entities that span streams.* `SELECT tenant_id, persistence_id FROM events_store GROUP BY 1, 2 HAVING
+1. *Historical stream distribution and entities that span streams.* The stream count of an existing journal is NOT
+   inferred from the current cluster (D13): list the distinct `shard_number` values with their counts per scope, how
+   they evolved over time and which assignment produced them, and propose an adoption from that evidence for the
+   owners to approve. Within it, `SELECT tenant_id, persistence_id FROM events_store GROUP BY 1, 2 HAVING
    COUNT(DISTINCT shard_number) > 1`. The stream of an entity is fixed by its first event (G5), and an entity whose
    events already sit in two streams has no single stream, so no cross-stream order exists for it. Each such entity is
    either re-homed (its earlier events move to the stream of its first event, which changes stream membership and
    needs its own offset mapping) or the migration refuses to proceed until the owners decide (D13).
-2. *Units of the legacy offsets.* The event-sourced actor stamps events in UnixNano, while the runner's
+2. *Units of the legacy offsets (D14a).* The event-sourced actor stamps events in UnixNano, while the runner's
    `WithStartOffset`, `WithResetOffset` and `RebuildProjection(from)` store UnixMilli (verified in the code, and
    demonstrated on the in-memory store: a "from" one year in the future, in milliseconds, still returned an event
    stamped in nanoseconds; not run against PostgreSQL, whose query applies the same comparison). So
@@ -374,11 +388,16 @@ this document, there is no production data here.
    start). The mapping handles both without special cases: a millisecond value is below every nanosecond timestamp,
    so `LegacyOffset` returns the zero cursor, which is exactly what such an offset already meant in practice (read
    from the beginning). The audit lists the magnitude of every stored offset so the owners see which projections are
-   affected.
+   affected. Once the unit defect is fixed to nanoseconds (D14a, an observable behavior change), stored millisecond
+   values still read as "from the beginning" but only by accident; they get an explicit per-row decision and are not
+   rewritten automatically, because converting one would honor an old date and make a projection skip events it used
+   to re-read.
 3. *Offsets have no scope today.* `offsets_store` is keyed by `(projection_name, shard_number)`; a scope arrives with
-   #93. A legacy offset can be mapped only into a stream, so the offsets must be migrated after #93 gives progress its
-   scope (or each is assigned the scope its projection is registered under, with the ambiguity of a name used under
-   several scopes). The migration depends on #93.
+   #93. A legacy offset can be mapped only into a stream, and a projection name used under several scopes is
+   ambiguous. **No order is fixed** between this migration and #93 (decided on `decisions.md` D7): the constraint is
+   that **progress is migrated once**, so the move to scoped, opaque, epoch-and-revision progress and the mapping of
+   legacy offsets are one step, designed jointly with #93. Pending that design, the audits are candidates, not a
+   sequence.
 4. *Retention history.* Events deleted before the cutover cannot be reconstructed: the retention floor starts at
    zero and loss before the cutover stays undetectable. State it in the runbook.
 

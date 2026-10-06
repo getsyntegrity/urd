@@ -1,6 +1,6 @@
 # Portable journal contract (#332) — framework level
 
-Status: PROPOSED, revision 5 (the stream identity of an entity is stable and separate from actor placement; revision 4 added: replay equality defined, progress epoch renamed, enforcement limit of `ValidateAdvance`, time-based start). Revision 3 applied the owner review of #338. Design only: no production code, SPI, schema or migration
+Status: PROPOSED, revision 6 (the owner's resolutions of D1-D15 recorded in `decisions.md`: semantics approved first, publication-backlog visibility mandatory, per-adapter cursor limit with input validation, consumer-side advance validation, an assignment algorithm that is stable and versioned; the SPI and the migration remain NOT approved). Revision 5: the stream identity of an entity is stable and separate from actor placement; revision 4 added: replay equality defined, progress epoch renamed, enforcement limit of `ValidateAdvance`, time-based start). Revision 3 applied the owner review of #338. Design only: no production code, SPI, schema or migration
 changes. The SPI is NOT approved. The public-contract gate and the data-migration gate are PENDING and nothing here
 approves them. Names and types are open; the semantics are what is under review.
 
@@ -166,11 +166,15 @@ current revision", not "no order invariant". The store enforces the entity's seq
 stream only. If an entity's events could land in two streams, a consumer reading both could see `n+1` before `n`, and
 G5 would be false. The contract therefore requires a **stable stream identity** per entity: it is fixed when the
 entity's first event is persisted and does not change afterwards. It must not depend on where an actor runs: the
-placement of actors may change with the cluster's topology, and the stream identity may not follow it. How the stable
-identity is derived, how many logical streams a journal has and whether that number can ever change are open
-(decisions D13). Today the `Shard` field is filled from the actor system's partition, which does not meet this
-requirement across a change of partition count. Entities that already span streams in an existing journal are a
-migration question (D13).
+placement of actors may change with the cluster's topology, and the stream identity may not follow it. Streams are
+**logical partitions owned by Urd** (decided, D13): the number of streams and the **assignment algorithm are stable
+and versioned**, recorded with the journal, so that under one version the same persistence id always maps to the same
+stream on every node and in every release; changing either is an explicit re-homing migration, not designed here. How
+the algorithm is defined and how the number of streams is chosen are open (D13). Today the `Shard` field is filled
+from the actor system's partition, which does not meet this requirement across a change of partition count. For an
+existing journal the number of streams is NOT inferred from the current cluster: the historical distribution is
+audited first and an adoption is proposed from that evidence (D13). Entities that already span streams are part of
+that audit.
 
 Gaps are accepted because retention and conditional writes already produce them, and because the guarantee is
 about order, not density: a missing number is simply never available. What a store must not do is accept a late
@@ -232,10 +236,11 @@ event was removed. Stores whose positions themselves expire (a change feed whose
 raise the same error when the cursor is older than the oldest retained position. The consumer's reaction is to stop
 advancing and report; it never skips silently. Rebuilding from the zero cursor is an explicit decision.
 
-Open question (owner): retention and erasure both remove events, but they should not look the same to a consumer. A
-consumer must not process erased data, so for erasure it should continue past the hole, not fail. The current
-`DeleteEvents` cannot tell the two apart; the floor should advance only for retention. This needs a reason on the
-delete operation (`Retention` or `Erasure`), a public-contract decision.
+**First delivery is retention only** (decided, D3): an explicit error and no partial deletion, as above. Retention
+and erasure both remove events but should not look the same to a consumer, which must not process erased data and so
+should continue past an erased hole while it must stop on retention loss. That distinction, and any reason parameter
+on `DeleteEvents`, are **deferred**: erasure first needs its effect on projections defined (open, `decisions.md`
+O2).
 
 ### G9 Concurrent writers, aborts, retries and out-of-order publication
 
@@ -252,7 +257,7 @@ The cursor carries no time meaning and no lag is derived from it. The old `now -
 |---|---|---|
 | **Event age** | `now - Timestamp` of an event, a property of the data | the consumer, from the event; informational |
 | **Delivery / processing latency** | time from when an event became available (or, lacking that, from when the consumer read the page) to the end of its handler | the consumer; the availability time is an optional adapter capability |
-| **Publication backlog** | how many events are persisted and not yet available, and how long the oldest has waited | the adapter, through an optional capability |
+| **Publication backlog** | events persisted and not yet available. **Visibility is mandatory** (decided, D9): at least the age of the oldest pending event or an equivalent signal. An exact count is not required; it may be an estimate or unknown | the adapter, through a required reporter |
 | **Consumer backlog** | how many available events lie after a consumer's progress | the adapter, through an optional capability; an estimate or "unknown" is allowed |
 
 A consumer is "caught up" in the sense of section 4 (`Equal` to the observed head), which is NOT a statement about
@@ -307,10 +312,12 @@ that is still retained, because that event may since have been removed by retent
 
 `int64` would pin every adapter to a single monotone integer per stream and exclude composite cursors, change-feed
 tokens, per-node commit-log offsets and vectors, and it tempts consumers into arithmetic. The contract therefore
-requires a **bounded, documented size per adapter** and fixes no number: the tokens of the candidate adapters have
-not been measured. A design-time estimate for PostgreSQL (version, adapter tag, 16-byte journal instance, 8-byte
-generation, scope and shard binding, 8-byte position) is a few tens of bytes; that is an estimate, not a
-validation, and the cursor-size limit is a pending decision to take after measuring real tokens.
+requires a **bounded, documented size per adapter** and fixes no universal number (decided, D4): the tokens of the
+candidate adapters have not been measured. **Each adapter declares its limit and validates every cursor it is
+given**: a malformed, truncated, wrong-version or oversized value is rejected with a typed error before any
+allocation or query. A design-time estimate for PostgreSQL (version, adapter tag, 16-byte journal instance, 8-byte
+generation, scope and shard binding, 8-byte position) is a few tens of bytes; that is an estimate, not a validation,
+and a framework bound is to be taken only after real tokens are measured.
 
 ## 5. Stream and write operations (proposal, not approved)
 
@@ -353,10 +360,13 @@ type StreamReader interface {
     ValidateAdvance(ctx context.Context, scope Scope, shard uint64, from, to JournalPosition) error
 }
 
-// Optional capabilities (G10).
+// Required visibility of the publication backlog (G10, D9). OldestPendingAge (or an equivalent signal) is mandatory;
+// PendingCount may be an estimate or unknown.
 type PublicationReporter interface {
-    PublicationBacklog(ctx context.Context, scope Scope) (PublicationBacklog, error) // pending count (or unknown) and oldest pending age
+    PublicationBacklog(ctx context.Context, scope Scope) (PublicationBacklog, error)
 }
+
+// Optional (G10): how many available events lie after a consumer's progress; an estimate or unknown is allowed.
 type ConsumerBacklogReporter interface {
     ConsumerBacklog(ctx context.Context, scope Scope, shard uint64, after JournalPosition) (ConsumerBacklog, error) // count or unknown
 }
@@ -451,11 +461,11 @@ relation still holds. The consumer runtime performs the validation; the conforma
 `ValidateAdvance` (a regression, a cursor beyond the frontier, and one of another stream instance or generation are
 refused) and tests the runtime's use of it (a runtime that commits an unvalidated older `Next` fails the check).
 
-**The limit of this rule.** It binds consumers: a store holding opaque bytes cannot enforce it against a consumer
-that skips the validation. Two ways to close it, to be chosen by the owners (decisions D5): keep it a rule that the
-conformance suite tests in the runtime, or let an adapter whose progress lives in the same database validate inside
-the commit itself (a co-located capability that needs no token and no public comparison). A signed advance token
-returned by `ValidateAdvance` and required by `Commit` would also close it and is judged too heavy for now.
+**The limit of this rule, and the decision.** It binds consumers: a store holding opaque bytes cannot enforce it
+against a consumer that skips the validation. **Decided (D5): validation is done at the consumer, together with CAS and
+the epoch**, and the conformance suite tests that the runtime does it. Validation inside the commit, for an adapter
+whose progress lives in the journal's database, and a signed advance token were considered and are **not adopted**.
+Fencing is added when ownership is distributed, coordinated with #93.
 
 ### What each mechanism solves, and what it does not
 
@@ -501,24 +511,38 @@ data-migration gate.
 provides (await publication, restart, failure injection including a lost acknowledgement). Nothing in the checks
 reads a timestamp offset or names a mechanism of any one database.
 
-## 8. Decisions this contract leaves to the owners
+## 8. Decisions and open points
 
-1. The SPI shape, replace or extend the old methods, and the names (public-contract gate). Not approved. This includes
-   `ValidateAdvance` and its error names.
-2. The serialized-cursor size limit and format, after measuring real tokens of the adapters.
-3. The behavior change of unconditional writes: idempotent replay, `ErrIdentityConflict` and `ErrSequenceOrder`
-   (and the audit of callers).
-4. A reason on `DeleteEvents` (retention versus erasure) and what a consumer does on `ErrCursorOutsideRetention`.
-5. How `OffsetStore` becomes `ProgressStore` (bytes, revision, epoch), the fencing token and the ownership
-   mechanism, together with #93; migration of legacy offsets (data-migration gate).
-6. Whether publication and consumer backlog are required metrics or optional capabilities.
-7. How journal instance and generation are created and advanced, and what advances the generation.
+The owner's resolutions of D1-D15 are recorded in `decisions.md` and summarized here. The SPI and the data migration
+are **not approved**; the batch-publication experiment is authorized as an experiment.
 
-8. How the stable stream identity of an entity is defined, separate from the placement of actors (D13).
-9. The unit defect of the time-based starts, decided on its own (D14a), and separately whether the contract offers a
-   time-positioning interface (D14b).
-10. How an existing deployment is prepared for the retention check, which is enforcing or not conformant (D15).
+**Resolved (direction):**
 
-Decided (owner, on #338): the #332 regression check enters `develop` together with the implementation that makes it
-pass; the experiments may keep an explicit expected failure; the production CI is not changed to accept that
-omission.
+- D1 semantics first; names and types are reviewed with the first conformance slice.
+- D2 the write rules (idempotent replay, `ErrIdentityConflict`, `ErrSequenceOrder`, the stream rule) are the objective,
+  subject to a caller audit.
+- D3 first delivery is retention with an explicit error and no partial deletion; the reason distinction is deferred.
+- D4 no universal cursor bound; each adapter declares a limit and validates its inputs.
+- D5 advance validation at the consumer, plus CAS and epoch; fencing with #93 when ownership is distributed.
+- D6 journal UUID and explicit generation; a documented restore and a validation before consumers resume.
+- D9 publication-backlog visibility is mandatory, an exact count is not; consumer backlog is optional.
+- D11 the #332 regression enters with the implementation that makes it pass.
+- D12 slices: conformance, experimental implementation, measurement, then production integration.
+- D13 logical streams owned by Urd, independent of GoAkt, with a stable and versioned assignment algorithm.
+- D14a the unit defect is fixed to nanoseconds on the current SPI with a permanent regression; it changes observable
+  behavior and stored offsets need explicit treatment.
+- D15 the retention check is mandatory in conformant adapters, preceded by an audit; no conformant mode detects loss
+  and continues.
+
+**Open or pending:**
+
+- O1 an unknown write outcome after retention removed the events (D2).
+- O2 the effect of erasure on projections (D3).
+- O3 names and types of the SPI (D1).
+- O4 the joint design with #93: ownership and scoped progress (D5).
+- D7 the migration, pending the joint design with #93, with the constraint that progress is migrated once.
+- O5 the treatment of stored offsets after the unit fix (D14a).
+- O6 the assignment algorithm, `K` for new journals, and the adoption audit for existing journals (D13).
+- D14b the semantics of "rebuild from a date", before any interface (`TimePositioner` above is a sketch only).
+- O8 the restore runbook (D6).
+- D10 the index issue: pending, no issue opened.

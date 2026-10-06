@@ -1,6 +1,6 @@
 # Conformance suite and minimal comparison experiment (#332)
 
-Status: PROPOSED, revision 4 (follows `contract.md` revision 4). Nothing here is implemented. The suite specified in sections 1-3 is what an adapter must pass to
+Status: PROPOSED, revision 5 (follows `contract.md` revision 6 and the owner's resolutions in `decisions.md`: the experiment is AUTHORIZED, as an experiment; the migration and a production change of the SPI are NOT). Nothing here is implemented. The suite specified in sections 1-3 is what an adapter must pass to
 claim `contract.md`; section 4 proposes the smallest experiment that can say whether PostgreSQL batch publication
 (`postgres-batch-publication.md`) is worth building next to the variants already measured (`design.md` sections
 10-13). The existing real-adapter regression `LateVisibleEventsBehindACommittedOffsetAreDelivered` lives on the experimental
@@ -43,7 +43,6 @@ type Capabilities struct {
                                          // AfterCommitBeforeAck (the write committed, the answer is lost: an UNKNOWN outcome)
     ConcurrentPublish  int               // how many publishers can run on one stream (0 = not applicable)
     PauseResumePublish bool              // can stop and restart publication (backlog, lag checks)
-    PublicationLag     bool              // implements PublicationBacklog (count and oldest pending age)
 }
 ```
 
@@ -64,12 +63,12 @@ publisher (events stay pending until the harness runs it), so the pending states
 | C05 | G9 | Several publishers run concurrently on one stream while writers write | each event appears exactly once in the stream; per-entity order holds; all delivered; no read returns a position-order violation | ConcurrentPublish > 1 |
 | C06 | G1, G6 | Retried and duplicated writes: the same unconditional batch twice; a conditional write that conflicts; a write that fails midway | duplicates appear once; the conflicting and the failed write leave nothing available after `AwaitPublished` | none |
 | C07 | G4, G5 | Several entities, several sequences per write, pages of limit 1, 2, 3, 100 and 0 | each entity's sequences strictly increase across the whole delivery; at every page boundary the available set of each entity is a prefix; limit 0 returns nothing and an unchanged cursor; the delivered multiset equals the persisted one | none |
-| C08 | G6, cursor | Serialize the cursor to bytes, `Restart`, deserialize, resume; resume from the zero cursor | resuming loses and duplicates nothing beyond at-least-once; garbage, truncated or wrong-version bytes fail with a typed error; the zero cursor starts at the beginning | none |
+| C08 | G6, cursor | Serialize the cursor to bytes, `Restart`, deserialize, resume; resume from the zero cursor | resuming loses and duplicates nothing beyond at-least-once; garbage, truncated, wrong-version and oversized bytes (beyond the adapter's declared limit) fail with a typed error before any allocation or query; the zero cursor starts at the beginning | none |
 | C09 | G7 | Tenant A, tenant B, `Unscoped()` and a tenant named "unscoped"; shards 1 and 2 | events never cross; a cursor of one stream presented for another (scope or shard) fails with `ErrCursorMismatch` and returns nothing; one scope's pending events never delay another's availability beyond the adapter's documented bound | none |
 | C10 | G8 | Persist events and call `DeleteEvents` while some of them are still pending | with pending events up to the sequence the call fails with `ErrRetentionPending`, deletes NOTHING (no partial deletion) and publishes nothing as a side effect; after `AwaitPublished` the same call succeeds and no event `<=` the sequence remains; events above it are untouched and delivered | PauseResumePublish |
 | C11 | cursor | Zero cursor, cursors from different reads | `IsZero` only for zero; `Equal` is reflexive, symmetric and survives a serialization round trip; two routes to the same frontier serialize to identical bytes (canonical form); different frontiers are not equal; `String()` carries no payload | none |
 | C12 | G2, heads | Drain a stream, then persist more; then remove the newest published event by retention | `StreamHeads` is the PUBLISHED FRONTIER as observed: it never moves backwards, it is not necessarily the position of the newest retained event (the check deletes that event and the head does not regress), and `Equal` to the consumer's progress means only "reached the observed frontier": the check persists an event right after and shows the consumer is no longer at it, and pauses publication to show a pending event does not move it | PauseResumePublish for the pending half |
-| C13 | G10 | Pause publication, persist, wait, resume; process events with old timestamps | event age grows with the clock whether or not anything is wrong; publication backlog (count and oldest age) grows while paused and returns to zero after publication; none of them is read from a cursor value | PublicationLag + PauseResumePublish |
+| C13 | G10 | Pause publication, persist, wait, resume; process events with old timestamps | event age grows with the clock whether or not anything is wrong; the publication backlog is VISIBLE for every adapter (decided, D9): at least the age of the oldest pending event or an equivalent signal grows while paused and returns to its idle value after publication, and an exact count is not asserted; none of them is read from a cursor value | PauseResumePublish |
 | C14 | G2-G5, G7 | Seeded randomized interleaving: writes (conditional and unconditional, multi-entity, multi-shard), reads with random limits and cursor persistence, restarts, publications, injected failures, deletions, against an in-memory oracle of the persisted set | the oracle's invariants hold after every step and at the end; the seed of a failure is printed and replays it | whatever hooks exist |
 | C15 | G1 | A write whose acknowledgement is lost (`AfterCommitBeforeAck`), then the identical batch is retried; a write cancelled before any commit; a write rejected by its precondition | the lost-ack write surfaces as `ErrOutcomeUnknown`; the identical retry returns success with no duplicate and no second publication, also for a conditional write whose precondition no longer holds (replay before precondition); a pre-commit failure is a definitive rejection and leaves nothing; any unclassified error is treated as unknown by the harness | FailureInjection: AfterCommitBeforeAck |
 | C16 | G1 | Same identity, different content; a batch overlapping another one partly; a batch the adapter declares unsupported (multi-entity where it cannot be atomic) | `ErrIdentityConflict` and `ErrUnsupportedBatch` are definitive and leave nothing; a store never writes part of a batch | none |
@@ -82,7 +81,7 @@ publisher (events stay pending until the harness runs it), so the pending states
 | P03 | progress | `Commit` whose answer is lost, retried, with the resolution rule of `contract.md` section 6 | the caller applies the four-step resolution: epoch changed means start over; `LastCommitID` equal to its own means success; revision unchanged means retry after validating; anything else means reload. Success is never inferred from the position alone: a check where ANOTHER worker has committed the very same position under a different `CommitID` must not be read as the caller's success | failure injection on the progress store |
 | P04 | progress | A deposed owner commits with an old fence token while the revision still matches (only if the store supports fences) | the commit is refused by the fence although the CAS would have passed; fencing and CAS are tested separately | fencing support |
 | C21 | G2 fairness | Across SEVERAL streams (so the cross-stream bound of `postgres-batch-publication.md` 3.2.2 is tested), entities whose actors stamp timestamps offset by -100 years, -1 year, 0, +1 hour, +1 year and +100 years are written continuously next to many others at about 80% of the publication capacity | for every event the number of publication cycles between its commit and its availability is at most `S * ceil(M / N) + c`, `S` being the number of streams with pending events and `M` the backlog ahead of it in its stream at its commit; positions and availability never depend on a timestamp. Runs in the unit lane with a counted simulated publisher and against PostgreSQL with the real one | PauseResumePublish helps; a way to count cycles |
-| P05 | progress | A runtime commits a `Next` older than the loaded position while holding the CURRENT revision; a `Next` beyond the published frontier; a `Next` of another stream instance or generation | `ValidateAdvance` refuses each (`ErrCursorRegression`, `ErrCursorBeyondHead`, `ErrCursorMismatch` / `ErrCursorInvalidated`); a runtime that commits without validating fails the check (for adapters that offer co-located validation, a commit that violates it is refused by the store itself); `from == to` is accepted | none |
+| P05 | progress | (decided, D5: validation at the consumer) A runtime commits a `Next` older than the loaded position while holding the CURRENT revision; a `Next` beyond the published frontier; a `Next` of another stream instance or generation | `ValidateAdvance` refuses each (`ErrCursorRegression`, `ErrCursorBeyondHead`, `ErrCursorMismatch` / `ErrCursorInvalidated`); a runtime that commits without validating fails the check (for adapters that offer co-located validation, a commit that violates it is refused by the store itself); `from == to` is accepted | none |
 | C22 | G5 | An entity persists events in stream 1; a later write for the same entity carries another stream key (as if the actor had been placed elsewhere); a replay of the first batch | the later write fails with `ErrShardMismatch` and leaves nothing; both streams stay free of the entity's later events; the replay with the original shard succeeds; no consumer of either stream can see `n+1` of that entity before `n` | none |
 | C23 | positioning | (capability `TimePositioner`) Events with `Timestamp` in arbitrary order, then `PositionAt(t)` for several `t`, including a `t` in the future and one before everything | every available event with `Timestamp >= t` is delivered by a chain from the returned cursor; events with an earlier `Timestamp` MAY appear but none that qualifies is skipped; a `t` in the future returns a cursor from which nothing qualifying is lost and nothing is claimed; the property does not depend on unit conversions | none |
 
@@ -165,31 +164,41 @@ before each variant (below 3.0), recorded in a progress file kept with the raw o
 bytes per event needs a fixed volume, so it is taken after a run of `10^6` events on a separate fixed-size
 workload, reported with its own configuration.
 
-### 4.5 Decision rules (to be agreed BEFORE running)
+### 4.5 Provisional experimental targets and reporting rules
 
-The experiment is only informative if the questions are fixed first. Proposed questions, with the thresholds left
-to the owners:
+The experiment is **authorized** (D8) as an experiment, behind a build tag and off the production path. The targets
+below are **provisional experimental targets**: they let the report say which side of a line a result fell on. They
+are not an SLA and not a requirement of Urd.
 
 1. Correctness: the contract suite and the stress pass with no omission, duplicate or deadlock. If not, stop.
-2. Writer cost at moderate load (R300): is write p95 within an agreed factor of `current`?
-3. Delivery cost: is end-to-end p95 below an agreed bound at R300 and R500 with the chosen `tau`?
-4. Failure containment: with a held publisher, are writers unaffected, and is the stall confined to its stream?
-5. Recovery: does a 10 s stall drain within an agreed time at the chosen `N`?
-6. Cost: are bytes per event, WAL per event and dead tuples within an agreed multiple of `current`?
+2. Writer cost at moderate load (R300): write p95 within 2x of `current`.
+3. Delivery cost: start-to-delivery p95 below 100 ms at R300 and R500 with `tau = 5 ms`.
+4. Failure containment: with a held publisher, writers unaffected and the stall confined to its stream.
+5. Recovery: a 10 s stall at 300 tx/s drained within 30 s at the chosen `N`.
+6. Cost: bytes and WAL per event each within 2x of `current`; dead tuples reported.
+
+**Reporting rules (decided with D8).** The report gives the **variability** and the **complete results**:
+per-repetition values and their minimum and maximum next to every mean, the host-load record of each variant, the
+configuration and volume, and every scenario including the unfavorable ones. Nothing is dropped because it is
+inconvenient. A run that is discarded (for example for host load) is named, with the reason, next to the results that
+were kept, and the raw output of all runs goes to `evidence/`. A result is never described as an improvement before it
+is measured.
 
 Hypotheses, stated as hypotheses and not as expectations to confirm: writes cost about what `current` costs;
 delivery latency is about the publisher cadence plus one batch; storage and WAL grow because every event row is
 written twice; a foreign long transaction does not delay publication. Any of them may be false and the experiment
 reports it either way.
 
-## 5. Proposed delivery plan (for review; slices stay small and chained)
+## 5. Delivery plan (decided: D12)
+
+Small slices, in this order. Each is reviewed before the next starts.
 
 | Slice | Content | Gate |
 |---|---|---|
-| 1 | `contract.md`, this suite's specification and the portability evaluation (documentation only) | review of the contract |
-| 2 | `JournalPosition`, `Page` and the typed errors in `persistence`, the conformance package and its unit-lane harness for `testkit`, with the negative controls | public-contract gate |
-| 3 | PostgreSQL adapter strategy chosen after section 4, with its migration and the Postgres-lane run of the suite | data-migration gate |
-| 4 | `OffsetStore` bytes value and the runner (lag from event timestamps, serialized cursors), together with #93 | #93 coordination |
-| 5 | deprecate `GetShardEvents` and `ShardOffsets` and update #329 and the #95 matrix with the guarantees actually demonstrated | none |
+| 0 | the documentation of this change (`contract.md` and its companions), under review on #338 | review of the contract |
+| 1 | **conformance**: the suite of section 3, its harness and the unit-lane harness for `testkit`, with the negative controls; names and types of the SPI are reviewed here (D1) | none beyond review |
+| 2 | **experimental implementation**: the PostgreSQL batch-publication strategy behind a build tag, off the production path | authorized (D8) |
+| 3 | **measurement**: the experiment of section 4, with the reporting rules | authorized (D8) |
+| 4 | **production integration**: the public SPI, the migration, the runner and progress (with #93) | public-contract gate and data-migration gate: NOT authorized |
 
-Slices 2-5 are not authorized by this document.
+Slices 1-3 do not change the production path or the public SPI. Slice 4 is not authorized by this document.
