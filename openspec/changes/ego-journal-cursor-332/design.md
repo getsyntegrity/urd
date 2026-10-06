@@ -1,6 +1,8 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 4 (sections 10-12 compare the horizon with per-shard
+Status: PROPOSED, revision 5 (section 12: the serialization scheme measured on the
+REAL adapter, in an experimental branch; its numbers change the recommendation of 10.7),
+formerly revision 4 (sections 10-12 compare the horizon with per-shard
 serialization on prototypes; the recommendation there is NOT a decision). This is a first step of tests and design: the
 definitive solution is NOT approved, and the public-contract and
 data-migration gates are PENDING. The branch is not ready to merge: the
@@ -564,3 +566,161 @@ either choice. Nothing here approves the SPI or the migration.
 - Public-contract gate: PENDING (`JournalPosition`, SPI signatures, `OffsetStore`).
 - Data-migration gate: PENDING (7.2 cutover, one-way door, rollback needs rebuild).
 - Neither is assumed approved by this document.
+
+## 12. Serialization on the real adapter (experiment, branch `exp/332-adapter-shard-serialization`)
+
+Authorized as an experiment only: nothing here enters the production path, no public signature changed, and the
+SPI and migration decisions remain pending. The code is behind the `journalexp` build tag
+(`persistence/postgres/event_store_journalexp.go`, tests in `inttest/flows/eventstore/journal_adapter_*_test.go`);
+no tracked file of the production adapter was modified, and a build without the tag does not contain it.
+
+### 12.1 What it is
+
+`ExperimentalShardSerializedStore` implements the CURRENT `persistence.EventsStore` (signatures unchanged) with
+the int64 "offset" of `GetShardEvents`/`ShardOffsets` meaning an internal journal position. Test-only schema,
+applied by `ExperimentalMigrate`, not by the schema migrator: nullable `events_store.journal_pos`, an index
+`(tenant_id, shard_number, journal_pos)` and `journal_shard_positions(tenant_id, shard_number, last)`.
+
+Global lock acquisition order, the one that keeps the existing protocol deadlock-free with the new locks:
+
+1. `events_store_revisions` rows, ordered by `persistence_id` within a scope (unchanged: `lockRevision` for a
+   conditional write, the sorted upserts of an unconditional one, `lockRevisionIfExists` for `DeleteEvents`);
+2. `journal_shard_positions` rows, ordered by shard within a scope, each taken with one
+   `INSERT .. ON CONFLICT DO UPDATE .. RETURNING` (lock and position at once, held to commit or rollback);
+3. event inserts, then commit.
+
+No writer takes a revision row after a counter row and each class is taken in a total order, so no cycle can form.
+Revision rows come first so that a conditional write whose precondition fails returns before touching a counter
+and a conflict never serializes the shard. `DeleteEvents` takes only step 1: it creates no row, needs no
+position, and is unchanged. A negative control for this order IN THE ADAPTER (a deliberately wrong order) was
+not built; the prototype showed that an unsorted shard order deadlocks (section 10.1).
+
+### 12.2 Correctness evidence (real adapter, real PostgreSQL 17.6, `-race`)
+
+| Evidence | Result |
+|---|---|
+| The real conformance suite (`RunEventsStoreConformance`) against the experimental store | `ShardReads/LateVisibleEventsBehindACommittedOffsetAreDelivered` **PASSES** (it is RED on the current adapter). 3 checks fail: `GetShardEventsReturnsOnlyTheScopesEvents` (events.go:355), `ShardOffsetsCoverOnlyTheScopesShards` (546) and `UnscopedNeverReadsATenantNamedUnscoped` (578). All three assert that the offset IS a timestamp (e.g. expect 400 / 100 where the position is 2 / 1): they pin the meaning the SPI gate would change, they are not isolation failures. A failing check stops at its first assertion, so later assertions of those three checks were not exercised. |
+| In-flight writer vs reader, conditional and unconditional holder, commit and rollback | nothing above an in-flight write is delivered; the late writer waits for the shard counter (observed in `pg_locks`); a rollback hands its position back (counter == committed writes) |
+| Cancellation of a writer waiting for the counter | it fails with `context.Canceled`, leaks no revision lock (the same entity writes again with `ExpectGenesis`) and takes no position |
+| Parked writer + writer of another entity + `DeleteEvents` of the parked entity | all complete after release: no lock cycle |
+| Two scopes, same shard number | a parked write of tenant a does not block tenant b; each reads only its own events |
+| Stress: two processes, conditional single-entity writers, unconditional multi-entity writers on overlapping shared entities, multi-shard batches listing shards in opposite orders, every 7th write of one process rolled back, readers polling by position throughout | no write failed (no 40P01), every committed event delivered exactly once, nothing uncommitted delivered, positions dense per shard (distinct positions == counter), per-entity order kept for owned entities. 2 runs, ~1620 committed events and ~56 rollbacks each |
+
+The benchmark repeats the omission check on every measured run: `serialized` omitted 0 events in all 24 runs.
+
+### 12.3 Measurement setup
+
+Same harness, same load, driven through the public `EventsStore` of each adapter (`WriteEvents` with its real
+preconditions, `GetShardEvents`): PostgreSQL 17.6 in Testcontainers on Colima (2 vCPU VM), own container,
+`fsync=on` and `fsync=off`; 12 writers; 5 s per run; 3 repetitions (throughput is the mean with min..max,
+percentiles pool the repetitions); a tight-loop reader per measured shard, batch limit 100. The adapter opens a
+fixed pool of 20 connections shared by writers and readers. Event timestamps are taken just before each write
+starts, as the actor does. Three adapters:
+
+- `current`: the adapter as it is, reading by timestamp offset;
+- `current+index`: the same plus a composite read index over the timestamp, a CONTROL: the experimental store
+  carries its own composite index, and without this control part of `current`'s read lag is the missing index;
+- `serialized`: the experiment.
+
+Workloads: W1 conditional (`ExpectGenesis`/`ExpectRevision`), one owned entity per writer, 3 events per
+transaction, one hot shard; W2 unconditional batch over 3 owned entities, hot shard; W3 unconditional batches
+spanning 2 of 8 shards, listed in opposite orders by alternate writers; W4 unconditional batches over 3 of 12
+SHARED entities, hot shard (overlapping revision rows). Held transactions and artificial commit delays were not
+re-run on the adapter; the prototype measured them (section 10).
+
+"Start-to-delivery" is from the START of the write call to the moment the polling reader was handed the event, so
+it includes the write, every lock wait and the reader's query time. "Omitted" is an event whose write returned
+success and that the polling reader was never handed; each omitted event was then verified to be returned by a
+read from zero (a rebuild), so none is lost from the journal. Raw output: `evidence/adapter_fsync_on.txt`,
+`evidence/adapter_fsync_off.txt`.
+
+### 12.4 Results, fsync=on (3 x 5 s, 12 writers)
+
+| Workload | Adapter | tx/s (min..max) | write p50 / p95 / p99 | start-to-delivery p50 / p95 / p99 | omitted events |
+|---|---|---|---|---|---|
+| W1 conditional, hot shard | current | 2520 (2031..3024) | 4.3 / 8.4 / 12.0 ms | 17.9 / 158 / 250 ms | 9.9 % |
+| | current+index | 2756 (2293..3052) | 4.1 / 6.8 / 9.2 ms | 4.9 / 10.8 / 15.7 ms | 24.0 % |
+| | serialized | **661** (557..720) | 13.0 / 50.9 / 76.3 ms | 13.2 / 51.3 / 76.6 ms | **0** |
+| W2 multi-entity, hot shard | current | 2749 (2701..2774) | 4.1 / 6.7 / 8.5 ms | 13.1 / 46.3 / 121 ms | 9.7 % |
+| | current+index | 2838 (2740..2928) | 4.0 / 6.1 / 8.1 ms | 5.4 / 21.1 / 52.4 ms | 17.3 % |
+| | serialized | **812** (767..859) | 10.4 / 42.0 / 64.9 ms | 10.7 / 42.2 / 65.2 ms | **0** |
+| W3 multi-shard, 8 shards | current | 2382 (2320..2427) | 4.9 / 6.9 / 8.6 ms | 7.2 / 13.7 / 19.3 ms | 5.4 % |
+| | current+index | 2442 (2301..2549) | 4.6 / 7.4 / 9.4 ms | 5.7 / 9.0 / 11.4 ms | 8.3 % |
+| | serialized | **1273** (1249..1305) | 8.0 / 20.0 / 31.1 ms | 8.4 / 20.5 / 31.7 ms | **0** |
+| W4 overlapping entities, hot shard | current | 970 (963..979) | 6.1 / 46.3 / 83.6 ms | 4.8 / 8.7 / 10.8 ms | 51.8 % |
+| | current+index | 1051 (1037..1070) | 5.6 / 42.4 / 80.6 ms | 3.6 / 6.4 / 8.4 ms | 53.5 % |
+| | serialized | **751** (746..759) | 7.8 / 59.3 / 112.8 ms | 8.1 / 59.7 / 113.1 ms | **0** |
+
+fsync=off, same configuration (tx/s current / current+index / serialized): W1 2658 / 3027 / 690; W2 2747 / 2672 /
+739; W3 2644 / 2561 / 1164; W4 961 / 999 / 714. Omitted: current 8.3 / 8.4 / 6.9 / 51.3 %, current+index 20.5 /
+24.6 / 8.5 / 52.0 %, serialized 0 in every workload. Durability moves nothing materially.
+
+### 12.5 What the numbers say
+
+1. **The defect is large and measurable in the current adapter, and it is recoverable only by rebuild.** Under
+   this concurrency the timestamp cursor omitted 5-54 % of the committed events (all recoverable by a read from
+   zero, none lost from the journal). The rate grows with writer concurrency and with the reader's speed: with
+   the control index the reader is faster, stays closer to the head, and omits MORE (24 % vs 10 % in W1). This
+   is an extreme, closed-loop load (12 writers saturating a shard with a reader polling without pause); it
+   shows that the mechanism is easy to trigger, not what a production deployment omits.
+2. **Serialization removes every omission (0 of about 270k events across the 24 serialized runs) at a high throughput
+   cost on a single shard.** Against `current+index`, the fair control: W1 -76 %, W2 -71 %, W3 -48 %, W4 -29 %;
+   against `current`: -74 / -70 / -47 / -23 %. Write p50 goes from about 4 ms to 10-13 ms and p95 from 6-8 ms to
+   42-51 ms (W1, W2). The counter wait is most of it (W1: 11.0 ms of the 13.0 ms p50): the writers queue on the
+   shard. The lock is held about 1.5 ms per transaction (1 / 661 tx/s), longer than the 1.1 ms of the scratch
+   prototype, because the real write path inside it has more statements.
+3. **Where the contention already lives.** W4 is dominated by the existing revision-row protocol: the counter
+   wait is 0.75 ms p50 but write p95 is 59 ms for `serialized` and 42-46 ms for `current`: the same order,
+   so the new lock adds little there.
+4. **Delivery latency is not made worse by the scheme itself, the write is.** For `serialized`, start-to-delivery
+   equals write latency plus about 0.3 ms: the reader never waits. Compared with `current+index`
+   the extra delay is the queueing of the writers.
+5. **The `current` adapter's own read lag is mostly the missing index**, not the scheme: its W1 delivery p95 is
+   158 ms and drops to 11 ms with the control index. That index (or the experimental one) is a separate,
+   cheap improvement independent of #332, and is worth its own issue.
+
+### 12.6 Impact of the topology: how many shards does Urd have?
+
+`event.Shard` is `ActorSystem().Partition(persistenceID)`, and in GoAkt that is `0` for every actor when the
+system is NOT in a cluster (`actor_system.go`: `if x.InCluster() { return cluster.GetPartition(name) }
+return 0`). So:
+
+- a single-node deployment has ONE shard per scope, i.e. the "hot shard" workloads W1, W2, W4 are its normal
+  case, and the serialization ceiling (about 660-810 tx/s here) bounds the whole tenant's write rate;
+- in a cluster the shard is the cluster partition; the internal cluster config of GoAkt carries `shardCount:
+  271` (`internal/cluster/config.go`), and the repository's own cluster example sets `WithPartitionCount(4)`.
+  I did not verify that `Partition()` uses that default; the count depends on configuration, and a tenant's
+  events spread over the partitions its entities hash to. W3 (8 shards, -48 %) is the more favorable shape.
+
+The ceilings above are closed-loop saturation figures on a 2 vCPU VM. At a lower offered rate the queueing,
+hence p50/p95, would be much smaller; that open-loop behavior was not measured.
+
+### 12.7 Limits of this evidence
+
+- One variant of one scheme on the adapter. The xid horizon was NOT built in the adapter, so the two schemes
+  were not compared like-for-like on the real write path; the horizon's adapter cost is unmeasured (the
+  scratch prototype put it near the unprotected writer: 5263 vs 874 tx/s on one shard).
+- The lock section was not optimized. Taking the counter LAST (insert rows without position, take the counter,
+  then set the position of this transaction's rows), a multi-row insert, or fewer round trips would shorten the
+  time the shard lock is held and raise the ceiling. Not measured.
+- Test schema with a nullable column and no backfill; no migration, no legacy rows, no `NOT NULL` fence.
+- Held transactions on the adapter, replicas and real replication, long reader pages, pool exhaustion under a
+  parked lock (the adapter's pool is a fixed 20): not covered. The 3 conformance checks that assume a timestamp
+  offset were not rewritten.
+
+### 12.8 Impact and recommendation (not a decision)
+
+- **Correctness is settled for this scheme**: the real conformance regression passes and the stress and the
+  benchmark found no omission, duplicate or deadlock. The cost is what remains in question.
+- **Cost, for the default topology, is large**: single-shard write throughput falls by roughly three quarters.
+  That moves the evidence: in section 10.7 serialization was the main candidate for its isolation; on the
+  real adapter its price lands exactly on the single-node topology that is Urd's default. I no longer recommend
+  adopting it as is.
+- **Recommendation**: keep both candidates open and run two more experiments on the same harness before the
+  gates: (1) the horizon in the adapter, to compare like-for-like with `serialized` and `current+index`;
+  (2) serialization with the shortened lock section (counter last), to find out how much of the ceiling is
+  recoverable. Decide with the target workload in hand (commands per second per scope, clustered or not),
+  since that, not the scheme, sets which side of the ceiling a deployment sits on. Independently, open an
+  issue for the timestamp read index: it explains most of the current adapter's read lag at no semantic risk.
+- Pending, unchanged: the SPI gate (`JournalPosition`; the 3 failing checks above are the exact places where the
+  meaning of the offset is pinned), the data-migration gate, and the coordination with #93.

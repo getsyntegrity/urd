@@ -9,6 +9,13 @@ log lines around them.
 | `bench_fsync_on.txt` | scenarios 1-5, `fsync=on` |
 | `bench_fsync_off.txt` | scenarios 1-5, `fsync=off` |
 | `bench_commit_delay.txt` | scenarios 6-7 (artificial 5 ms commit delay), `fsync=on` |
+| `adapter_fsync_on.txt` | REAL adapter, current vs experimental (design.md section 12), `fsync=on` |
+| `adapter_fsync_off.txt` | same, `fsync=off` |
+
+The `adapter_*` files come from `TestJournalAdapterBench` (build tag `journalexp`); the config line there prints
+the writer count, the 5 s duration and 3 repetitions. 12 writers (not 16): the adapter's pool is a fixed 20
+connections shared by writers and readers. The `config` line of the captured adapter files ends in an empty
+`goos/cpus=` field: a harness slip, since removed from the test; ignore it.
 
 Line kinds: `config` (server settings and load parameters), `poll-floor` (idle empty-read latency, the floor of the
 eligibility delay), `row` (one variant x scenario: throughput mean and min..max over the repetitions, percentiles
@@ -32,6 +39,11 @@ From `inttest/`, with Docker reachable (here `DOCKER_HOST=unix://$HOME/.colima/d
     URD_JOURNAL_BENCH=1 URD_JOURNAL_BENCH_SECONDS=5 URD_JOURNAL_BENCH_REPS=3 URD_JOURNAL_BENCH_FSYNC=on \
       go test ./flows/eventstore/ -run TestJournalBench -count=1 -v -timeout 580s
     # scenarios 6-7 only: add URD_JOURNAL_BENCH_SCENARIOS=6,7
+
+Adapter experiment (section 12), from `inttest/`:
+
+    URD_JOURNAL_BENCH=1 URD_JOURNAL_BENCH_SECONDS=5 URD_JOURNAL_BENCH_REPS=3 URD_JOURNAL_BENCH_FSYNC=on \
+      go test -tags journalexp ./flows/eventstore/ -run TestJournalAdapterBench -count=1 -v -timeout 580s
 
 Other knobs: `URD_JOURNAL_BENCH_WRITERS`, `_EVENTS`, `_HOLD_MS`, `_GAP_MS`, `_FSYNC=on|off`.
 
