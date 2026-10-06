@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -530,14 +531,32 @@ func (s *EventStore) GetShardEvents(ctx context.Context, scope persistence.Scope
 	if err != nil {
 		return nil, 0, err
 	}
+	if limit == 0 {
+		return nil, 0, nil
+	}
+	if limit > math.MaxInt64 {
+		limit = math.MaxInt64
+	}
+	// The order is total (timestamp, persistence_id, sequence_number). The
+	// subselect finds the timestamp of the limit-th event after the offset and
+	// the outer query returns every event up to and including that timestamp,
+	// so a group of events sharing a timestamp is never cut in the middle: the
+	// next offset is that timestamp and the next read is strictly after it, so
+	// an event left behind would never be delivered. With fewer than limit
+	// events pending the subselect is empty and the bound falls back to the
+	// largest timestamp. One statement, hence one snapshot, for both steps.
 	rows, err := s.pool.Query(ctx, `
 		SELECT persistence_id, sequence_number, is_deleted, event_payload, event_manifest,
 		       timestamp, shard_number, encryption_key_id, is_encrypted, tenant_metadata
 		FROM events_store
 		WHERE tenant_id=$1 AND shard_number=$2 AND timestamp > $3
-		ORDER BY timestamp ASC
-		LIMIT $4`,
-		tenantID, shardNumber, offset, limit)
+		  AND timestamp <= COALESCE((
+		      SELECT timestamp FROM events_store
+		      WHERE tenant_id=$1 AND shard_number=$2 AND timestamp > $3
+		      ORDER BY timestamp ASC, persistence_id ASC, sequence_number ASC
+		      OFFSET $4::bigint - 1 LIMIT 1), 9223372036854775807)
+		ORDER BY timestamp ASC, persistence_id ASC, sequence_number ASC`,
+		tenantID, shardNumber, offset, int64(limit))
 	if err != nil {
 		return nil, 0, err
 	}

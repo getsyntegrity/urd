@@ -486,7 +486,10 @@ func (x *EventStore) GetShardEvents(_ context.Context, scope persistence.Scope, 
 
 	// The map iteration order above is random, so the order must be total:
 	// timestamp first, then persistence ID and sequence number as tie-breakers.
-	// The limit applies to the sorted result, as in the Postgres store.
+	// The limit applies to the sorted result, as in the Postgres store, except
+	// that it never cuts a group of events sharing a timestamp: the returned
+	// offset is that timestamp and the next read is strictly after it, so any
+	// event of the group left behind would never be delivered.
 	sort.Slice(events, func(i, j int) bool {
 		a, b := events[i], events[j]
 		if a.GetTimestamp() != b.GetTimestamp() {
@@ -498,7 +501,11 @@ func (x *EventStore) GetShardEvents(_ context.Context, scope persistence.Scope, 
 		return a.GetSequenceNumber() < b.GetSequenceNumber()
 	})
 	if uint64(len(events)) > limit {
-		events = events[:limit]
+		end := int(limit)
+		for end < len(events) && events[end].GetTimestamp() == events[end-1].GetTimestamp() {
+			end++
+		}
+		events = events[:end]
 	}
 
 	nextOffset := events[len(events)-1].GetTimestamp()

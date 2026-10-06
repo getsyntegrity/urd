@@ -149,8 +149,19 @@ type EventsStore interface {
 	// with a check that forces multiple pages and asserts exact, duplicate-free coverage.
 	PersistenceIDs(ctx context.Context, scope Scope, pageSize uint64, pageToken string) (persistenceIDs []string, nextPageToken string, err error)
 	// GetShardEvents returns the next (limit) events of the given scope after the offset in the
-	// journal for a given shard, oldest first, strictly after offset, at most limit of them; the
-	// second result is the timestamp of the last event returned (0 when there is none). An invalid
+	// journal for a given shard, strictly after offset, in the total order (timestamp,
+	// persistence ID, sequence number); the second result is the timestamp of the last event
+	// returned (0 when there is none). That timestamp is the whole cursor: the caller commits it
+	// and passes it back as offset, so the contract is that no event of the scope and shard with a
+	// timestamp at or before the returned offset is left undelivered. limit is therefore a
+	// minimum-batch target, not a hard cap: at least limit events are returned when that many are
+	// pending, and the batch is extended to the end of the group of events sharing the timestamp of
+	// the limit-th one, because a batch that stopped inside such a group would return its timestamp
+	// as the offset and the rest of the group would be skipped by the next, strictly-after, read.
+	// Events written by one command share a timestamp, so a group is as large as that command's
+	// events plus any other event of the shard stamped with the same instant. A limit of 0 returns
+	// nothing. A crash between delivering a batch and committing its offset redelivers the whole
+	// batch, including every event of a group: delivery stays at-least-once. An invalid
 	// (zero-value) scope returns ErrInvalidScope and nothing is read. A read performed in one scope
 	// MUST NOT return an event that belongs to another scope, and an Unscoped() read does not
 	// return a tenant's events: there is no cross-scope read.
