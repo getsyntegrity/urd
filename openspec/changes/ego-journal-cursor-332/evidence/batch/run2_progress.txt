@@ -1,0 +1,7 @@
+start current load1=2.97 3.68 3.69
+done current rc=0 load=3.89 3.91 3.79
+start batch load1=2.88 3.67 3.70
+done batch rc=0 load=3.97 3.92 3.82
+start batch:1000 load1=2.90 3.68 3.73
+done batch:1000 rc=0 load=4.62 4.31 4.00
+ALLDONE

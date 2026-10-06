@@ -1,6 +1,6 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 12 (the owner's resolutions of D1-D15 recorded in `decisions.md`; the batch-publication experiment is AUTHORIZED as an experiment, the migration and a production change of the SPI are NOT). Revision 11: the owner's objections to D13, D14 and D15 applied: stream identity separate from actor placement, the unit defect and the interface decided apart, no conformant report-only mode; revision 10 was the second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
+Status: PROPOSED, revision 13 (a batch-publication prototype was measured against the current adapter: see `batch-prototype-report.md`; the scope was narrowed to PostgreSQL and the smallest contract change, and the heavier contract machinery is deferred, not withdrawn). Revision 12: (the owner's resolutions of D1-D15 recorded in `decisions.md`; the batch-publication experiment is AUTHORIZED as an experiment, the migration and a production change of the SPI are NOT). Revision 11: the owner's objections to D13, D14 and D15 applied: stream identity separate from actor placement, the unit defect and the interface decided apart, no conformant report-only mode; revision 10 was the second review round: the shard of an entity fixed for life, replay equality, progress epoch, enforcement limit of ValidateAdvance, time-based start, migration audits and rollout of the retention check; proposed resolutions of every pending decision in `decisions.md`). Revision 9 stood on (owner review of #338 applied: observable atomicity, frontier-based safe advance, progress validated by the journal and resolved by commit id, arrival-order publication with a no-starvation argument, a backfill that preserves per-entity order, published-frontier heads, the experimental branch published). Revision 8 stood on (owner review of the contract applied: write outcomes and idempotent retry, per-stream order and chains of reads,
 enforced per-entity sequence rules, retention without partial deletion and detectable loss, three lag measures, cursor bound to the journal
 instance and generation, progress with compare-and-set and generation; the SPI is NOT approved). Revision 7 stands: **Direction change (agreed with the owner): Urd defines a PORTABLE JOURNAL
 CONTRACT; each adapter implements its guarantees with its own mechanisms. The earlier selection of per-write
@@ -16,7 +16,8 @@ conformance check is a known, deliberately red regression against the current ad
 This directory is the whole content of the change. **The code, tests and benchmarks cited in sections 1-13 are NOT
 part of it and do not exist in `develop`.** They live on the branch `exp/332-adapter-shard-serialization`
 (published for review, not for merge: commit `6d03c1d404a2b41cb4e3efd0213d400885f4a5af`, which also contains the two
-earlier commits `1aef84b` and `fb21b34`): the conformance check
+earlier commits `1aef84b` and `fb21b34`). The later batch-publication prototype is on the branch
+`exp/332-batch-publication`, also for review and not for merge, at commit `e596ee66332eaa499fbbd551d08b83a589f91460`: the conformance check
 `LateVisibleEventsBehindACommittedOffsetAreDelivered`, the scratch-table prototypes, the `journalexp` build-tag
 adapter variants and the benchmark harness. The raw results those experiments produced are included here under
 `evidence/`, so the numbers can be read without the code. When this document says a check is "red" it refers to
@@ -33,6 +34,7 @@ omission.
 | One concrete PostgreSQL strategy: post-commit batch publication | [`postgres-batch-publication.md`](postgres-batch-publication.md) |
 | How is it tested, and what is the next experiment? | [`conformance-and-experiment.md`](conformance-and-experiment.md) |
 | What was measured so far, with its limits? | sections 1-13 below and [`evidence/`](evidence/) |
+| What did the later batch-publication prototype show, and what is the smallest contract change it supports? | [`batch-prototype-report.md`](batch-prototype-report.md) (one page; raw results in `evidence/batch/`) |
 | What is decided, suspended and pending? | section 14 and [`decisions.md`](decisions.md) (options and recommendation for each) |
 
 ### Evidence so far (kept as is)
