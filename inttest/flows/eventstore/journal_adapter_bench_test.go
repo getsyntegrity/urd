@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/getsyntegrity/urd/egopb"
@@ -80,6 +81,7 @@ func TestJournalAdapterBench(t *testing.T) {
 		{name: "H1 W1 at 300 tx/s, held tx in the SAME shard", shards: 1, workload: wlConditional, rate: 300, holder: holdSameShard},
 		{name: "H2 W1 at 300 tx/s, held tx in ANOTHER SCOPE", shards: 1, workload: wlConditional, rate: 300, holder: holdOtherScope},
 		{name: "H3 W1 at 300 tx/s, held tx in ANOTHER DATABASE", shards: 1, workload: wlConditional, rate: 300, holder: holdOtherDatabase},
+		{name: "B1 W1 at 300 tx/s, publisher stalled 10s then resumed (batch only)", shards: 1, workload: wlConditional, rate: 300, stallPublisher: 10 * time.Second, duration: 25 * time.Second},
 	}
 	scenarios = filterByPrefix(scenarios, os.Getenv("URD_JOURNAL_BENCH_SCENARIOS"), func(s adapterScenario) string { return s.name })
 	kinds := []string{"current", "current+index", postgres.KindSerialized, postgres.KindSerializedLate, postgres.KindHorizon}
@@ -88,6 +90,9 @@ func TestJournalAdapterBench(t *testing.T) {
 	}
 	for _, kind := range kinds {
 		for _, sc := range scenarios {
+			if sc.stallPublisher > 0 && !strings.HasPrefix(kind, postgres.KindBatch) {
+				continue // only the variant that publishes after the commit has a publisher to stall
+			}
 			var runs []adapterRun
 			for range reps {
 				runs = append(runs, adapterBenchOnce(ctx, t, box, kind, sc, writers, duration, hold, gap))
@@ -134,6 +139,11 @@ type adapterScenario struct {
 	holder adapterHolder
 	// unordered: entities are shared by several writers, so per-entity delivery order is not asserted.
 	unordered bool
+	// stallPublisher (batch variant only): the publisher does not run for this long at the start of the run, then
+	// starts; the run lasts stallPublisher + duration. It measures the backlog and the recovery.
+	stallPublisher time.Duration
+	// duration overrides the run length of the scenario (0 uses the global one)
+	duration time.Duration
 }
 
 type adapterRecorder struct {
@@ -151,6 +161,11 @@ type adapterRun struct {
 	elapsed                         time.Duration
 	writeLat, delivery, lockWait    []time.Duration
 	holds                           int
+	// cost of the run, from the database: bytes of events_store with its indexes, WAL written during the run
+	tableBytes, walBytes int64
+	// batch variant: the largest backlog sampled, and the time from the publisher starting until it reached zero
+	maxBacklog   int64
+	drainResumed time.Duration
 }
 
 func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kind string, sc adapterScenario, writers int, duration, hold, gap time.Duration) adapterRun {
@@ -163,9 +178,23 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 		scope   = persistence.Unscoped()
 		stopped atomic.Bool
 		holder  func() (func(), error) // one hold cycle; returns when released
+
+		publication postgres.PublicationControl // set for the batch variant
+		pubMu       sync.Mutex
+		stopPub     func()
+		resumedAt   time.Time
 	)
 	onWait := func(d time.Duration) { waitMu.Lock(); waits = append(waits, d); waitMu.Unlock() }
 
+	// "batch:1000" is the batch variant with a publisher batch size of 1000 (sensitivity to N)
+	factoryKind, batchN := kind, 0
+	if strings.HasSuffix(kind, "+pubpool") {
+		factoryKind = strings.TrimSuffix(kind, "+pubpool")
+	}
+	if strings.HasPrefix(kind, postgres.KindBatch+":") {
+		factoryKind = postgres.KindBatch
+		fmt.Sscanf(strings.TrimPrefix(kind, postgres.KindBatch+":"), "%d", &batchN)
+	}
 	switch kind {
 	case "current", "current+index":
 		s, err := provisionPostgresTestStore(dsn)
@@ -188,7 +217,7 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 		}
 		store = s
 	default:
-		s, err := provisionExperimentalKind(kind, dsn)
+		s, err := provisionExperimentalKind(factoryKind, dsn)
 		if err != nil {
 			t.Fatalf("provision: %v", err)
 		}
@@ -196,8 +225,20 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 			t.Fatalf("connect: %v", err)
 		}
 		defer s.(interface{ Disconnect(context.Context) error }).Disconnect(ctx) //nolint:errcheck
+		if b, ok := s.(*postgres.ExperimentalBatchStore); ok && batchN > 0 {
+			b.BatchSize = batchN
+		}
+		if b, ok := s.(*postgres.ExperimentalBatchStore); ok && strings.HasSuffix(kind, "+pubpool") {
+			// DIAGNOSTIC kind "batch+pubpool": the publisher has its own pool of 4 connections
+			if err := b.DedicatePublisherPool(ctx, dsn, 4); err != nil {
+				t.Fatalf("publisher pool: %v", err)
+			}
+		}
 		s.SetOnLockWait(onWait)
 		store = s
+		if pc, ok := s.(postgres.PublicationControl); ok {
+			publication = pc
+		}
 	}
 
 	// holder: a transaction held open, repeated until the writers stop. Part of the experimental load.
@@ -244,7 +285,7 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 				return func() { time.Sleep(hold); _ = tx.Commit(ctx) }, nil
 			}
 		default:
-			hs, err := provisionExperimentalKindOver(kind, dsn)
+			hs, err := provisionExperimentalKindOver(factoryKind, dsn)
 			if err != nil {
 				t.Fatalf("holder store: %v", err)
 			}
@@ -255,6 +296,67 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 				return func() {}, hs.WriteEvents(ctx, holderScope, []*egopb.Event{expEvent("holder", holderSeq, 0, time.Now().UnixNano())}, persistence.Unconditional())
 			}
 		}
+	}
+
+	// cost accounting: WAL written during the run, read from the database
+	costConn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect for costs: %v", err)
+	}
+	defer costConn.Close(ctx) //nolint:errcheck
+	var startLSN string
+	if err := costConn.QueryRow(ctx, `SELECT pg_current_wal_lsn()::text`).Scan(&startLSN); err != nil {
+		t.Fatalf("wal position: %v", err)
+	}
+
+	// batch variant: the background publisher (a round every 5 ms and right after a local commit), possibly stalled
+	startPublisher := func() {
+		pubMu.Lock()
+		defer pubMu.Unlock()
+		if publication != nil && stopPub == nil {
+			stopPub = publication.StartPublisher(ctx, 5*time.Millisecond)
+			resumedAt = time.Now()
+		}
+	}
+	var (
+		maxBacklog atomic.Int64
+		drainedAt  atomic.Int64 // unix nanos of the first zero sample after the publisher resumed
+		samplerWG  sync.WaitGroup
+		samplerEnd = make(chan struct{})
+	)
+	if publication != nil {
+		if sc.stallPublisher > 0 {
+			time.AfterFunc(sc.stallPublisher, startPublisher)
+		} else {
+			startPublisher()
+		}
+		samplerWG.Add(1)
+		go func() {
+			defer samplerWG.Done()
+			tick := time.NewTicker(50 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-samplerEnd:
+					return
+				case <-tick.C:
+					n, err := publication.Pending(ctx)
+					if err != nil {
+						continue
+					}
+					if n > maxBacklog.Load() {
+						maxBacklog.Store(n)
+					}
+					pubMu.Lock()
+					resumed := !resumedAt.IsZero()
+					at := resumedAt
+					pubMu.Unlock()
+					if resumed && n == 0 && drainedAt.Load() == 0 && time.Since(at) > 0 {
+						drainedAt.Store(time.Now().UnixNano())
+					}
+				}
+			}
+		}()
 	}
 
 	recs := make([]*adapterRecorder, writers)
@@ -374,11 +476,27 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 		}()
 	}
 
-	time.Sleep(duration) // the run length is the load
+	runFor := duration
+	if sc.duration > 0 {
+		runFor = sc.duration
+	}
+	time.Sleep(runFor + sc.stallPublisher) // the run length is the load
 	stopped.Store(true)
 	writersWG.Wait()
 	elapsed := time.Since(begin)
 	holderWG.Wait()
+	if publication != nil {
+		startPublisher() // a stall that outlived the run still ends here
+		if _, err := publication.PublishAll(ctx); err != nil {
+			t.Fatalf("%s / %s: final publication: %v", kind, sc.name, err)
+		}
+		pubMu.Lock()
+		stop := stopPub
+		pubMu.Unlock()
+		stop()
+		close(samplerEnd)
+		samplerWG.Wait()
+	}
 	allWritten.Store(true)
 	readersWG.Wait()
 
@@ -457,6 +575,17 @@ func adapterBenchOnce(ctx context.Context, t *testing.T, box *benchPostgres, kin
 	waitMu.Lock()
 	run.lockWait = slices.Clone(waits)
 	waitMu.Unlock()
+
+	if err := costConn.QueryRow(ctx, `SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), $1::pg_lsn)::bigint`, startLSN).Scan(&run.walBytes); err != nil {
+		t.Fatalf("wal diff: %v", err)
+	}
+	if err := costConn.QueryRow(ctx, `SELECT pg_total_relation_size('events_store')`).Scan(&run.tableBytes); err != nil {
+		t.Fatalf("relation size: %v", err)
+	}
+	run.maxBacklog = maxBacklog.Load()
+	if at := drainedAt.Load(); at != 0 && !resumedAt.IsZero() {
+		run.drainResumed = time.Unix(0, at).Sub(resumedAt)
+	}
 	return run
 }
 
@@ -478,7 +607,15 @@ func reportAdapter(t *testing.T, kind string, sc adapterScenario, runs []adapter
 	var lat, del, lw []time.Duration
 	var txps, evps []float64
 	var events, omitted, recovered, holds int
+	var tableBytes, walBytes, maxBacklog int64
+	var drains []time.Duration
 	for _, r := range runs {
+		tableBytes += r.tableBytes
+		walBytes += r.walBytes
+		maxBacklog = max(maxBacklog, r.maxBacklog)
+		if r.drainResumed > 0 {
+			drains = append(drains, r.drainResumed)
+		}
 		lat = append(lat, r.writeLat...)
 		del = append(del, r.delivery...)
 		lw = append(lw, r.lockWait...)
@@ -497,10 +634,11 @@ func reportAdapter(t *testing.T, kind string, sc adapterScenario, runs []adapter
 		return sum / float64(len(xs))
 	}
 	l, d, c := measure.Summarize(lat), measure.Summarize(del), measure.Summarize(lw)
-	t.Logf("BENCH|row|%s|%s|tx/s=%.0f (%.0f..%.0f)|ev/s=%.0f|write p50/p95/p99=%s/%s/%s|start-to-delivery p50/p95/p99=%s/%s/%s|lock-wait p50/p95/p99=%s/%s/%s|events=%d omitted=%d (%.3f%%) recovered-by-read-from-zero=%d|held-tx=%d",
+	t.Logf("BENCH|row|%s|%s|tx/s=%.0f (%.0f..%.0f)|ev/s=%.0f|write p50/p95/p99=%s/%s/%s|start-to-delivery p50/p95/p99=%s/%s/%s|lock-wait p50/p95/p99=%s/%s/%s|events=%d omitted=%d (%.3f%%) recovered-by-read-from-zero=%d|held-tx=%d|table+idx B/event=%.0f WAL B/event=%.0f|max-backlog=%d drain-after-resume=%v",
 		kind, sc.name, mean(txps), slices.Min(txps), slices.Max(txps), mean(evps),
 		l.P50, l.P95, l.P99, d.P50, d.P95, d.P99, c.P50, c.P95, c.P99,
-		events, omitted, 100*float64(omitted)/float64(max(events, 1)), recovered, holds)
+		events, omitted, 100*float64(omitted)/float64(max(events, 1)), recovered, holds,
+		float64(tableBytes)/float64(max(events, 1)), float64(walBytes)/float64(max(events, 1)), maxBacklog, drains)
 }
 
 // ---- workloads: the same code for every variant

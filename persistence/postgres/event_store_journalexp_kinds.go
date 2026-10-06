@@ -40,6 +40,8 @@ func NewExperimentalStore(kind, dsn string) (ExperimentalStore, error) {
 		return s, nil
 	case KindHorizon:
 		return NewExperimentalHorizonStore(dsn), nil
+	case KindBatch:
+		return NewExperimentalBatchStore(dsn), nil
 	}
 	return nil, fmt.Errorf("unknown experimental variant %q", kind)
 }

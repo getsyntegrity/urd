@@ -88,6 +88,10 @@ func (s *EventStore) experimentalMigrate(ctx context.Context) error {
 	for _, ddl := range []string{
 		`ALTER TABLE events_store ADD COLUMN IF NOT EXISTS journal_pos BIGINT`,
 		`CREATE INDEX IF NOT EXISTS idx_events_store_journal ON events_store (tenant_id, shard_number, journal_pos)`,
+		// batch publication (event_store_journalexp_batch.go): arrival order of a pending row, and the pending index
+		`ALTER TABLE events_store ADD COLUMN IF NOT EXISTS pub_seq BIGINT`,
+		`CREATE SEQUENCE IF NOT EXISTS journal_pub_seq CACHE 1 NO CYCLE`,
+		`CREATE INDEX IF NOT EXISTS idx_events_pending ON events_store (tenant_id, shard_number, pub_seq) WHERE journal_pos IS NULL`,
 		`CREATE TABLE IF NOT EXISTS journal_shard_positions (
 			tenant_id    VARCHAR(255) NOT NULL,
 			shard_number BIGINT       NOT NULL,
