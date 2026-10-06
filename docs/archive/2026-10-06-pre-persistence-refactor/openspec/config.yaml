@@ -1,0 +1,25 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Go 1.26.0 (toolchain at /home/pablog/sdk/go1.26.6/bin/go; `go` is NOT on PATH),
+    protobuf-first, module github.com/pablogore/ego/v4 (fork of github.com/tochemey/ego, maintained independently).
+  Architecture: CQRS / Event Sourcing framework built on github.com/tochemey/goakt/v4 actors.
+    Composition root is engine.NewEngine with functional Options in engine/option.go.
+  Observability: OpenTelemetry (traces + metrics) wired in engine/telemetry.go;
+    logging abstracted behind the engine.Logger interface in engine/logger.go.
+  Testing: `go test -mod=vendor -p 1 -timeout 0 -race ./...` via Makefile.
+    NOTE: the repo does NOT carry a vendor/ tree (vendor is gitignored), so
+    `go mod vendor` must be run out-of-band before any -mod=vendor command.
+  Style: Strict TDD mode enabled. Technical artifacts in English.
+
+rules:
+  proposal:
+    - Include a rollback plan for any change to public API surface.
+    - Name every affected public consumer surface explicitly.
+  design:
+    - Do not introduce logging into domain interfaces (EventSourcedBehavior,
+      DurableStateBehavior, SagaBehavior) or into command/event/state types.
+    - Keep logs, traces and metrics separated by concern; correlate via context.Context.
+  apply:
+    - Never log full command, event, state or snapshot payloads. Metadata, types and IDs only.
+    - Run `go mod tidy` and `go mod vendor` together when dependencies change.
