@@ -1,6 +1,7 @@
 # Journal cursor that never skips a committed event (#332) — design
 
-Status: PROPOSED, revision 5 (section 12: the serialization scheme measured on the
+Status: PROPOSED, revision 6 (section 13: horizon on the real adapter, counter-last serialization, sub-saturation and held-transaction scenarios; its comparison refines the recommendation of 12.8),
+formerly revision 5 (section 12: the serialization scheme measured on the
 REAL adapter, in an experimental branch; its numbers change the recommendation of 10.7),
 formerly revision 4 (sections 10-12 compare the horizon with per-shard
 serialization on prototypes; the recommendation there is NOT a decision). This is a first step of tests and design: the
@@ -724,3 +725,182 @@ hence p50/p95, would be much smaller; that open-loop behavior was not measured.
   issue for the timestamp read index: it explains most of the current adapter's read lag at no semantic risk.
 - Pending, unchanged: the SPI gate (`JournalPosition`; the 3 failing checks above are the exact places where the
   meaning of the offset is pinned), the data-migration gate, and the coordination with #93.
+
+## 13. Horizon on the real adapter, counter-last serialization, operating load (same branch)
+
+Still an experiment behind `journalexp`; nothing here is on the production path, no public signature changed,
+and the SPI, migration and scheme decisions stay pending.
+
+### 13.1 What was added
+
+- `ExperimentalHorizonStore` (`event_store_journalexp_horizon.go`): position `2^62 + xid8`, reads below the xmin
+  of the reading statement's own snapshot. Acquisition order: advisory entity locks first, sorted by
+  `(tenant, persistence_id)` and length-prefixed, BEFORE any statement that can assign a transaction id (the
+  adapter's revision row locks do assign one); then the existing revision locks, the inserts and the commit.
+  Tests turn on `AssertNoXidBeforeLocks`, which fails a write if an xid exists right after its locks.
+  `DeleteEvents` is unchanged.
+- Serialization with the counter taken LAST (`CounterLast`, variant `serialized-late`): rows are inserted with a
+  NULL position, then the counter rows are taken (lock and position at once, held to commit or rollback) and the
+  positions of this transaction's rows are stamped by one `UPDATE .. FROM unnest(..)`, restricted to rows whose
+  position is still NULL so an ignored duplicate keeps its old one.
+- One interface (`ExperimentalStore`) and one factory, so the same tests and the same benchmark drive every
+  variant.
+
+### 13.2 Correctness evidence (real adapter, real PostgreSQL 17.6, `-race`, 3 consecutive runs)
+
+The same tests run on `serialized`, `serialized-late` and `horizon`; where the schemes differ on purpose the
+expectation is stated per variant.
+
+| Evidence | Result |
+|---|---|
+| Real conformance suite against each variant | `LateVisibleEventsBehindACommittedOffsetAreDelivered` **passes** on all three (red on the current adapter). The same three checks that assert a timestamp offset fail on all three, pinned as expected; any other change fails the test |
+| In-flight writer vs reader, conditional and unconditional holder, commit and rollback | no variant delivers anything above an in-flight write. Under serialization the later writer waits (observed in `pg_locks`); under the horizon it COMMITS first (an inverted commit) and is delivered after the holder; a rollback leaves no hole in either |
+| Cancellation of a waiting writer | fails with `context.Canceled`, leaks no lock (the same write then succeeds with the same precondition), commits nothing |
+| Parked writer + writer of another entity + `DeleteEvents` | all finish after release, in every variant |
+| Another scope in flight | a tenant-b write never waits in any variant. Reads differ: tenant b reads at once under serialization and waits for tenant a's transaction under the horizon |
+| A transaction in ANOTHER DATABASE of the server | holds the horizon reader back and releases it at its end (delayed, not lost); it does not touch serialization |
+| Restart/resume | a new process writes after the restart, positions keep growing, resuming from the committed cursor loses nothing and does not cut a group (all variants) |
+| Counter-last demonstration | a writer parked AFTER its rows are inserted and BEFORE it takes the counter; another writer takes the counter, commits and is delivered; the first resumes and gets a position above the cursor the reader already reached; its uncommitted rows were invisible meanwhile; no committed row ever has a NULL position |
+| Stress: two processes, conditional single-entity writers, unconditional multi-entity writers on overlapping shared entities, multi-shard batches in opposite shard order, every 7th write rolled back, readers polling | per variant: ~1630 committed events, 57 rollbacks, no failed write (no `40P01`), no omission, no duplicate, no uncommitted event delivered, no NULL position, per-entity order kept, positions dense per shard under serialization |
+
+The benchmark also checks omissions on every run: no experimental variant omitted a single event in any of its
+33 measured runs (11 scenarios x 3 repetitions each; 99 runs over the three experimental variants).
+
+**What this does and does not show about deadlocks.** The stable acquisition orders (entity advisory locks, then
+revision rows, then counter rows, each class ascending) remove cycles between THESE paths: conditional,
+unconditional, multi-entity, multi-shard and delete writes against each other and against the reader. No
+deadlock appeared in the stress or in any benchmark run, and the prototype showed that a wrong order does
+deadlock. That is evidence about these routes under these loads; it is not a proof that no other interleaving,
+statement or future code path can deadlock.
+
+### 13.3 Measurement setup
+
+Same harness, same load, through the public `EventsStore` of each adapter; PostgreSQL 17.6 in Testcontainers on
+Colima (2 vCPU VM), `fsync=on` (it moved nothing earlier, section 12.4); 12 writers; 5 s per run; 3 repetitions;
+a tight-loop reader per measured shard, limit 100; the adapter's fixed pool of 20 connections. Five adapters:
+`current`; `current+index` (control: a composite index over the timestamp, equivalent to the one the
+experimental variants carry, with the same extra write cost); `serialized`; `serialized-late`; `horizon`.
+
+Scenarios: W1-W4 at saturation (as in 12.3); R100, R300, R500: W1 at an OFFERED rate of 100/300/500 tx/s (open
+loop: each writer follows a fixed schedule and latency is measured from the intended start, so a queue is not
+hidden); R500M: the 8-shard multi-shard workload at 500 tx/s; H1-H3: W1 at 300 tx/s with a transaction held
+500 ms (100 ms gap, repeated, 9 per 5 s run, 26-27 over the 3 repetitions) in the same shard, in another scope, or in another database of
+the server. The held transaction is part of the experimental load: the experimental variants hold a real adapter
+write parked before its commit; the current adapter has no hook, so its holder is a raw transaction inserting
+the same revision and event rows. Start-to-delivery is from the intended start of the write to the moment the
+polling reader was handed the event. The omission percentages are those of THIS experimental load (a reader that
+polls without pause, saturated or paced writers): they show how easily the mechanism triggers, not what a
+deployment would omit. Raw output and caveats: `evidence/adapter_matrix_fsync_on.txt`, `evidence/README.md`.
+
+### 13.4 Results at saturation (tx/s, min..max; write and start-to-delivery in ms p50/p95/p99)
+
+| | current | current+index | serialized | serialized-late | horizon |
+|---|---|---|---|---|---|
+| **W1** conditional, hot shard: tx/s | 3430 (3345..3516) | 3443 | 736 (719..771) | 719 | 3080 (3013..3144) |
+| write | 3.3 / 5.5 / 7.2 | 3.2 / 5.4 / 7.3 | 11.9 / 44 / 68 | 10.9 / 49 / 78 | 3.6 / 5.9 / 7.9 |
+| start-to-delivery | 21 / 1128 / 1313 | 23 / 290 / 406 | 12.6 / 45 / 69 | 11.9 / 50 / 80 | 17 / 201 / 289 |
+| omitted | 6.2 % | 10.4 % | 0 | 0 | 0 |
+| **W2** multi-entity, hot shard: tx/s | 2683 | 2941 | 793 | 672 | 2023 (1461..2314) |
+| start-to-delivery | 16 / 142 / 366 | 8 / 113 / 239 | 11 / 44 / 71 | 13 / 53 / 88 | 13 / 27 / 44 |
+| omitted | 7.4 % | 18.0 % | 0 | 0 | 0 |
+| **W3** multi-shard (8): tx/s | 2175 (1621..2552) | 1682 (1305..2321) | 1093 (815..1238) | 603 | 1823 (1254..2146) |
+| start-to-delivery | 8 / 17 / 23 | 9 / 21 / 37 | 9 / 27 / 47 | 15 / 51 / 98 | 10 / 18 / 22 |
+| omitted | 7.0 % | 9.3 % | 0 | 0 | 0 |
+| **W4** overlapping entities: tx/s | 1005 | 818 | 786 | 457 | 708 |
+| start-to-delivery | 4.8 / 9 / 12 | 4.9 / 9.6 / 13.6 | 8 / 57 / 108 | 13 / 97 / 193 | 11 / 51 / 65 |
+| omitted | 52.0 % | 53.6 % | 0 | 0 | 0 |
+
+Run-to-run variation is large for `current` (W1 2520..3430 across the two valid runs of section 12 and here), so
+deltas below roughly 30 % are within the noise of this VM. Omission rates of the current adapter also vary
+widely between runs (W1 6-25 %).
+
+### 13.5 Results below saturation (offered load, 3 x 5 s; start-to-delivery p50 / p95 / p99 ms; omitted)
+
+| Scenario | current | current+index | serialized | serialized-late | horizon |
+|---|---|---|---|---|---|
+| R100 (100 tx/s) | 1.7 / 2.4 / 3.1; 0 | 1.6 / 2.9 / 5.8; 0 | 1.7 / 2.4 / 4.0; 0 | 2.1 / 2.8 / 4.2; 0 | 1.8 / 2.5 / 3.1; 0 |
+| R300 (300 tx/s) | 2.4 / 3.5 / 4.1; **0.11 %** | 1.7 / 2.6 / 4.3; **0.18 %** | 1.8 / 2.4 / 3.7; 0 | 2.4 / 3.3 / 5.3; 0 | 1.9 / 3.4 / 4.4; 0 |
+| R500 (500 tx/s) | 2.8 / 4.9 / 7.2; **0.51 %** | 1.7 / 2.9 / 4.5; **0.29 %** | 2.1 / **34 / 86**; 0 | 2.5 / 4.2 / 8.6; 0 | 2.5 / 4.8 / 8.4; 0 |
+| R500M (8 shards, 500 tx/s) | 2.9 / 4.1 / 6.0; **0.30 %** | 4.3 / 7.4 / 13.8; **0.53 %** | 4.1 / 6.9 / 20.5; 0 | 5.6 / **743 / 2260** (457 tx/s); 0 | 3.5 / 5.2 / 12.5; 0 |
+
+1. **Up to 300 tx/s offered on a hot shard, every variant is indistinguishable within a few milliseconds** on
+   this VM: the cost of serialization is not visible in ordinary operation at that rate.
+2. **The defect is already present at moderate load in this load: 0.1-0.5 % of the events were omitted by the
+   current adapter at 300-500 tx/s** (none at 100 tx/s), with and without the control index. A fraction of a
+   percent is small, and it is silent loss of projection input.
+3. **Serialization starts to queue before it saturates.** At 500 tx/s offered, which is 68 % of its ~735 tx/s
+   ceiling, `serialized` already shows write p95 16 ms and delivery p95 34 ms / p99 86 ms.
+4. `serialized-late` is better than `serialized` on one hot shard at 500 tx/s (p95 4.2 ms) and clearly worse on
+   multi-shard (R500M: 457 of 498 tx/s achieved, delivery p99 2.3 s).
+
+### 13.6 Held transactions at 300 tx/s offered (start-to-delivery p50 / p95 / p99 ms; achieved tx/s)
+
+| Held transaction in | current | current+index | serialized | serialized-late | horizon |
+|---|---|---|---|---|---|
+| H1 the SAME shard | 1.7 / 2.7 / 3.3 | 1.6 / 2.0 / 2.8 | **1570 / 2951 / 3195**; 124 tx/s | **1267 / 2329 / 2809**; 175 tx/s | **214 / 475 / 497**; 298 tx/s |
+| H2 ANOTHER SCOPE | 1.7 / 2.4 / 3.1 | 1.6 / 2.7 / 4.3 | 1.9 / 2.5 / 3.5 | 2.3 / 3.0 / 4.3 | **214 / 475 / 497** |
+| H3 ANOTHER DATABASE | 1.7 / 3.0 / 4.8 | 1.6 / 2.2 / 2.9 | 2.0 / 3.2 / 13.5 | 2.6 / 4.1 / 7.4 | **214 / 475 / 497** |
+
+- **Horizon**: writes are never affected (p95 3-4 ms in H1-H3), but the start-to-delivery latency is the same in
+  all three held scenarios: about 214 ms p50, 475 ms p95, 497 ms p99. Whether the held transaction belongs to the
+  same shard, another scope or another database makes no difference. The figures are set by the 500 ms hold and
+  the 100 ms gap I chose (a transaction is open about 5/6 of the time): they show the mechanism, not a duration
+  to expect in production, where it equals the age of the oldest open transaction of the whole server.
+- **Serialization**: a held transaction in ANOTHER scope or ANOTHER database costs nothing measurable. A held
+  transaction in the SAME (scope, shard) is the failure case: the achieved rate drops to 124-175 of 300 tx/s
+  and delivery goes to seconds, a backlog that keeps growing while the transaction recurs. The holder here is
+  one of Urd's own writes parked for 500 ms, which an Urd command should not normally be.
+- The current adapter shows no effect from held transactions on its writers (it takes no shared lock), but
+  it keeps omitting events (0.1-0.3 %).
+
+### 13.7 Reading across the evidence
+
+- **The two schemes fail in opposite places.** Horizon: negligible write overhead (-10 % at W1 saturation;
+  -30 % in W2, within noise), no per-scope ceiling, its cost is read latency bounded by the oldest open
+  transaction of the WHOLE SERVER, across scopes and databases. Serialization: a ceiling of about 735 tx/s per
+  `(scope, shard)` on this VM (-79 % at W1 saturation against `current+index`), no cost at moderate load, no
+  cross-scope or cross-database effect, and a collapse when something holds the same `(scope, shard)`.
+- **Counter-last did not deliver what it promised.** At saturation it is equal or worse than counter-first
+  (W1 719 vs 736, W2 672 vs 793, W3 603 vs 1093, W4 457 vs 786), and much worse on multi-shard under paced load.
+  It is better only on one hot shard at 500 tx/s offered. Moving the inserts out of the lock saved little
+  because the stamping statement and the extra round trip take about as long under the lock. I checked that the
+  stamping statement uses the primary-key index (a nested loop, about 0.3 ms on a 200k-row table), so it is not
+  a bad plan; what else costs time in the multi-shard case I did not isolate. I do not recommend it as is.
+- **The index does not fix #332.** `current+index` is faster to read (W1 start-to-delivery p95 290 ms vs
+  1128 ms) and omits MORE (10-18 % vs 6-7 % in W1/W2), because a faster reader reaches the head sooner.
+  `evidence/issue-draft-timestamp-index.md` is the draft of a separate issue for it.
+- **Single-node default.** `Partition()` is `0` outside a cluster (section 12.6): one shard per scope.
+  Serialization's ceiling then bounds each scope's write rate; the horizon has none per scope but couples scopes.
+
+### 13.8 Limits of this evidence
+
+- 2 vCPU VM shared by generator and database; host load not zero (see `evidence/README.md`); a first matrix run
+  was discarded for host load; run-to-run variation of `current` reaches 30 %; held-transaction durations and
+  duty cycle are chosen, not measured from a workload.
+- No real replica, replication or failover; no long reader pages; no pool exhaustion study (the adapter's pool
+  is fixed at 20 connections and a writer waiting for a lock holds one).
+- The unknown that decides the choice is the target workload: commands per second per scope, clustered or not,
+  and whether Urd shares its PostgreSQL server with other workloads that hold long transactions.
+- Test schema (nullable column, no backfill, no `NOT NULL` fence): no migration is evaluated here. The three
+  conformance checks that assume a timestamp offset were not rewritten.
+- The 0.1-0.5 % omission at moderate load, and the 6-54 % at saturation, belong to this experimental load.
+
+### 13.9 Recommendation (not a decision)
+
+I withdraw the preference for serialization stated in 10.7 and refined in 12.8: with the horizon measured on the
+same write path, neither scheme dominates, and the choice reduces to two operating facts that Urd's owners must
+state before the gates:
+
+1. **Will Urd share its PostgreSQL server with workloads that can hold a transaction open for long** (analytics,
+   migrations, other applications)? If yes, the horizon turns that into projection lag for every scope; use
+   serialization, or the horizon only with `idle_in_transaction_session_timeout` plus a horizon-age gauge as a
+   hard operating requirement.
+2. **Does any `(scope, shard)` need more than about 700 commands/s** (the ceiling measured here, on a VM, for the
+   current write path)? If yes, serialization cannot serve it; use the horizon.
+
+If neither is known, serialization is the safer failure (a visible, local backpressure on the writer that
+caused it) as long as the per-shard rate stays well under the ceiling (the cost already shows at about 70 % of
+it); the horizon is the safer choice for throughput and the riskier for tail latency. Counter-last serialization
+should not be pursued further without a hypothesis for the multi-shard result. Pending, unchanged: the SPI gate
+(`JournalPosition`; the three failing checks mark exactly where the meaning of the offset is pinned), the
+data-migration gate and the coordination with #93.

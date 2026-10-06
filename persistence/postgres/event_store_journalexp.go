@@ -60,6 +60,15 @@ type ExperimentalShardSerializedStore struct {
 	BeforeCommit func() bool
 	// OnCounterWait, when not nil, receives how long taking the counter rows took. Measurements only.
 	OnCounterWait func(time.Duration)
+	// CounterLast takes the counter rows AFTER the event rows are inserted (with a NULL position) and the
+	// revision is advanced, then stamps the positions of this transaction's rows in one statement. The counter
+	// row lock is still held until commit or rollback, so position order is still commit order; what shrinks is
+	// the time the lock is held, from "the inserts + commit" to "the stamping + commit".
+	CounterLast bool
+	// BeforePositions, when not nil, runs in CounterLast mode right before the counter rows are taken, after
+	// the rows were inserted. Tests only: it parks a writer at the point where the rows exist and no position
+	// has been assigned.
+	BeforePositions func()
 }
 
 var _ persistence.EventsStore = (*ExperimentalShardSerializedStore)(nil)
@@ -72,6 +81,10 @@ func NewExperimentalShardSerializedStore(dsn string) *ExperimentalShardSerialize
 // ExperimentalMigrate adds the TEST schema of the experiment on top of the normal one: the journal_pos column,
 // its read index and the counter table. It is not part of the schema migrator and not a migration proposal.
 func (s *ExperimentalShardSerializedStore) ExperimentalMigrate(ctx context.Context) error {
+	return s.EventStore.experimentalMigrate(ctx)
+}
+
+func (s *EventStore) experimentalMigrate(ctx context.Context) error {
 	for _, ddl := range []string{
 		`ALTER TABLE events_store ADD COLUMN IF NOT EXISTS journal_pos BIGINT`,
 		`CREATE INDEX IF NOT EXISTS idx_events_store_journal ON events_store (tenant_id, shard_number, journal_pos)`,
@@ -122,7 +135,9 @@ const (
 		ON CONFLICT (tenant_id, persistence_id, sequence_number) DO NOTHING`
 )
 
-func insertPositioned(ctx context.Context, tx pgx.Tx, query, tenantID string, event *egopb.Event, pos int64) error {
+// insertPositioned inserts one event row. pos is the journal position, or nil for a row whose position is assigned
+// later in the same transaction (the counter-last variant).
+func insertPositioned(ctx context.Context, tx pgx.Tx, query, tenantID string, event *egopb.Event, pos any) error {
 	payload, err := proto.Marshal(event.GetEvent())
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
@@ -207,6 +222,17 @@ func (s *ExperimentalShardSerializedStore) writeUnconditionalPositioned(ctx cont
 		}
 	}
 
+	if s.CounterLast {
+		for _, event := range events {
+			if err := insertPositioned(ctx, tx, insertPositionedIgnoreDuplicateSQL, tenantID, event, nil); err != nil {
+				return err
+			}
+		}
+		if err := s.stampPositions(ctx, tx, tenantID, events); err != nil {
+			return err
+		}
+		return s.commitOrRollback(ctx, tx)
+	}
 	positions, err := s.takePositions(ctx, tx, tenantID, events)
 	if err != nil {
 		return err
@@ -246,6 +272,25 @@ func (s *ExperimentalShardSerializedStore) writeConditionalPositioned(ctx contex
 		}
 	}
 
+	if s.CounterLast {
+		highest := revision
+		for _, event := range events {
+			if err := insertPositioned(ctx, tx, insertPositionedSQL, tenantID, event, nil); err != nil {
+				return err
+			}
+			highest = max(highest, event.GetSequenceNumber())
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE events_store_revisions SET revision = $3 WHERE tenant_id = $1 AND persistence_id = $2`,
+			tenantID, persistenceID, highest,
+		); err != nil {
+			return fmt.Errorf("advance revision: %w", err)
+		}
+		if err := s.stampPositions(ctx, tx, tenantID, events); err != nil {
+			return err
+		}
+		return s.commitOrRollback(ctx, tx)
+	}
 	positions, err := s.takePositions(ctx, tx, tenantID, events)
 	if err != nil {
 		return err
@@ -264,6 +309,34 @@ func (s *ExperimentalShardSerializedStore) writeConditionalPositioned(ctx contex
 		return fmt.Errorf("advance revision: %w", err)
 	}
 	return s.commitOrRollback(ctx, tx)
+}
+
+// stampPositions is the counter-last step: take the counter rows (lock and position, held to commit), then give
+// every row this transaction inserted its position with ONE statement. Only rows whose position is still NULL
+// are stamped: a row that an unconditional write ignored as a duplicate keeps the position it already had.
+func (s *ExperimentalShardSerializedStore) stampPositions(ctx context.Context, tx pgx.Tx, tenantID string, events []*egopb.Event) error {
+	if s.BeforePositions != nil {
+		s.BeforePositions()
+	}
+	positions, err := s.takePositions(ctx, tx, tenantID, events)
+	if err != nil {
+		return err
+	}
+	ids := make([]string, len(events))
+	seqs := make([]int64, len(events))
+	pos := make([]int64, len(events))
+	for i, event := range events {
+		ids[i], seqs[i], pos[i] = event.GetPersistenceId(), int64(event.GetSequenceNumber()), positions[event.GetShard()]
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE events_store e SET journal_pos = u.pos
+		FROM unnest($1::text[], $2::bigint[], $3::bigint[]) AS u(pid, seq, pos)
+		WHERE e.tenant_id = $4 AND e.persistence_id = u.pid AND e.sequence_number = u.seq AND e.journal_pos IS NULL`,
+		ids, seqs, pos, tenantID,
+	); err != nil {
+		return fmt.Errorf("stamp journal positions: %w", err)
+	}
+	return nil
 }
 
 // GetShardEvents implements persistence.EventsStore BY POSITION: offset is a journal position, strictly after it

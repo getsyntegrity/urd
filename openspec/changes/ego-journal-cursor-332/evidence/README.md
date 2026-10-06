@@ -12,6 +12,15 @@ log lines around them.
 | `adapter_fsync_on.txt` | REAL adapter, current vs experimental (design.md section 12), `fsync=on` |
 | `adapter_fsync_off.txt` | same, `fsync=off` |
 
+| `adapter_matrix_fsync_on.txt` | REAL adapter, 5 variants x 11 scenarios (section 13), `fsync=on`; supersedes the numbers of `adapter_fsync_*` where they overlap |
+| `adapter_matrix_progress.txt` | host load average at the start and end of each variant of that matrix |
+
+A first run of the 5-variant matrix was DISCARDED: the host load average was 45-58 (another process of the machine
+was saturating it) and its numbers were not comparable between variants. The matrix kept was rerun with a gate that
+waits for a 1-minute load average below 3.0 before each variant; the progress file shows 2.1-3.0 at each start and
+3.8-5.4 at each end. The 2 vCPU VM of Docker is a fraction of a 16-core host, so even that load is not zero
+interference; compare variants within the matrix, not against other runs.
+
 The `adapter_*` files come from `TestJournalAdapterBench` (build tag `journalexp`); the config line there prints
 the writer count, the 5 s duration and 3 repetitions. 12 writers (not 16): the adapter's pool is a fixed 20
 connections shared by writers and readers. The `config` line of the captured adapter files ends in an empty
