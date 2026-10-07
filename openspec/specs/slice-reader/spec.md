@@ -17,7 +17,7 @@ How to read this document. **Current** is verified on `b615449`. **Proposed** is
 
 The only feed read in the repository is `GetShardEvents(ctx, scope, shard, offset int64, limit)`. Its cursor is a writer-stamped timestamp. Its own documentation admits the gap: an event that becomes visible after its offset was committed, with a timestamp at or below that offset, is never returned (**Current**: `persistence/events_store.go:166-171`). That is gap B1 of the baseline audit and requirement P-02 of the PRD (`docs/prd/urd-platform-prd.md:103`): explicit selection, opaque validated cursor, stable prefix, zero omissions in the oracle, eligibility and progress tested separately, and no timestamp-only reader accepted as a correction.
 
-This document specifies the contract of the reader that replaces it. It says **what** a conforming reader promises and what composition rejects. It does **not** choose the mechanism (xid8, per-slice counter, batched publication): that is Gate A (#352, #387). It does not fix the slice count, hash or key encoding (P1 of the ADR, #350), nor the offset cutover (P2, #359).
+This document specifies the contract of the reader that replaces it. It says **what** a conforming reader promises and what composition rejects. It does **not** choose the mechanism (xid8, per-slice counter, batched publication): that is Gate A (#352, #387). It does not fix the slice count, hash or key encoding (P1 of the ADR: ratified in #350 and consumed here, see L4). It does not decide the offset cutover (P2, #359): sections 16 and 17 state the reader-side rules that any approved cutover must satisfy, and they are conditional on P2 (see the introduction of section 16).
 
 ## 2. Decisions in brief
 
@@ -111,12 +111,12 @@ Rejection happens **before any event is returned**, mutates nothing, and never f
 
 | # | Condition | Error described | Notes |
 |---|---|---|---|
-| C1 | Bytes do not parse: truncated, bad format identifier, failed integrity check | malformed-cursor error | Includes a raw legacy timestamp value (a bare `int64` is not a v1 cursor). |
+| C1 | Bytes do not parse: truncated, bad format identifier, failed integrity check | malformed-cursor error | Includes every cursor the shard reader produced or consumed: a legacy offset (a bare `int64` timestamp, or a per-shard map of timestamps) has no v1 header, so it is rejected HERE, as malformed, and never as a mismatch. The mismatch classes C3 to C6 need a parsed header. |
 | C2 | Format identifier is known but the version is unknown (newer or older than supported) | unsupported-cursor-version error | Names the offending version and the supported set. Never "best effort" decoding. |
 | C3 | Cell differs from the reader's cell | cursor-mismatch error, reason `cell` | PRD `ErrCursorMismatch` "or its final approved equivalent" (`docs/prd/urd-platform-prd.md:114`). |
 | C4 | Selection fingerprint differs (other kind, or other scope key) | cursor-mismatch, reason `selection` | Covers `OneScope(Unscoped())` cursor used with a tenant or with `AllScopesInCell`, and the reverse. |
 | C5 | Range incompatible under section 6.3, or slice-space identifier differs | cursor-mismatch, reason `range` | A change of N, hash or key encoding lands here. |
-| C6 | Mechanism identifier differs from the feed's | cursor-mismatch, reason `mechanism` | A cursor from the legacy feed is never silently interpreted by a new one. |
+| C6 | Mechanism identifier differs from the feed's | cursor-mismatch, reason `mechanism` | A cursor that has a header but belongs to ANOTHER mechanism (for example one produced by a counter feed and presented to a transaction-id feed) is never silently interpreted. A legacy shard offset has no header and is C1, not C6. |
 | C7 | Position is beyond anything the feed can have produced (for example the journal was restored from an older backup) | cursor-ahead error | Reading from it would hide events written after the restore. Resolution is an explicit operator or #359 act. |
 | C8 | Selection not authorized | authorization error | Distinct from mismatch so a mismatch never reveals whether another scope exists. |
 
@@ -181,7 +181,7 @@ Handler failure, parking and retry are the runner's concern (I-22, PRD R-02), no
 
 - **K1. Location.** The cursor is stored in the **destination backend**, next to the effect, never in the journal backend as consumer state. The journal backend does not need to know its consumers. (This keeps cross-database setups honest: there is no atomicity between a journal and a different destination, ADR 7.4.)
 - **K2. Identity** (PRD R-01, #362): `(mode, scope or cell, processor, projection version, slice)`. PerScope uses scope; SharedCell uses cell. **Current** key is `(tenant_id, projection_name, shard_number)` (`persistence/postgres/schema/006_scoped_offsets.sql:4`), so mode, version and slice-as-logical-slice are new. A new version starts with a fresh cursor and fresh marks (#362). Changing mode invalidates incompatible cursors (#362 single-tenant clarification, #424). A PerScope key with scope `Unscoped` is valid and is not a wildcard.
-- **K3. Cursor field.** The checkpoint stores the cursor bytes verbatim and re-validates the header when loading (section 6.4). It is written with a compare-and-set that rejects a cursor with a different header or an earlier position (monotonic).
+- **K3. Cursor field.** The checkpoint stores the cursor bytes verbatim and re-validates the header when loading (section 6.4). It is written with a compare-and-set against the stored cursor, which rejects: a different cell, selection fingerprint, mechanism identifier, slice-space identifier or layout epoch; a range descriptor that is not equal to or contained in the stored one (a narrowed range of section 6.3 is accepted and the checkpoint then takes the narrower range; a widened range is rejected as in C5); and, within the same binding, a position earlier than the stored one (monotonic). The comparison is made per slice, because the checkpoint identity is per slice (K2): narrowing a range leaves the checkpoints of the dropped slices untouched.
 - **K4. Applied marks** (PRD `:116`): `(processor, version, scope, entity) -> lastSeqNr`. Two processors never share marks (#373). A mark never advances over unresolved work (PRD R-02).
 - **K5. One transaction.** Where the destination supports it, effect, applied mark and checkpoint advance commit in one destination transaction, with the ownership fence validated at the same write, not before it (#373, #374). Rollback leaves no partial progress. A stale executor is rejected on effect, mark and checkpoint alike (#374).
 - **K6. No common transaction.** A destination without one may serve only features whose contract permits a declared idempotent-upsert strategy with fencing and a recoverable checkpoint protocol. The effect guarantee is then at-least-once. Integration and Workflow reject such a destination (ADR 7.3). Nothing claims cross-database atomicity or external exactly-once.
@@ -201,6 +201,7 @@ This reuses, without changing, the role table of ADR 7.2. The names are illustra
 | `OneScope` selection, including `Unscoped()` | Yes | consequence of the PRD single-tenant rule |
 | Per-slice range reads (L5) | Optional | "per-slice range reads" optional |
 | Cell-wide `AllScopesInCell` selection | Optional (required only by SharedCell) | new row under "optional"; does not contradict ADR 7.2 |
+| Transitional legacy catch-up reader (section 17) | Optional; required only for a no-rebuild transition from legacy offsets (D16) | new row under "optional"; does not contradict ADR 7.2 |
 | Wakeup notification | Optional, latency only | "wakeup notification" |
 
 Destination role (mandatory common transaction or declared upsert strategy, fencing, checkpoint identity in the destination) is as in ADR 7.2 and 7.3 and is not repeated.
@@ -279,8 +280,8 @@ None of these is silently chosen. The draft states the working assumption and do
 | D13 | Conversion or invalidation of existing offsets, cutover, retention gaps (P2) | #359 | #359 design | Out of scope here |
 | D14 | Issue that implements the reader (PRD P-02 traces #360) | Maintainers | Issue confirmed | To be confirmed |
 | D15 | Location of the active specification | Maintainers | Reply on #351 | **Proposed resolved**: `openspec/specs/slice-reader/spec.md`, the location `openspec/README.md` names as the active one; no archived spec is reactivated. Needs the maintainers' confirmation |
-| D16 | Whether the transitional legacy reader of section 17 is an adapter capability, and who owns it | Maintainers, #351 and #359 | Decision recorded | Required for the no-rebuild transition; without it a projection rebuilds or is invalidated |
-| D17 | How the reader reports that the layout is not active (a typed error or a capability probe) | #351 and its implementation issue | Implementation design | Section 16 requires only that it read nothing and say why |
+| D16 | Whether the transitional legacy reader of section 17 is an adapter capability, and who owns it | Maintainers, #351 and #359 | Decision recorded | Required for the no-rebuild transition; without it a projection rebuilds or is invalidated. Traced to criterion 5 and to rows 9 and 10 of section 14 |
+| D17 | How the reader reports that the layout is not active (a typed error or a capability probe) | #351 and its implementation issue | Implementation design | Section 16 requires only that it read nothing and say why. Traced to criterion 3 and to row 9 of section 14 |
 
 ## 14. Acceptance traceability
 
@@ -298,6 +299,14 @@ Live criteria of #351 and where they land:
 | 6 | Identity of the offset and of the applied mark | 8 (K2, K4), coherent with #362, #373, #374 | none in #348 | **Documented**. Pending #362/#373/#374 and D13 |
 | 7 | `GetShardEvents` deprecated with a retirement plan | 10 | #348 marks the current adapter's omission check as known failure | Plan **Documented**; the deprecation itself is **Pending** (no code here, D11) |
 | 8 | Single tenant: `OneScope(Unscoped())` valid and cursor binds it; `AllScopesInCell` privileged and distinct; omitting tenancy does not enable it | 4 (S1..S4), 6.4 C4, X2 | none in #348; coverage via #424 | **Documented**. Test pending |
+
+Additional rows. They are not criteria of #351; they trace the sections added by the consolidation to the issue that owns them, so no section is left without a source:
+
+| # | Content | Section | #348 scenario / property (provisional) | Status |
+|---|---|---|---|---|
+| 9 | What the readers do in each layout epoch state; the public shard reader versus the transitional catch-up reader (from #350 and #359) | 16, 9.1 | none in #348 | **Documented**, conditional on the approval of the cutover (D13, D16, D17). Test pending |
+| 10 | Transition from legacy offsets without rebuild (from #359, strategy S2 of PR #444) | 17, 9.1, D16 | none in #348; the property test of section 17, item 4 | **Documented**, conditional on D13 and D16. Evidence pending |
+| 11 | Observable cases for criteria 3 (cursor rejection), 6 (identity) and 8 (single tenant), and for rows 9 and 10 | 18 | cases to add to the conformance suite once a reader exists | **Documented**. Test pending |
 
 Mapping of #348 checks to contract clauses (names provisional, to be reconciled when the #348 change merges):
 
@@ -325,23 +334,24 @@ Mapping of #348 checks to contract clauses (names provisional, to be reconciled 
 
 ## 16. Layout compatibility (added from the #443 draft)
 
-The previous layout is the shard reader, the legacy `shard_number` and the legacy offset rows keyed `(scope, projection name, shard)`. The layout epoch (`LEGACY`, `PREPARED`, `FENCED`, `ACTIVE_NEW`) is defined by the cutover procedure (#359) and stored by #358; this contract only fixes what a reader does in each state.
+The previous layout is the shard reader, the legacy `shard_number` and the legacy offset rows keyed `(scope, projection name, shard)`. The layout epoch (`LEGACY`, `PREPARED`, `FENCED`, `ACTIVE_NEW`) is defined by the cutover procedure (#359) and stored by #358; this contract only fixes what a reader does in each state. The rules of this section and of section 17 are CONDITIONAL on P2: they describe what any approved cutover must satisfy and become normative together with the approval of the cutover (#359; the procedure is proposed in PR #444, strategy S2). If the approved cutover differs, these two sections are revised; sections 1 to 15 do not depend on them.
 
-- **While the epoch is not `ACTIVE_NEW`** the slice reader MUST read nothing and MUST report that the layout is not active (D17). The shard reader and its offsets keep their current behavior. Legacy offset rows MUST NOT be reinterpreted as slice offsets: a legacy shard is not a slice (section 5), and the legacy shard of an old row is not recomputable.
-- **When the epoch is `ACTIVE_NEW`** the shard reader MUST refuse to read, because a row written under the new layout has no meaningful legacy shard, and legacy offset rows MUST NOT be written. The legacy column and rows stay until the retirement plan of `GetShardEvents` (section 10) completes.
+- **While the epoch is `LEGACY`, `PREPARED` or `FENCED`** the slice reader MUST read nothing and MUST report that the layout is not active (D17). The public shard reader (`GetShardEvents`, `ShardOffsets`) and its offsets keep their current behavior. Legacy offset rows MUST NOT be reinterpreted as slice offsets: a legacy shard is not a slice (section 5), and the legacy shard of an old row is not recomputable.
+- **When the epoch is `ACTIVE_NEW`** the PUBLIC shard reader MUST refuse to read, for every caller, because a row written under the new layout has no meaningful legacy shard. The legacy column and rows stay until the retirement plan of `GetShardEvents` (section 10) completes.
+- **The one exception is the transitional catch-up reader of section 17.** It is not the public shard reader: it is an internal capability of the adapter (D16), read-only on the journal, available only in `ACTIVE_NEW`, only for events that precede the barrier, and only for a projection whose catch-up of that slice is incomplete. Once no projection has a pending catch-up it refuses too, and it is removed with the retirement of `GetShardEvents`. Legacy offset rows MUST NOT be written by anyone else; the transitional reader writes them only to advance its own catch-up cursor (section 17, item 2), and the cutover marks them superseded when the catch-up completes.
 - **Persisted keys do not change.** The scope key stays `''` for Unscoped and the tenant id otherwise, and the hash input stays `(scope, persistenceID)` as the ratified `sliceOf` consumes it (#349 must keep those bytes).
 - The slice stored with an event is written by the writer from `(scope, persistenceID)` and is never derived from the actor name, the actor namespace or the physical partition.
 
 ## 17. Transition without rebuild (added; aligned with the cutover procedure of #444)
 
-Section 11 says that converting a timestamp to a commit-order position cannot be claimed safe. That does not oblige a projection to rebuild. A projection continues from its legacy offsets, with no rebuild and no silent reset, if and only if the adapter provides a **validated transition**:
+Section 11 says that converting a timestamp to a commit-order position cannot be claimed safe. That does not oblige a projection to rebuild. Like section 16, this section is conditional on P2. A projection continues from its legacy offsets, with no rebuild and no silent reset, if and only if the adapter provides a **validated transition**:
 
 1. **Barrier.** The cutover records a barrier, after quiescing the writers, that separates pre-barrier events from post-barrier events by a persisted value, not by a writer-stamped timestamp.
-2. **Transitional reader.** The adapter declares a capability that delivers the pre-barrier events of a slice from the legacy cursor, per legacy shard: the old read with one added predicate (scope, stored slice, legacy shard, timestamp greater than the legacy offset). Its cursor is the legacy offset itself. It is bounded and is removed at the retirement of `GetShardEvents`.
+2. **Transitional reader.** The adapter declares a capability that delivers the pre-barrier events of a slice from the legacy cursor, per legacy shard: the old read with one added predicate (scope, stored slice, legacy shard, timestamp greater than the legacy offset). Its cursor is the legacy offset itself. It is the only reader allowed to touch the legacy layout in `ACTIVE_NEW` (section 16), it is bounded, and it is removed at the retirement of `GetShardEvents`.
 3. **Handover.** When every legacy shard that holds pre-barrier events of the slice has none left, the slice cursor is created at the barrier and the new reader takes over. The new reader MUST NOT deliver the post-barrier events of a slice before that slice's catch-up is complete, so one entity's pre-barrier events precede its post-barrier ones.
 4. **Evidence.** The transition is validated only with: a model-based property test over generated histories showing that the delivered set equals exactly the set the old projection had not handled, which fails under mutation; and an adapter conformance check that after quiesce no event can commit with a pre-barrier identity.
 
-If the adapter has no validated transition, a legacy offset is invalid (C1) and the projection MUST rebuild under a new version, or be blocked, never reset silently. A mechanism function `PositionAtOrBefore(T)`, which maps a legacy timestamp to a position such that every later event is after it, enables the alternative fallback strategy (minimum seed) of #444; its absence does NOT oblige a rebuild when a validated transition exists. The exact assumption of the transition (the old read predicate) and its limits are in `docs/decisions/slice-cutover-359.md`, section 3.5; this contract does not restate them.
+If the adapter has no validated transition, a legacy offset is invalid (C1) and the projection MUST rebuild under a new version, or be blocked, never reset silently. A mechanism function `PositionAtOrBefore(T)`, which maps a legacy timestamp to a position such that every later event is after it, enables the alternative fallback strategy (minimum seed) of #444; its absence does NOT oblige a rebuild when a validated transition exists. The exact assumption of the transition (the old read predicate) and its limits are in `docs/decisions/slice-cutover-359.md`, section 3.5, in the version proposed in PR #444 (not approved); this contract does not restate them.
 
 ## 18. Scenarios (added from the #443 draft)
 
@@ -352,7 +362,9 @@ These are the observable cases a conformance suite for the slice reader must cov
 - **Per-entity order inside a slice.** Two events of one persistence id with sequence numbers 4 and 5 in one slice are delivered 4 before 5 whatever the page size.
 - **A late commit does not appear behind the cursor.** A transaction that stamped an earlier time and has not committed, and a later event that did: the cursor does not pass the later event until the earlier transaction resolves.
 - **Resume after a crash.** A consumer that handled a page and crashed before committing its cursor receives the same page again and handles it by event identity.
-- **A legacy offset is not a slice cursor.** An offset written by the shard reader is rejected with the cursor-mismatch error and reads nothing.
+- **A legacy offset is not a slice cursor.** An offset written by the shard reader is rejected with the malformed-cursor error (C1) and reads nothing; it is never reported as a mismatch.
+- **A cursor of another mechanism is a mismatch.** A cursor that has a header but belongs to another mechanism is rejected with the cursor-mismatch error, reason `mechanism` (C6), and reads nothing.
+- **Narrowing a range is accepted, widening is not.** A cursor issued for `[0, 512)` is accepted for `[0, 256)` and the checkpoint then takes the narrower range, leaving the dropped slices' checkpoints untouched; the same cursor for `[0, 1024)` is rejected with the cursor-mismatch error, reason `range` (C5).
 - **The same projection and slice in two tenants.** Each commits its own offset; reading or resetting one never changes the other.
-- **Layout not active.** With the epoch not `ACTIVE_NEW` the slice reader reads nothing and says so; with `ACTIVE_NEW` the shard reader refuses.
+- **Layout not active.** With the epoch `LEGACY`, `PREPARED` or `FENCED` the slice reader reads nothing and says so. With `ACTIVE_NEW` the public shard reader refuses, while the transitional catch-up reader still delivers the pre-barrier events of a slice whose catch-up is pending and refuses once none is pending.
 - **Transition without rebuild.** With a validated transition, a projection that was behind in a legacy shard receives exactly its unhandled pre-barrier events, then the post-barrier ones, with no event skipped.
