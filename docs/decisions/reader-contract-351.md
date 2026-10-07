@@ -37,7 +37,7 @@ This document specifies the contract of the reader that replaces it. It says **w
 | Fact | Evidence |
 |---|---|
 | The read is per shard, takes a scope and an `int64` offset and returns `(events, lastTimestamp, err)`. The cursor is the timestamp of the last returned event. | `persistence/events_store.go:151-178` |
-| Order is `(timestamp, persistence_id, sequence_number)`. The batch is at least `limit` and is extended to the end of the group sharing the last timestamp, so a tie group is never cut. | `persistence/events_store.go:151-165`; PostgreSQL `persistence/postgres/event_store.go:548-567`; memory `testkit/eventstore.go:493-503` |
+| Order is `(timestamp, persistence_id, sequence_number)`. The batch is at least `limit` and is extended to the end of the group sharing the last timestamp, so a tie group is never cut. | `persistence/events_store.go:151-165`; PostgreSQL `persistence/postgres/event_store.go:548-567`; memory `testkit/eventstore.go:493-509` |
 | An invalid scope returns `ErrInvalidScope`; an `Unscoped()` read does not return a tenant's events; "there is no cross-scope read". | `persistence/events_store.go:174-177`; `persistence/postgres/event_store.go:538-541` (`scopeKey`, line 50) ; filter `tenant_id=$1` at line 560 |
 | The late-commit gap is acknowledged: the cursor is a timestamp, not a commit position. | `persistence/events_store.go:166-171` |
 | Delivery is at-least-once: a crash between delivery and offset commit redelivers the batch. | `persistence/events_store.go:173-175`; `internal/projectionrunner/runner.go:676-685` |
