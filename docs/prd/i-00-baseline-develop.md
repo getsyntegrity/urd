@@ -195,7 +195,10 @@ tasks the acceptance criteria were read against the code (2026-10-07):
 | #379 tenant context | three modes validated | single-tenant, legacy and multi-tenant paths covered by `TestConformance_W7_*` over PostgreSQL (passing); remote propagation and the #305 comparison not checked | partially verified |
 | #371 wake after commit | conformance with notifications off; p50 before/after | `wake_stream.go` exists; no measurement or conformance run | not verified |
 
-The remaining tasks of the epic were not reviewed criterion by criterion.
+The other 76 linked tasks are audited criterion by criterion in
+`i-00-epic-345-audit.md` (develop `4c66286`, 2026-10-07): 429 criteria, of
+which 15 cumplido (most of them negative criteria met because nothing was
+built), 89 parcial, 231 no implementado, 16 no verificado and 78 bloqueado.
 
 ## Inventory for #395–#398
 
@@ -337,13 +340,15 @@ does not see legacy Unscoped rows; an existing aggregate restarts empty unless
 | --- | --- |
 | Record the SHA, build with Go 1.26, get the `go list` graph | done on `4ebdc3d`/Go 1.26 (historical); modules re-built and tested on current `develop`/Go 1.27.0 |
 | Confirm or discard B2 and B4 | B2 not reproduced as a bug (non-zero partition not tested); B4 reproduced, fix tracked in #427 |
-| Review each task against code and tracker | partial: four tasks checked per criterion, the rest by code signature only |
+| Review each task against code and tracker | done: 81 linked tasks, all open; 5 here and 76 in `i-00-epic-345-audit.md`, per criterion; static reading, targeted tests only where a doubt could be settled |
 | Audit publishers, sagas, testkit and controls for #395–#398 | done from code; not exercised by tests |
 | Fix the GoAkt version and fork for #419 | done |
 | Single-tenant inventory (#424) | done; the PostgreSQL adoption path fails (#428) |
 | Module tests and PostgreSQL integration | done on current `develop` |
 | Recovery after adopting legacy data to single-tenant | not demonstrated: blocked by #428 |
 
-#346 stays open. Pending: per-criteria review of the remaining epic tasks,
-a non-zero partition test for B2, and recovery after adoption on PostgreSQL
-once #428 is fixed.
+#346 stays open. Pending: recovery after adoption on PostgreSQL once #428 is
+fixed, and the B2 non-zero partition test, which #350 requires (slice stable
+across 1, 3 and 5 nodes). The criteria of the other tasks describe new
+guarantees; their `no implementado` state is the expected baseline, not a
+defect.
