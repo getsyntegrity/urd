@@ -193,7 +193,7 @@ func (r *ordReader) Poll(req Request) (Result, error) {
 		committed := e.commitSeq > 0
 		inScope := r.cfg.ignoreScope || req.Selection.Matches(e.ev.Scope)
 		inSlice := r.cfg.ignoreSlice || req.Slices.Contains(e.ev.Slice)
-		if e.aborted || !(committed || r.cfg.uncommitted) || !inScope || !inSlice {
+		if e.aborted || (!committed && !r.cfg.uncommitted) || !inScope || !inSlice {
 			continue
 		}
 		token := ""

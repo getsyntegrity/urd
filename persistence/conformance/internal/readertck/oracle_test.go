@@ -91,12 +91,6 @@ func TestOracleExpectedSets(t *testing.T) {
 	})
 }
 
-type traceRow struct {
-	name  string
-	polls func(sample map[string]Event) []PollRecord
-	code  string
-}
-
 func TestOracleJudgesHandWrittenTraces(t *testing.T) {
 	unscoped := Consumer{Name: "c", Selection: OneScope(scopeUnscoped), Slices: AllSlices()}
 	build := func(polls []PollRecord) *Trace {
