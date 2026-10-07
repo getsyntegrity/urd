@@ -1,6 +1,6 @@
 module github.com/getsyntegrity/urd/example
 
-go 1.26.0
+go 1.27.0
 
 // Use the local urd module so the examples always build against the current source.
 replace github.com/getsyntegrity/urd => ../

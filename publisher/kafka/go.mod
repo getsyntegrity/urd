@@ -1,6 +1,6 @@
 module github.com/getsyntegrity/urd/publisher/kafka
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/IBM/sarama v1.61.1
@@ -10,8 +10,6 @@ require (
 	go.uber.org/atomic v1.12.0
 	google.golang.org/protobuf v1.36.12
 )
-
-require golang.org/x/sys v0.48.0 // indirect
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -28,6 +26,7 @@ require (
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )
 
