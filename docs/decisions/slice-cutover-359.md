@@ -41,7 +41,7 @@ Verified in the repository and in GoAkt `v4.5.7-actorof.1` (the version resolved
 | --- | --- | --- | --- |
 | P0 Preconditions | old | Section 4 checklist, a backup whose restore was exercised, snapshot S0 of the journal taken, and automatic retention and explicit erasure disabled from S0 (or every deletion logged) | All items evidenced |
 | P1 Prepare | old | Additive schema (#358), backfill of the slice | V1a, V1c, V2 on the data so far |
-| P2 Plan | old | Per-projection plan, thresholds and replay report into staging | V3 |
+| P2 Plan | old | Preview of the per-projection plan, thresholds and replay report into staging; the binding plan is recomputed at step (c) | none: the preview is informative |
 | P3 Window | stopped | Steps (a) to (h) | V1b to V9 as listed per step |
 | P4 Run | new | New binaries write the slice; legacy kept | Before the R-point rollback is exact |
 | P5 Retire | new | After the `GetShardEvents` retirement plan, drop legacy | Irreversible |
@@ -58,11 +58,11 @@ Each step records its state durably, is idempotent, and has a stated outcome if 
 
 | Step | Precondition | Action | Verification | If interrupted or failed |
 | --- | --- | --- | --- | --- |
-| (a) Fence | Epoch `PREPARED` | Stop old writers and projection runners; record `FENCED` | V4a: no old writer connection | Resume at (a); nothing visible changed |
+| (a) Fence | Epoch `PREPARED` | Stop old writers and projection runners; record `FENCED`, from which the database guard rejects journal writes by every role except the migration role (V8) | V4a: no old writer or runner connection | Resume at (a); nothing visible changed |
 | (b) Quiesce | `FENCED` | Wait until no open or prepared transaction on the journal and no in-flight batch; record the barrier | V4: none older than the barrier, none prepared | Resume; if it cannot quiesce within the bound, abort and unfence |
-| (c) Final backfill | Barrier recorded | Fill every NULL slice | V2 (exhaustive) | Idempotent; resume |
+| (c) Final backfill and final plan | Barrier recorded, runners stopped | Fill every NULL slice, and recompute the plan items (the S2 thresholds, the S1 seeds, the replay report) from the now frozen legacy offsets into staging: the plan of P2 is a preview made while the runners were still advancing the offsets, and is not the binding one. Record a checksum of the legacy offset rows | V2 (exhaustive) | Idempotent; resume |
 | (d) Verify | (c) done | Run V1a, V1b, V1c, V2, V3, V6 on quiesced data | All pass | Any mismatch aborts; unfence |
-| (e) Switch | (d) passed | In ONE transaction: set `ACTIVE_NEW`, activate the offsets per 3.5, mark the legacy offset rows superseded, bind the barrier recorded at (b) to the new epoch | V7: the transaction's effects are all present or none | Atomic; either `FENCED` with nothing switched, or `ACTIVE_NEW` complete |
+| (e) Switch | (d) passed | In ONE transaction: first re-check that nothing was inserted since the barrier and that the legacy offset rows did not change (the row count and the highest persisted insertion value equal those recorded at (b), and the checksum of the legacy offset rows equals the one of (c); otherwise abort), then set `ACTIVE_NEW`, activate the offsets per 3.5, mark superseded the legacy offset rows of the projections that use S1 (those of S2 projections stay live as the catch-up cursor and are marked superseded when that projection's catch-up completes), and bind the barrier recorded at (b) to the new epoch | V7: the transaction's effects are all present or none, and the re-check passed | Atomic; either `FENCED` with nothing switched, or `ACTIVE_NEW` complete |
 | (f) Start | `ACTIVE_NEW` | Start the new write path only. Projection runners, publishers, integration relays and workflow consumers stay stopped. New binaries refuse to start unless the epoch is `ACTIVE_NEW` | V8 startup refusal checked once with a binary in the wrong epoch | Operational; exact rollback still available |
 | (g) Smoke | New write path up; every consumer and every other writer stopped | One synthetic write through the new write path, with a persistence id generated for the run and recorded in the plan. Read it back from the persisted row and check scope, slice and revision. Then DISCARD it with an explicit erasure, in a transaction that also checks that nothing references it | V5, V9 | A failed V5 keeps rollback exact: discard the row and roll back. A discard interrupted midway is re-run before anything else. A non-zero V9 means a consumer or a writer touched it: that is the R-point |
 | (h) Open | Smoke row discarded and V9 zero | Start projection runners, publishers, relays and consumers, then admit the other writers. Their first commit is the first real write | none new | Exact rollback ends here (3.8) |
@@ -75,7 +75,7 @@ Notation: scope `a`, projection `P`, new slice `s`, legacy shard `x`; `C(s)` is 
 
 Assumptions, each with how it is enforced:
 - **A1**: for the old feed, a pre-barrier event `E` in shard `x` with timestamp `t` counts as handled exactly when `t <= offset(P, x)`. Source: the read predicate in the code. The late-commit omissions of the old reader are pre-existing and out of this procedure.
-- **A2**: after the barrier no event can commit with a pre-barrier identity. Enforced operationally by step (b) and V4, and structurally by the writer block until (g).
+- **A2**: after the barrier no event can commit with a pre-barrier identity. Enforced operationally by step (b) and V4, and structurally by the writer block (the guard of V8 from `FENCED`, and the stopped writers) until (h), where the first writers admitted are the new-layout ones.
 - **A3** (S1 only): the Gate A mechanism provides `PositionAtOrBefore(T)`, a position `P` such that every event with timestamp greater than `T` is after `P`.
 
 **S2, recommended: barrier plus legacy catch-up.**
@@ -110,7 +110,7 @@ Assumptions, each with how it is enforced:
 
 ### 3.8 Rollback
 
-- Before the R-point (exact): stop new binaries, discard the synthetic smoke row if it still exists (it has no effect, applied mark or offset, because no consumer ran: V9), set the epoch back to `LEGACY`, reactivate the superseded legacy offset rows, drop the additions. The legacy columns and offsets were never changed, so the old layout resumes with no data loss.
+- Before the R-point (exact): stop new binaries, discard the synthetic smoke row if it still exists (it has no effect, applied mark or offset, because no consumer ran: V9), set the epoch back to `LEGACY`, reactivate the legacy offset rows that were superseded, drop the additions. The legacy columns and offsets were never changed, so the old layout resumes with no data loss.
 - From the R-point: the rows written since the barrier carry no meaningful legacy shard; an old binary would see them under a wrong or no shard. The options are restore from backup (losing the writes since the barrier, identified by the persisted barrier value) or roll forward. If a consumer processed a new-layout row, including the synthetic one, this procedure does not undo what that consumer produced: applied marks and offset advances in the destination could be removed by event identity, but external effects and projection rows derived from the row cannot be assumed removable, so that case is the R-point, not a rollback case. This is stated, not promised away.
 - P5 is irreversible and happens only after the `GetShardEvents` retirement plan completes.
 
@@ -121,12 +121,12 @@ None relies on the migrator's own counters.
 - **V1b Frozen set.** The set, the per-scope counts and a checksum taken at (b), after quiescing, equal the state after (c) and after (e). Between the barrier and the switch nothing can be inserted (writers stopped, V4) and the migration changes only the slice column.
 - **V1c No unaccounted deletion.** Retention and erasure are disabled from S0 until the switch, or every deletion in that interval is logged and subtracted in V1a. A deletion that is not accounted for fails V1.
 - **V2** Every row's slice equals the ratified function applied to its `(scope, persistence id)`, recomputed by a separate tool with its own FNV-1a over the specified key (the reference vectors are the contract).
-- **V3** Every plan item (thresholds for S2, seeds for S1, per-projection effect class and path) is recomputed from raw events and offsets by a separate query and compared with staging; the replay report is reproduced.
+- **V3** Every plan item (thresholds for S2, seeds for S1, per-projection effect class and path) of the FINAL plan of step (c) is recomputed from raw events and the frozen offsets by a separate query and compared with staging; the replay report is reproduced. The preview of P2 is not compared: it can legitimately differ, because the offsets were still advancing.
 - **V4** No open or prepared transaction older than the barrier and no writer connected, checked at (b) and again at (d).
 - **V5** The smoke row, read back from the persisted record, has the expected scope, slice and revision, for event-sourced and, in its own store, durable state.
 - **V6** Every projection has a declared path (S2, S1 or rebuild) or an audited exception; none is "unknown".
-- **V7** After (e), the epoch, the activated offsets, the superseded legacy rows and the barrier are all present, or none of them.
-- **V8** A new binary refuses to start under epoch `LEGACY`, `PREPARED` or `FENCED`, and an old binary is rejected by the database-level guard under `ACTIVE_NEW` (a requirement on #358).
+- **V7** After (e), the epoch, the activated offsets, the legacy rows superseded for the S1 projections and the barrier are all present, or none of them; and the re-check of nothing inserted since the barrier passed inside the same transaction.
+- **V8** A new binary refuses to start under epoch `LEGACY`, `PREPARED` or `FENCED`. The database-level guard (a requirement on #358) rejects journal writes by any role that is not the migration role under `FENCED`, so an old writer restarted by an orchestrator during the window fails loudly instead of inserting behind the barrier, and rejects an old binary under `ACTIVE_NEW`. Legacy offset rows are not blocked by the guard: they are protected by the stopped runners (V4a) and by the checksum that step (e) re-checks.
 - **V9 Smoke leaves no trace.** After the discard, the synthetic persistence id has no row in the journal and is referenced by no applied mark, no offset, no outbox or publisher intent and no projection row, and no consumer or other writer was connected from (a) to (h). A non-zero result means the synthetic row was processed, which is the R-point.
 
 ### 3.10 Interruption and resumption
@@ -134,7 +134,7 @@ None relies on the migrator's own counters.
 | Where it dies | State left | Resume or abort |
 | --- | --- | --- |
 | P1 backfill batch | Some rows have a slice, others NULL | Resume from the recorded key; same result |
-| P2 plan | Staging partly written | Rebuild staging from raw data (V3 recomputes it) |
+| P2 plan | Staging partly written | Rebuild the preview from raw data |
 | (a) | Some writers stopped | Resume (a); unfence to abort |
 | (b) | `FENCED`, barrier not recorded | Resume (b) or unfence |
 | (c) | Barrier recorded, some NULL slices | Resume (c) |
