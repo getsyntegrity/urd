@@ -60,16 +60,17 @@ type actorSystemRef struct {
 
 // Engine represents the engine that empowers the various entities
 type Engine struct {
-	name          string
-	eventsStore   persistence.EventsStore
-	stateStore    persistence.StateStore
-	offsetStore   offsetstore.OffsetStore
-	snapshotStore persistence.SnapshotStore
-	actorSystem   atomic.Pointer[actorSystemRef]
-	logger        kitlog.Logger
-	started       atomic.Bool
-	eventStream   eventstream.Stream
-	mutex         sync.RWMutex
+	actorNamespace string
+	name           string
+	eventsStore    persistence.EventsStore
+	stateStore     persistence.StateStore
+	offsetStore    offsetstore.OffsetStore
+	snapshotStore  persistence.SnapshotStore
+	actorSystem    atomic.Pointer[actorSystemRef]
+	logger         kitlog.Logger
+	started        atomic.Bool
+	eventStream    eventstream.Stream
+	mutex          sync.RWMutex
 
 	eventsStreams *syncmap.Map[string, *eventsStream]
 	statesStreams *syncmap.Map[string, *statesStream]
@@ -190,7 +191,7 @@ func NewEngine(actorSys goakt.ActorSystem, config *Config) (*Engine, error) {
 	// types live in internal/extensions and cannot be registered by
 	// application code; user behavior kinds come from WithBehaviorKinds and
 	// WithEntityKinds.
-	dependencies := []extension.Dependency{new(extensions.EntityConfig), new(extensions.SagaConfig), new(extensions.EntityTenantScope)}
+	dependencies := []extension.Dependency{new(extensions.EntityConfig), new(extensions.SagaConfig), new(extensions.EntityTenantScope), new(extensions.ActorNamespace)}
 	for _, kind := range config.behaviorKinds {
 		dependencies = append(dependencies, kind)
 	}
@@ -200,6 +201,7 @@ func NewEngine(actorSys goakt.ActorSystem, config *Config) (*Engine, error) {
 
 	e := &Engine{
 		name:             actorSys.Name(),
+		actorNamespace:   config.actorNamespace,
 		eventsStore:      config.eventsStore,
 		stateStore:       config.stateStore,
 		offsetStore:      config.offsetStore,

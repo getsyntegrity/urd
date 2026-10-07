@@ -515,3 +515,15 @@ func (x *EntityTenantScope) MarshalBinary() ([]byte, error) {
 func (x *EntityTenantScope) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, x)
 }
+
+// ActorNamespace is an immutable per-spawn address namespace. It never changes
+// the behavior's persistence ID or persistence scope.
+type ActorNamespace struct {
+	Namespace string `json:"namespace"`
+}
+
+var _ extension.Dependency = (*ActorNamespace)(nil)
+
+func (x *ActorNamespace) ID() string                        { return "ActorNamespace" }
+func (x *ActorNamespace) MarshalBinary() ([]byte, error)    { return json.Marshal(x) }
+func (x *ActorNamespace) UnmarshalBinary(data []byte) error { return json.Unmarshal(data, x) }

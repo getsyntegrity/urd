@@ -55,14 +55,15 @@ type sagaTimeoutMsg struct{}
 // It subscribes to the event stream, reacts to events via the SagaBehavior,
 // persists its own events, and coordinates commands to other entities.
 type Actor struct {
-	behavior      behaviorport.Saga
-	eventsStore   persistence.EventsStore
-	eventsStream  eventstream.Stream
-	subscriber    eventstream.Subscriber
-	currentState  State
-	eventsCounter uint64
-	status        runtimeport.SagaStatus
-	sagaID        string
+	actorNamespace string
+	behavior       behaviorport.Saga
+	eventsStore    persistence.EventsStore
+	eventsStream   eventstream.Stream
+	subscriber     eventstream.Subscriber
+	currentState   State
+	eventsCounter  uint64
+	status         runtimeport.SagaStatus
+	sagaID         string
 	// qualifiedNames is true when the engine addresses actors by (tenant,
 	// ID): the saga then reaches the entities it commands in its own tenant.
 	qualifiedNames bool
@@ -178,6 +179,7 @@ func (s *Actor) PreStart(ctx *goakt.Context) error {
 	if err != nil {
 		return err
 	}
+	s.actorNamespace = extensions.NamespaceOf(ctx)
 	s.eventsStore = eventsStoreExt.Underlying()
 	s.eventsStream = eventsStreamExt.Underlying()
 	s.sagaID = ctx.ActorName()
@@ -296,6 +298,8 @@ func (s *Actor) Receive(ctx *goakt.ReceiveContext) {
 		}
 	case *egopb.GetStateCommand:
 		s.getStateAndReply(ctx)
+	case *egopb.ActorBindingQuery:
+		ctx.Response(protocol.AnswerActorBinding(s.tenantAware, s.scope, "saga", s.behavior, s.actorNamespace, message))
 	case *egopb.TenantBindingQuery:
 		ctx.Response(protocol.AnswerTenantBinding(s.tenantAware, s.scope, message))
 	default:
@@ -841,9 +845,13 @@ func effectiveCommandTimeout(configured time.Duration) time.Duration {
 // it is entityID itself.
 func (s *Actor) targetActorName(entityID string) (string, error) {
 	if !s.qualifiedNames {
-		return entityID, nil
+		return actoridentity.InNamespace(s.actorNamespace, entityID)
 	}
-	return actoridentity.Qualify(string(s.scope.TenantID()), entityID)
+	name, err := actoridentity.Qualify(string(s.scope.TenantID()), entityID)
+	if err != nil {
+		return "", err
+	}
+	return actoridentity.InNamespace(s.actorNamespace, name)
 }
 
 // sendCommand sends a command to an entity and handles the result. ctx

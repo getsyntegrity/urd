@@ -116,6 +116,21 @@ message TenantBindingReply {
   bool matches = 2;
 }
 
+// ActorBindingQuery verifies the identity of the PID returned by a spawn.
+// These fields are compared by the actor against its immutable binding.
+message ActorBindingQuery {
+  bool tenant_aware = 1;
+  string tenant_id = 2;
+  string family = 3;
+  string definition = 4;
+  string namespace = 5;
+}
+
+// ActorBindingReply reveals only whether the requested identity matches.
+message ActorBindingReply {
+  bool matches = 1;
+}
+
 // Offset defines the projection offset
 message Offset {
   // Specifies the shard number

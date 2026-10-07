@@ -10,9 +10,8 @@ import (
 	"github.com/getsyntegrity/urd/persistence"
 )
 
-// TestBaseline346 is characterization evidence for #346 (I-00). It records
-// what develop does today; it does not endorse it. The fix for B4 is tracked
-// separately and will change the assertions of the B4 case.
+// TestBaseline346 retains the standalone baseline and the regression that
+// incompatible B4 spawns fail without replacing the actor.
 func TestBaseline346(t *testing.T) {
 	specs.Describe(t, "the baseline of develop (#346)", func(s *specs.Spec) {
 		bg := context.Background()
@@ -64,11 +63,9 @@ func TestBaseline346(t *testing.T) {
 			ctx.Expect(durable.GetShard()).ToEqual(uint64(0))
 		})
 
-		// B4: with no tenant resolver the actor name is the bare entity ID, so
-		// a durable-state entity and a saga spawned with the ID of an
-		// event-sourced entity return no error and leave the name held by the
-		// same event-sourced actor; a command to that ID is handled by it.
-		s.It("B4: a durable-state or saga spawn with the ID of an event-sourced entity returns no error and leaves the name with the first actor", func(ctx *specs.Context) {
+		// B4: the command API cannot distinguish actor families at one ID.
+		// Incompatible reuse must return a typed error, preserving the original.
+		s.It("B4: incompatible spawns return typed errors and leave the original actor unchanged", func(ctx *specs.Context) {
 			es, ds := connectedEventsStore(ctx), connectedDurableStore(ctx)
 			e := newTestEngine(ctx.T, "baseline346b4", es, WithLogger(DiscardLogger), WithStateStore(ds))
 			ctx.Expect(e.Start(bg)).To(specs.BeNil())
@@ -86,10 +83,9 @@ func TestBaseline346(t *testing.T) {
 				ctx.T.Fatalf("actor %s is %T, want *EventSourcedActor", id, first.Actor())
 			}
 
-			// Observed today: the later spawns return nil instead of a typed
-			// error.
-			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: id})).To(specs.BeNil())
-			ctx.Expect(e.SpawnSaga(bg, &domainOnlySaga{id: id}, 0)).To(specs.BeNil())
+			// Incompatible reuse must fail without altering the first actor.
+			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: id})).To(specs.MatchError(ErrSpawnIdentityMismatch))
+			ctx.Expect(e.SpawnSaga(bg, &domainOnlySaga{id: id}, 0)).To(specs.MatchError(ErrSpawnIdentityMismatch))
 
 			// The name still resolves to the same, still running,
 			// event-sourced actor: neither spawn replaced it, and neither

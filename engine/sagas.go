@@ -109,7 +109,7 @@ func (engine *Engine) spawnSaga(ctx context.Context, behavior behaviorport.Saga,
 	_ = actorSystem.Inject(sagaCfg)
 	actor := newSagaActor()
 
-	deps := []extension.Dependency{behaviorDep, sagaCfg}
+	deps := []extension.Dependency{behaviorDep, sagaCfg, &extensions.ActorNamespace{Namespace: engine.actorNamespace}}
 	if tenantScope != nil {
 		_ = actorSystem.Inject(tenantScope)
 		deps = append(deps, tenantScope)
@@ -126,13 +126,13 @@ func (engine *Engine) spawnSaga(ctx context.Context, behavior behaviorport.Saga,
 		goakt.WithDependencies(deps...),
 		goakt.WithSupervisor(newSupervisor(RestartDirective)))
 	if err != nil {
-		if resolved := resolveExistingSpawn(ctx, actorSystem, actorName, tenantScope, err); resolved != err { //nolint:errorlint // identity check: detects whether resolveExistingSpawn replaced err
+		if resolved := resolveIdentitySpawn(ctx, actorSystem, actorName, tenantScope, engine.bindingQuery("saga", behavior, tenantScope), err); resolved != err { //nolint:errorlint // identity check: detects whether resolveExistingSpawn replaced err
 			return resolved
 		}
 		return fmt.Errorf("failed to start saga %s: %w", behavior.ID(), err)
 	}
 
-	return verifySpawnedTenant(ctx, pid, tenantScope)
+	return verifySpawnedIdentity(ctx, pid, tenantScope, engine.bindingQuery("saga", behavior, tenantScope))
 }
 
 // SagaStatus returns the current status and state of the named saga.
@@ -176,6 +176,13 @@ func (engine *Engine) SagaStatus(ctx context.Context, sagaID string, timeout tim
 	// would see a tenant-less ctx and reject every tenant-aware caller with
 	// ErrMissing, instead of enforcing isolation against a foreign tenant.
 	actorName := sagaID
+	if !qualifiesActorNames(engine.tenantResolver) {
+		var nameErr error
+		actorName, nameErr = engine.actorName("", sagaID)
+		if nameErr != nil {
+			return nil, nameErr
+		}
+	}
 	if engine.tenantResolver != nil {
 		tenantContext, resolveErr := engine.tenantResolver.Resolve(ctx)
 		if resolveErr != nil {

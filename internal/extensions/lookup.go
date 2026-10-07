@@ -137,7 +137,18 @@ func VerifyActorIdentity(ctx *goakt.Context, tenantID, businessID string) error 
 	if !QualifiedActorNames(ctx) {
 		return nil
 	}
-	return actoridentity.Verify(ctx.ActorName(), tenantID, businessID)
+	name, err := actoridentity.Qualify(tenantID, businessID)
+	if err != nil {
+		return err
+	}
+	name, err = actoridentity.InNamespace(NamespaceOf(ctx), name)
+	if err != nil {
+		return err
+	}
+	if ctx.ActorName() != name {
+		return actoridentity.ErrMismatch
+	}
+	return nil
 }
 
 // QualifiedActorNames reports whether the engine names actors after their
@@ -146,4 +157,14 @@ func VerifyActorIdentity(ctx *goakt.Context, tenantID, businessID string) error 
 func QualifiedActorNames(ctx *goakt.Context) bool {
 	marker, ok := ctx.Extension(TenancyExtensionID).(*TenancyMarker)
 	return ok && marker != nil && marker.QualifiedActorNames()
+}
+
+// NamespaceOf reads the namespace from the actor's own spawn dependencies.
+func NamespaceOf(ctx *goakt.Context) string {
+	for _, dep := range ctx.Dependencies() {
+		if ns, ok := dep.(*ActorNamespace); ok {
+			return ns.Namespace
+		}
+	}
+	return ""
 }

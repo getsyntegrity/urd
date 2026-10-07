@@ -125,7 +125,7 @@ func (engine *Engine) spawnEventSourced(ctx context.Context, behavior behaviorpo
 	entityConfig.BatchFlushWindow = config.batchFlushWindow
 	_ = actorSystem.Inject(entityConfig)
 
-	deps := []extension.Dependency{behaviorDep, entityConfig}
+	deps := []extension.Dependency{behaviorDep, entityConfig, &extensions.ActorNamespace{Namespace: engine.actorNamespace}}
 	if tenantScope != nil {
 		_ = actorSystem.Inject(tenantScope)
 		deps = append(deps, tenantScope)
@@ -141,9 +141,9 @@ func (engine *Engine) spawnEventSourced(ctx context.Context, behavior behaviorpo
 
 	pid, err := actorSystem.SpawnOn(ctx, actorName, new(EventSourcedActor), sOptions...)
 	if err != nil {
-		return resolveExistingSpawn(ctx, actorSystem, actorName, tenantScope, err)
+		return resolveIdentitySpawn(ctx, actorSystem, actorName, tenantScope, engine.bindingQuery("event-sourced", behavior, tenantScope), err)
 	}
-	return verifySpawnedTenant(ctx, pid, tenantScope)
+	return verifySpawnedIdentity(ctx, pid, tenantScope, engine.bindingQuery("event-sourced", behavior, tenantScope))
 }
 
 // requireFamily returns an error wrapping ErrEntityFamilyNotDeclared, naming
@@ -280,7 +280,7 @@ func (engine *Engine) spawnDurableState(ctx context.Context, behavior behaviorpo
 	}
 
 	sOptions := buildSpawnOptionsFromConfig(config)
-	deps := []extension.Dependency{behaviorDep}
+	deps := []extension.Dependency{behaviorDep, &extensions.ActorNamespace{Namespace: engine.actorNamespace}}
 	if tenantScope != nil {
 		_ = actorSystem.Inject(tenantScope)
 		deps = append(deps, tenantScope)
@@ -296,9 +296,9 @@ func (engine *Engine) spawnDurableState(ctx context.Context, behavior behaviorpo
 
 	pid, err := actorSystem.SpawnOn(ctx, actorName, new(DurableStateActor), sOptions...)
 	if err != nil {
-		return resolveExistingSpawn(ctx, actorSystem, actorName, tenantScope, err)
+		return resolveIdentitySpawn(ctx, actorSystem, actorName, tenantScope, engine.bindingQuery("durable-state", behavior, tenantScope), err)
 	}
-	return verifySpawnedTenant(ctx, pid, tenantScope)
+	return verifySpawnedIdentity(ctx, pid, tenantScope, engine.bindingQuery("durable-state", behavior, tenantScope))
 }
 
 // EraseEntity performs GDPR erasure for the given persistence ID.

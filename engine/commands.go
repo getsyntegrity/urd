@@ -77,6 +77,9 @@ func (engine *Engine) Dispatch(ctx context.Context, entityID string, env command
 		return command.Result{}, ErrUndefinedEntityID
 	}
 
+	if _, internal := env.Payload().(*egopb.ActorBindingQuery); internal {
+		return command.Result{}, ErrNotACommand
+	}
 	if _, internal := env.Payload().(*egopb.TenantBindingQuery); internal {
 		return command.Result{}, ErrNotACommand
 	}
@@ -166,6 +169,13 @@ func (engine *Engine) Dispatch(ctx context.Context, entityID string, env command
 	// no handler, no persistence. Legacy mode (no resolver registered) is
 	// byte-identical: this whole block is skipped and ctx is untouched.
 	actorName := entityID
+	if !qualifiesActorNames(engine.tenantResolver) {
+		var nameErr error
+		actorName, nameErr = engine.actorName("", entityID)
+		if nameErr != nil {
+			return command.Result{}, nameErr
+		}
+	}
 	if engine.tenantResolver != nil {
 		tenantContext, resolveErr := engine.tenantResolver.Resolve(ctx)
 		if resolveErr != nil {

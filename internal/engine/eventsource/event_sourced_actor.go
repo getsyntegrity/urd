@@ -136,6 +136,7 @@ type batchEntry struct {
 // Snapshots and retention cleanup are handled asynchronously by dedicated child
 // actors and never add latency to command processing.
 type Actor struct {
+	actorNamespace   string
 	behavior         behaviorport.EventSourced
 	eventsStore      persistence.EventsStore
 	snapshotStore    persistence.SnapshotStore
@@ -308,6 +309,7 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 	if err != nil {
 		return err
 	}
+	entity.actorNamespace = extensions.NamespaceOf(ctx)
 	entity.eventsStore = eventsStoreExt.Underlying()
 	entity.eventsStream = eventsStreamExt.Underlying()
 	entity.persistenceID = ctx.ActorName()
@@ -354,6 +356,8 @@ func (entity *Actor) Receive(ctx *goakt.ReceiveContext) {
 		entity.spawnChildren(ctx)
 	case *egopb.GetStateCommand:
 		entity.handleGetStateCommand(ctx)
+	case *egopb.ActorBindingQuery:
+		ctx.Response(protocol.AnswerActorBinding(entity.tenantAware, entity.scope, "event-sourced", entity.behavior, entity.actorNamespace, msg))
 	case *egopb.TenantBindingQuery:
 		ctx.Response(protocol.AnswerTenantBinding(entity.tenantAware, entity.scope, msg))
 	case *batchFlushTick:

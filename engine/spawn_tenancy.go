@@ -24,12 +24,10 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	goakt "github.com/tochemey/goakt/v4/actor"
-	goakterrors "github.com/tochemey/goakt/v4/errors"
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/internal/extensions"
@@ -139,22 +137,4 @@ func classifyTenantBinding(name string, requested *extensions.EntityTenantScope,
 			tenancy.VerifyUnchanged(requestedTenant, tenancy.TenantContext{}))
 	}
 	return nil
-}
-
-// resolveExistingSpawn handles a spawn that goakt refused because the name
-// already exists. In cluster mode goakt rejects every spawn of a live name
-// with ErrActorAlreadyExists, even under the same tenant; in tenant-aware
-// mode the engine instead looks the actor up and verifies its binding, so
-// a same-tenant re-spawn is idempotent and a different tenant is
-// ErrSpawnTenantMismatch everywhere. Legacy mode, and every other error,
-// is returned unchanged.
-func resolveExistingSpawn(ctx context.Context, actorSystem goakt.ActorSystem, name string, requested *extensions.EntityTenantScope, spawnErr error) error {
-	if requested == nil || !errors.Is(spawnErr, goakterrors.ErrActorAlreadyExists) {
-		return spawnErr
-	}
-	pid, err := actorSystem.ActorOf(ctx, name)
-	if err != nil {
-		return errors.Join(spawnErr, err)
-	}
-	return verifySpawnedTenant(ctx, pid, requested)
 }

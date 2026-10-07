@@ -612,6 +612,129 @@ func (x *TenantBindingReply) GetMatches() bool {
 	return false
 }
 
+// ActorBindingQuery verifies the identity of the PID returned by a spawn.
+// These fields are compared by the actor against its immutable binding.
+type ActorBindingQuery struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantAware   bool                   `protobuf:"varint,1,opt,name=tenant_aware,json=tenantAware,proto3" json:"tenant_aware,omitempty"`
+	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Family        string                 `protobuf:"bytes,3,opt,name=family,proto3" json:"family,omitempty"`
+	Definition    string                 `protobuf:"bytes,4,opt,name=definition,proto3" json:"definition,omitempty"`
+	Namespace     string                 `protobuf:"bytes,5,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActorBindingQuery) Reset() {
+	*x = ActorBindingQuery{}
+	mi := &file_ego_ego_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActorBindingQuery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActorBindingQuery) ProtoMessage() {}
+
+func (x *ActorBindingQuery) ProtoReflect() protoreflect.Message {
+	mi := &file_ego_ego_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActorBindingQuery.ProtoReflect.Descriptor instead.
+func (*ActorBindingQuery) Descriptor() ([]byte, []int) {
+	return file_ego_ego_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ActorBindingQuery) GetTenantAware() bool {
+	if x != nil {
+		return x.TenantAware
+	}
+	return false
+}
+
+func (x *ActorBindingQuery) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *ActorBindingQuery) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
+}
+
+func (x *ActorBindingQuery) GetDefinition() string {
+	if x != nil {
+		return x.Definition
+	}
+	return ""
+}
+
+func (x *ActorBindingQuery) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+// ActorBindingReply reveals only whether the requested identity matches.
+type ActorBindingReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Matches       bool                   `protobuf:"varint,1,opt,name=matches,proto3" json:"matches,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActorBindingReply) Reset() {
+	*x = ActorBindingReply{}
+	mi := &file_ego_ego_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActorBindingReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActorBindingReply) ProtoMessage() {}
+
+func (x *ActorBindingReply) ProtoReflect() protoreflect.Message {
+	mi := &file_ego_ego_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActorBindingReply.ProtoReflect.Descriptor instead.
+func (*ActorBindingReply) Descriptor() ([]byte, []int) {
+	return file_ego_ego_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ActorBindingReply) GetMatches() bool {
+	if x != nil {
+		return x.Matches
+	}
+	return false
+}
+
 // Offset defines the projection offset
 type Offset struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -629,7 +752,7 @@ type Offset struct {
 
 func (x *Offset) Reset() {
 	*x = Offset{}
-	mi := &file_ego_ego_proto_msgTypes[8]
+	mi := &file_ego_ego_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -641,7 +764,7 @@ func (x *Offset) String() string {
 func (*Offset) ProtoMessage() {}
 
 func (x *Offset) ProtoReflect() protoreflect.Message {
-	mi := &file_ego_ego_proto_msgTypes[8]
+	mi := &file_ego_ego_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -654,7 +777,7 @@ func (x *Offset) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Offset.ProtoReflect.Descriptor instead.
 func (*Offset) Descriptor() ([]byte, []int) {
-	return file_ego_ego_proto_rawDescGZIP(), []int{8}
+	return file_ego_ego_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Offset) GetShardNumber() uint64 {
@@ -698,7 +821,7 @@ type ProjectionId struct {
 
 func (x *ProjectionId) Reset() {
 	*x = ProjectionId{}
-	mi := &file_ego_ego_proto_msgTypes[9]
+	mi := &file_ego_ego_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -710,7 +833,7 @@ func (x *ProjectionId) String() string {
 func (*ProjectionId) ProtoMessage() {}
 
 func (x *ProjectionId) ProtoReflect() protoreflect.Message {
-	mi := &file_ego_ego_proto_msgTypes[9]
+	mi := &file_ego_ego_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -723,7 +846,7 @@ func (x *ProjectionId) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectionId.ProtoReflect.Descriptor instead.
 func (*ProjectionId) Descriptor() ([]byte, []int) {
-	return file_ego_ego_proto_rawDescGZIP(), []int{9}
+	return file_ego_ego_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ProjectionId) GetProjectionName() string {
@@ -768,7 +891,7 @@ type Snapshot struct {
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_ego_ego_proto_msgTypes[10]
+	mi := &file_ego_ego_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -780,7 +903,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_ego_ego_proto_msgTypes[10]
+	mi := &file_ego_ego_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -793,7 +916,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_ego_ego_proto_rawDescGZIP(), []int{10}
+	return file_ego_ego_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Snapshot) GetPersistenceId() string {
@@ -869,7 +992,7 @@ type DurableState struct {
 
 func (x *DurableState) Reset() {
 	*x = DurableState{}
-	mi := &file_ego_ego_proto_msgTypes[11]
+	mi := &file_ego_ego_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -881,7 +1004,7 @@ func (x *DurableState) String() string {
 func (*DurableState) ProtoMessage() {}
 
 func (x *DurableState) ProtoReflect() protoreflect.Message {
-	mi := &file_ego_ego_proto_msgTypes[11]
+	mi := &file_ego_ego_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -894,7 +1017,7 @@ func (x *DurableState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DurableState.ProtoReflect.Descriptor instead.
 func (*DurableState) Descriptor() ([]byte, []int) {
-	return file_ego_ego_proto_rawDescGZIP(), []int{11}
+	return file_ego_ego_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DurableState) GetPersistenceId() string {
@@ -982,7 +1105,17 @@ const file_ego_ego_proto_rawDesc = "" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"Q\n" +
 	"\x12TenantBindingReply\x12!\n" +
 	"\ftenant_aware\x18\x01 \x01(\bR\vtenantAware\x12\x18\n" +
-	"\amatches\x18\x02 \x01(\bR\amatches\"\x88\x01\n" +
+	"\amatches\x18\x02 \x01(\bR\amatches\"\xa9\x01\n" +
+	"\x11ActorBindingQuery\x12!\n" +
+	"\ftenant_aware\x18\x01 \x01(\bR\vtenantAware\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x16\n" +
+	"\x06family\x18\x03 \x01(\tR\x06family\x12\x1e\n" +
+	"\n" +
+	"definition\x18\x04 \x01(\tR\n" +
+	"definition\x12\x1c\n" +
+	"\tnamespace\x18\x05 \x01(\tR\tnamespace\"-\n" +
+	"\x11ActorBindingReply\x12\x18\n" +
+	"\amatches\x18\x01 \x01(\bR\amatches\"\x88\x01\n" +
 	"\x06Offset\x12!\n" +
 	"\fshard_number\x18\x01 \x01(\x04R\vshardNumber\x12'\n" +
 	"\x0fprojection_name\x18\x02 \x01(\tR\x0eprojectionName\x12\x14\n" +
@@ -1033,7 +1166,7 @@ func file_ego_ego_proto_rawDescGZIP() []byte {
 }
 
 var file_ego_ego_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ego_ego_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_ego_ego_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_ego_ego_proto_goTypes = []any{
 	(SagaLifecycleStatus)(0),   // 0: egopb.SagaLifecycleStatus
 	(*Event)(nil),              // 1: egopb.Event
@@ -1044,26 +1177,28 @@ var file_ego_ego_proto_goTypes = []any{
 	(*GetStateCommand)(nil),    // 6: egopb.GetStateCommand
 	(*TenantBindingQuery)(nil), // 7: egopb.TenantBindingQuery
 	(*TenantBindingReply)(nil), // 8: egopb.TenantBindingReply
-	(*Offset)(nil),             // 9: egopb.Offset
-	(*ProjectionId)(nil),       // 10: egopb.ProjectionId
-	(*Snapshot)(nil),           // 11: egopb.Snapshot
-	(*DurableState)(nil),       // 12: egopb.DurableState
-	nil,                        // 13: egopb.Event.TenantMetadataEntry
-	nil,                        // 14: egopb.Snapshot.TenantMetadataEntry
-	nil,                        // 15: egopb.DurableState.TenantMetadataEntry
-	(*anypb.Any)(nil),          // 16: google.protobuf.Any
+	(*ActorBindingQuery)(nil),  // 9: egopb.ActorBindingQuery
+	(*ActorBindingReply)(nil),  // 10: egopb.ActorBindingReply
+	(*Offset)(nil),             // 11: egopb.Offset
+	(*ProjectionId)(nil),       // 12: egopb.ProjectionId
+	(*Snapshot)(nil),           // 13: egopb.Snapshot
+	(*DurableState)(nil),       // 14: egopb.DurableState
+	nil,                        // 15: egopb.Event.TenantMetadataEntry
+	nil,                        // 16: egopb.Snapshot.TenantMetadataEntry
+	nil,                        // 17: egopb.DurableState.TenantMetadataEntry
+	(*anypb.Any)(nil),          // 18: google.protobuf.Any
 }
 var file_ego_ego_proto_depIdxs = []int32{
-	16, // 0: egopb.Event.event:type_name -> google.protobuf.Any
-	13, // 1: egopb.Event.tenant_metadata:type_name -> egopb.Event.TenantMetadataEntry
+	18, // 0: egopb.Event.event:type_name -> google.protobuf.Any
+	15, // 1: egopb.Event.tenant_metadata:type_name -> egopb.Event.TenantMetadataEntry
 	3,  // 2: egopb.CommandReply.state_reply:type_name -> egopb.StateReply
 	4,  // 3: egopb.CommandReply.error_reply:type_name -> egopb.ErrorReply
-	16, // 4: egopb.StateReply.state:type_name -> google.protobuf.Any
+	18, // 4: egopb.StateReply.state:type_name -> google.protobuf.Any
 	0,  // 5: egopb.StateReply.saga_status:type_name -> egopb.SagaLifecycleStatus
-	16, // 6: egopb.Snapshot.state:type_name -> google.protobuf.Any
-	14, // 7: egopb.Snapshot.tenant_metadata:type_name -> egopb.Snapshot.TenantMetadataEntry
-	16, // 8: egopb.DurableState.resulting_state:type_name -> google.protobuf.Any
-	15, // 9: egopb.DurableState.tenant_metadata:type_name -> egopb.DurableState.TenantMetadataEntry
+	18, // 6: egopb.Snapshot.state:type_name -> google.protobuf.Any
+	16, // 7: egopb.Snapshot.tenant_metadata:type_name -> egopb.Snapshot.TenantMetadataEntry
+	18, // 8: egopb.DurableState.resulting_state:type_name -> google.protobuf.Any
+	17, // 9: egopb.DurableState.tenant_metadata:type_name -> egopb.DurableState.TenantMetadataEntry
 	10, // [10:10] is the sub-list for method output_type
 	10, // [10:10] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name
@@ -1086,7 +1221,7 @@ func file_ego_ego_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ego_ego_proto_rawDesc), len(file_ego_ego_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
