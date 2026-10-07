@@ -222,11 +222,13 @@ Metrics use bounded dimensions such as cell, backend role, access policy and cla
 
 ## 6. Phased roadmap and release acceptance
 
+The [module separation implementation plan](urd-module-separation-plan.md) maps the existing gates and tracker dependencies to internal package changes and optional publication. It is a dated planning snapshot, not ADR approval or evidence that a gate has passed. Internal regrouping such as #365 does not create new Go modules; independent extraction remains phase 3.
+
 | Stage | Deliverable | Exit evidence |
 | --- | --- | --- |
 | Phase 0 | Baseline audit, ADR, explicit tenancy modes, reader/scope/slice/checkpoint/command contracts, resource selection and workload model. | Verified baseline and explicit unresolved decisions; [#346](https://github.com/getsyntegrity/urd/issues/346), [#347](https://github.com/getsyntegrity/urd/issues/347), [#390](https://github.com/getsyntegrity/urd/issues/390). |
 | Gate A | Select the reader mechanism before committing the new reader schema. | [#387](https://github.com/getsyntegrity/urd/issues/387): omission, eligibility/progress and measured mechanism comparison; xid8 remains a candidate. |
-| Phase 1 | Internal persistence/projection correctness, Shared admission, dependency checks and core testkit/harness. | TCK, migrations and bounded-resource evidence; no new package extraction. |
+| Phase 1 | Internal persistence/projection correctness, Shared admission, dependency checks and core testkit/harness. | TCK, migrations and bounded-resource evidence; internal package regrouping without new independent Go modules. |
 | Gate B | Verify the core under conformance and injected faults. | [#388](https://github.com/getsyntegrity/urd/issues/388). Phase-2 public read-side drivers and later features do not become circular prerequisites. |
 | Phase 2, high priority | Urd read-side, tenancy lifecycle/resource profiles, Dedicated pools, integration and product testkit. | Linked feature acceptance, compatibility and operational evidence. Integration/testkit have priority P1; existing core tracker priorities are preserved. |
 | Phase 2, later | Workflow consolidation, management facade and temporary actor inspector. | Priority P3 and capability-specific evidence; no artificial requirement to finish every later feature for the core gates. |
