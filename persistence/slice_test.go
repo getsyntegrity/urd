@@ -23,7 +23,11 @@
 package persistence
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"hash/fnv"
+	"strings"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/specs"
@@ -45,9 +49,11 @@ type goldenCase struct {
 	golden uint64
 }
 
-// The golden vectors freeze FNV-1a 64 plus the key layout at N=1024. If one
-// changes, every persisted shard_number would change: that is a data
-// migration, not a test update.
+// The golden vectors pin the CANDIDATE algorithm (FNV-1a 64, the key layout and
+// N=1024). They do not ratify any of the three: N, hash and encoding are still
+// pending a maintainer decision (P1 in the ADR, #350). They exist so that the
+// provisional function cannot drift silently. If one changes, every shard_number
+// computed with it would change: that is a data migration, not a test update.
 func TestSliceOfProvisionalGoldenVectors(t *testing.T) {
 	specs.Describe(t, "sliceOfProvisional golden vectors", func(s *specs.Spec) {
 		specs.Table(s, []goldenCase{
@@ -160,5 +166,226 @@ func TestSliceOfProvisionalIsIndependentOfTopology(t *testing.T) {
 				}
 				ctx.Expect(compute(corpus, nodes)).ToEqual(compute(corpus, 1))
 			})
+	})
+}
+
+// referenceSliceKey builds the key bytes straight from the encoding in the
+// decision doc, with literal markers and the standard library's uvarint, so it
+// shares no code with sliceHash. The layout is:
+//
+//	unscoped: 0x00 || id
+//	tenant:   0x01 || uvarint(len(tenant)) || tenant || 0x00 || id
+//	invalid:  0xFF || id
+func referenceSliceKey(kind string, tenant, id string) []byte {
+	switch kind {
+	case "unscoped":
+		return append([]byte{0x00}, id...)
+	case "invalid":
+		return append([]byte{0xFF}, id...)
+	}
+	key := binary.AppendUvarint([]byte{0x01}, uint64(len(tenant)))
+	key = append(key, tenant...)
+	key = append(key, 0x00)
+	return append(key, id...)
+}
+
+// referenceFNV1a64 is the standard library FNV-1a 64 over key.
+func referenceFNV1a64(key []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(key)
+	return h.Sum64()
+}
+
+// decodeReferenceKey parses a reference key back into its parts, failing on any
+// malformed input. A key that decodes to exactly one (kind, tenant, id) is what
+// makes the encoding unambiguous.
+func decodeReferenceKey(key []byte) (kind, tenant, id string, ok bool) {
+	if len(key) == 0 {
+		return "", "", "", false
+	}
+	switch key[0] {
+	case 0x00:
+		return "unscoped", "", string(key[1:]), true
+	case 0xFF:
+		return "invalid", "", string(key[1:]), true
+	case 0x01:
+		n, read := binary.Uvarint(key[1:])
+		if read <= 0 {
+			return "", "", "", false
+		}
+		rest := key[1+read:]
+		if uint64(len(rest)) < n+1 || rest[n] != 0x00 {
+			return "", "", "", false
+		}
+		return "tenant", string(rest[:n]), string(rest[n+1:]), true
+	}
+	return "", "", "", false
+}
+
+type fullHashCase struct {
+	name   string
+	kind   string // "unscoped", "tenant" or "invalid"
+	tenant string
+	id     string
+	hash   uint64 // full 64-bit FNV-1a of the reference key
+	slice  uint64 // hash mod 1024
+}
+
+func (c fullHashCase) scope(ctx *specs.Context) Scope {
+	switch c.kind {
+	case "unscoped":
+		return Unscoped()
+	case "invalid":
+		return Scope{}
+	}
+	return sliceTenant(ctx, c.tenant)
+}
+
+// fullHashCases hold the full 64-bit hash, not only hash mod N. Every value was
+// computed with an FNV-1a implementation that shares no code with sliceHash.
+// The tenants respect the real Scope validation (valid UTF-8, 1 to 128 bytes, no
+// control runes), so a three-byte uvarint prefix is out of reach for a valid
+// Scope; 127 and 128 bytes cover the one-byte and two-byte prefixes.
+var fullHashCases = []fullHashCase{
+	{"unscoped, empty id", "unscoped", "", "", 12638153115695167455, 991},
+	{"unscoped, order-1", "unscoped", "", "order-1", 6871610578994667679, 159},
+	{"tenant acme, order-1", "tenant", "acme", "order-1", 11339623132362836548, 580},
+	{"tenant a, bc", "tenant", "a", "bc", 7728568150747082109, 381},
+	{"tenant unscoped, order-1", "tenant", "unscoped", "order-1", 397333059734761537, 65},
+	{"127-byte tenant (one-byte uvarint prefix 0x7f)", "tenant", strings.Repeat("t", 127), "e", 1121643126153532000, 608},
+	{"128-byte tenant (two-byte uvarint prefix 0x80 0x01)", "tenant", strings.Repeat("t", 128), "e", 3349406442526314680, 184},
+	{"unicode tenant and id", "tenant", "ñandú-日本", "pedido-№-✓", 1552433202739978905, 665},
+	{"128-byte tenant of 44 runes (length is bytes, not runes)", "tenant", strings.Repeat("日", 42) + "ab", "e", 8064835956696314239, 383},
+	{"id containing a NUL byte", "tenant", "acme", "a\x00b", 3112584782578643123, 179},
+	{"invalid zero scope", "invalid", "", "e", 763715312229376945, 945},
+}
+
+// These cases pin the FULL 64-bit hash and compare it with the standard library.
+// Equality modulo 1024 alone would not prove that a refactor (for example the
+// opaque Scope of #349) kept the hashed bytes: many different hashes share a
+// slice. The full value is what must survive such a change.
+func TestSliceHashFullVectors(t *testing.T) {
+	specs.Describe(t, "sliceHash full 64-bit vectors (candidate algorithm, not ratified)", func(s *specs.Spec) {
+		specs.Table(s, fullHashCases, func(c fullHashCase) string { return c.name }, func(ctx *specs.Context, c fullHashCase) {
+			key := referenceSliceKey(c.kind, c.tenant, c.id)
+			got := sliceHash(c.scope(ctx), c.id)
+
+			ctx.Expect(got).ToEqual(c.hash)
+			ctx.Expect(referenceFNV1a64(key)).ToEqual(c.hash)
+			ctx.Expect(got % provisionalSliceCount).ToEqual(c.slice)
+			ctx.Expect(sliceOfProvisional(c.scope(ctx), c.id)).ToEqual(c.slice)
+		})
+
+		s.It("exercises both uvarint widths the Scope validation allows", func(ctx *specs.Context) {
+			one := referenceSliceKey("tenant", strings.Repeat("t", 127), "e")
+			two := referenceSliceKey("tenant", strings.Repeat("t", 128), "e")
+			ctx.Expect(one[1:2]).ToEqual([]byte{0x7f})
+			ctx.Expect(two[1:3]).ToEqual([]byte{0x80, 0x01})
+		})
+
+		s.It("rejects a tenant that would need a longer uvarint prefix", func(ctx *specs.Context) {
+			_, err := NewTenantScope(tenancy.TenantID(strings.Repeat("t", 129)))
+			ctx.Expect(errors.Is(err, ErrInvalidScope)).To(specs.BeTrue())
+		})
+	})
+}
+
+// The encoding is unambiguous: a key decodes to exactly one (kind, tenant, id).
+// That is a property of the bytes. It says nothing about hash or slice
+// collisions, which are possible; see the next test.
+func TestSliceKeyEncodingIsUnambiguous(t *testing.T) {
+	specs.Describe(t, "slice key encoding", func(s *specs.Spec) {
+		s.It("round-trips every corpus entry, including ids that imitate the layout", func(ctx *specs.Context) {
+			tenants := []string{"a", "ab", "unscoped", "ñandú-日本", strings.Repeat("t", 128), "é", "a b"}
+			ids := []string{"", "c", "bc", "\x00", "a\x00b", "\x01\x01a\x00", "\xff", "日本", "unscoped"}
+			for _, tenant := range tenants {
+				for _, id := range ids {
+					kind, gotTenant, gotID, ok := decodeReferenceKey(referenceSliceKey("tenant", tenant, id))
+					ctx.Expect(ok).To(specs.BeTrue())
+					ctx.Expect(kind).ToEqual("tenant")
+					ctx.Expect(gotTenant).ToEqual(tenant)
+					ctx.Expect(gotID).ToEqual(id)
+				}
+			}
+			for _, id := range ids {
+				kind, _, gotID, ok := decodeReferenceKey(referenceSliceKey("unscoped", "", id))
+				ctx.Expect(ok).To(specs.BeTrue())
+				ctx.Expect(kind).ToEqual("unscoped")
+				ctx.Expect(gotID).ToEqual(id)
+			}
+		})
+
+		s.It("separates scope from entity when their concatenation is equal", func(ctx *specs.Context) {
+			type pair struct{ tenant, id string }
+			// Each group shares tenant+id as one string; a plain concatenation would
+			// make them indistinguishable.
+			groups := [][]pair{
+				{{"a", "bc"}, {"ab", "c"}},
+				{{"日", "本"}, {"日本", ""}},
+				{{"acme", "\x00x"}, {"acme\x00", "x"}},
+			}
+			for _, group := range groups {
+				seen := map[string]pair{}
+				for _, p := range group {
+					key := string(referenceSliceKey("tenant", p.tenant, p.id))
+					_, dup := seen[key]
+					ctx.Expect(dup).To(specs.BeFalse())
+					seen[key] = p
+				}
+			}
+		})
+
+		s.It("rejects the control-rune tenants that would otherwise forge a separator", func(ctx *specs.Context) {
+			_, err := NewTenantScope(tenancy.TenantID("acme\x00"))
+			ctx.Expect(errors.Is(err, ErrInvalidScope)).To(specs.BeTrue())
+		})
+
+		s.It("hashes the Unscoped, tenant and invalid markers apart for the same id", func(ctx *specs.Context) {
+			hashes := map[uint64]string{}
+			for name, scope := range map[string]Scope{"unscoped": Unscoped(), "tenant": sliceTenant(ctx, "unscoped"), "invalid": {}} {
+				h := sliceHash(scope, "e")
+				_, dup := hashes[h]
+				ctx.Expect(dup).To(specs.BeFalse())
+				hashes[h] = name
+			}
+		})
+	})
+}
+
+// An unambiguous encoding does not make hashes or slices unique. With N=1024, any
+// 1025 keys must share a slice by the pigeonhole principle. Isolation between
+// scopes therefore cannot rest on the slice; it rests on keeping the Scope next
+// to the persistence id wherever the pair is stored or compared.
+func TestSliceCollisionsAreExpected(t *testing.T) {
+	specs.Describe(t, "slice collisions", func(s *specs.Spec) {
+		s.It("finds distinct keys, in distinct scopes, that share a slice", func(ctx *specs.Context) {
+			a, b := sliceTenant(ctx, "acme"), sliceTenant(ctx, "globex")
+			bySlice := map[uint64]string{}
+			var found bool
+			for i := 0; i <= provisionalSliceCount && !found; i++ {
+				id := fmt.Sprintf("id-%d", i)
+				bySlice[sliceOfProvisional(a, id)] = id
+				if other, ok := bySlice[sliceOfProvisional(b, id)]; ok {
+					found = true
+					ctx.Expect(sliceOfProvisional(a, other)).ToEqual(sliceOfProvisional(b, id))
+					ctx.Expect(a.Equal(b)).To(specs.BeFalse())
+				}
+			}
+			ctx.Expect(found).To(specs.BeTrue())
+		})
+
+		s.It("shows that equality modulo 1024 does not prove the same hashed bytes", func(ctx *specs.Context) {
+			scope := sliceTenant(ctx, "acme")
+			bySlice := map[uint64]uint64{}
+			var sameSliceDifferentHash bool
+			for i := 0; i <= provisionalSliceCount && !sameSliceDifferentHash; i++ {
+				h := sliceHash(scope, fmt.Sprintf("id-%d", i))
+				if prev, ok := bySlice[h%provisionalSliceCount]; ok && prev != h {
+					sameSliceDifferentHash = true
+				}
+				bySlice[h%provisionalSliceCount] = h
+			}
+			ctx.Expect(sameSliceDifferentHash).To(specs.BeTrue())
+		})
 	})
 }

@@ -59,7 +59,10 @@ const (
 // cluster topology, node count, time or process state. Independence from
 // topology therefore holds by construction.
 //
-// The hashed key is unambiguous. A tenant scope is encoded as a marker byte,
+// The hashed key bytes are unambiguous: they decode to exactly one (scope,
+// entity id). That says nothing about the hash or the slice, which can collide
+// for distinct pairs. Isolation therefore depends on keeping the Scope next to
+// the entity id, never on the slice. A tenant scope is encoded as a marker byte,
 // the tenant length as a uvarint, the tenant bytes, a 0x00 separator and the
 // entity id, so ("a", "bc") and ("ab", "c") differ. Unscoped uses its own
 // marker and carries no tenant, so it cannot collide with a tenant whose id
@@ -78,8 +81,10 @@ func sliceOfN(scope Scope, entityID string, n uint64) uint64 {
 // sliceHash returns the full 64-bit FNV-1a hash of the unambiguous key.
 //
 // It reads the tenant through Scope.TenantID today. When Scope becomes opaque
-// (#349), the bytes hashed for a given persisted key must stay identical; the
-// golden vectors in slice_test.go are the contract for that.
+// (#349), the bytes hashed for a given persisted key must stay identical. The
+// contract is the full 64-bit hash in TestSliceHashFullVectors, compared with
+// the standard library's FNV-1a over the specified key; matching hash mod N is
+// not enough. The vectors pin the candidate algorithm and do not ratify it.
 func sliceHash(scope Scope, entityID string) uint64 {
 	h := fnvOffset64
 	mix := func(b byte) {
