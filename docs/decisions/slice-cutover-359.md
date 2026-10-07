@@ -39,8 +39,8 @@ Verified in the repository and in GoAkt `v4.5.7-actorof.1` (the version resolved
 | P0 Preconditions | old | Gates below pass | n/a |
 | P1 Prepare | old | Additive schema (per #358), backfill of the slice for existing rows | Yes: drop the additions |
 | P2 Verify and plan | old | Independent verification, seed computation into a staging area, replay-volume report | Yes |
-| P3 Window | stopped | Fence, quiesce, final backfill, final verification, atomic switch | Exact until step (g) |
-| P4 Run | new | New binaries write the slice; legacy kept | Only until the first new-layout write (see 3.7) |
+| P3 Window | stopped | Fence, quiesce, final backfill, final verification, atomic switch | Exact until step (f) starts the new binaries; see 3.7 |
+| P4 Run | new | New binaries write the slice; legacy kept | No exact rollback from the first new-layout write (see 3.7) |
 | P5 Retire | new | After the `GetShardEvents` retirement plan, drop legacy | No |
 
 P0 preconditions:
@@ -71,8 +71,8 @@ States are recorded durably, transitions are idempotent, and each step has a sta
 | (c) Final backfill | Fill every row whose slice is still NULL | Idempotent; resume at (c) |
 | (d) Final verification | Section 3.8, exhaustive, on quiesced data. Any mismatch aborts | Resume at (d) or abort |
 | (e) Switch | In ONE transaction: set the layout epoch, activate the seeded offsets under the new identity, mark the legacy offset rows superseded, record the barrier | Atomic: either the whole switch happened or none of it |
-| (f) Start | Start new binaries; they refuse to start unless the epoch says the new layout is active | Operational |
-| (g) Smoke | Read back the first new-layout writes from the persisted rows and check scope, slice and revision | Failure here still allows exact rollback (3.7) |
+| (f) Start | Start new binaries; they refuse to start unless the epoch says the new layout is active. From the first write they make, exact rollback is no longer available (3.7) | Operational |
+| (g) Smoke | Read back the first new-layout writes from the persisted rows and check scope, slice and revision | Past the exact-rollback point: a failure here means restore from backup (losing the writes since the barrier) or roll forward (3.7). To keep rollback exact, make the smoke write a single synthetic row that the rollback procedure discards, and admit no other writer until the check passes. Any real write before that point ends exact rollback |
 
 Abort before (e) leaves the old layout fully intact and live; only the additive columns and the staging area remain and can be dropped.
 
