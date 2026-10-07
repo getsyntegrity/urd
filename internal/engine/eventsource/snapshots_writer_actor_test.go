@@ -169,7 +169,7 @@ func TestSnapshotsWriterActor(t *testing.T) {
 			eventsCtrl.Method("DeleteEvents").
 				Expect(mock.Any(), persistence.Unscoped(), "entity-1", uint64(10)).Return(nil)
 			system := startSnapshotSystem(ctx, "TestSnapshotSystem",
-				extensions.NewEventsStore(enginetest.NewEventsStoreMock(eventsCtrl)),
+				extensions.NewEventsStore(retentionFixture{enginetest.NewEventsStoreMock(eventsCtrl)}),
 				extensions.NewEventsStream(newEventsStream(ctx)),
 				extensions.NewSnapshotStore(connectedSnapshotStore(ctx)))
 			writer := spawnSnapshotsWriter(ctx, system, "snapshot-writer-test")
@@ -196,7 +196,7 @@ func TestSnapshotsWriterActor(t *testing.T) {
 			snapshotCtrl.Method("WriteSnapshot").
 				Expect(mock.Any(), persistence.Unscoped(), mock.Any()).Times(defaultMaxRetries + 1).Return(errSnapshotStoreDown)
 			system := startSnapshotSystem(ctx, "TestSnapshotSystem",
-				extensions.NewEventsStore(enginetest.NewEventsStoreMock(eventsCtrl)),
+				extensions.NewEventsStore(retentionFixture{enginetest.NewEventsStoreMock(eventsCtrl)}),
 				extensions.NewEventsStream(newEventsStream(ctx)),
 				extensions.NewSnapshotStore(enginetest.NewSnapshotStoreMock(snapshotCtrl)))
 			writer := spawnSnapshotsWriter(ctx, system, "snapshot-writer-test")

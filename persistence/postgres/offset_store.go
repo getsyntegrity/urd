@@ -24,7 +24,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -40,8 +43,8 @@ type OffsetStore struct {
 }
 
 var (
-	_ offsetstore.OffsetStore    = (*OffsetStore)(nil)
-	_ persistence.SchemaMigrator = (*OffsetStore)(nil)
+	_ offsetstore.ScopedOffsetStore = (*OffsetStore)(nil)
+	_ persistence.SchemaMigrator    = (*OffsetStore)(nil)
 )
 
 // NewOffsetStore creates a new PostgreSQL-backed offset store.
@@ -89,11 +92,20 @@ func (s *OffsetStore) Ping(ctx context.Context) error {
 }
 
 func (s *OffsetStore) WriteOffset(ctx context.Context, offset *egopb.Offset) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO offsets_store (projection_name, shard_number, current_offset, timestamp)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (projection_name, shard_number)
+	return s.WriteScopedOffset(ctx, persistence.Unscoped(), offset)
+}
+
+func (s *OffsetStore) WriteScopedOffset(ctx context.Context, scope persistence.Scope, offset *egopb.Offset) error {
+	tenantID, err := scopeKey(scope)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO offsets_store (tenant_id, projection_name, shard_number, current_offset, timestamp)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, projection_name, shard_number)
 		DO UPDATE SET current_offset = EXCLUDED.current_offset, timestamp = EXCLUDED.timestamp`,
+		tenantID,
 		offset.GetProjectionName(),
 		offset.GetShardNumber(),
 		offset.GetValue(),
@@ -103,23 +115,32 @@ func (s *OffsetStore) WriteOffset(ctx context.Context, offset *egopb.Offset) err
 }
 
 func (s *OffsetStore) GetCurrentOffset(ctx context.Context, projectionID *egopb.ProjectionId) (*egopb.Offset, error) {
+	return s.GetScopedOffset(ctx, persistence.Unscoped(), projectionID)
+}
+
+func (s *OffsetStore) GetScopedOffset(ctx context.Context, scope persistence.Scope, projectionID *egopb.ProjectionId) (*egopb.Offset, error) {
+	tenantID, err := scopeKey(scope)
+	if err != nil {
+		return nil, err
+	}
 	row := s.pool.QueryRow(ctx, `
 		SELECT projection_name, shard_number, current_offset, timestamp
 		FROM offsets_store
-		WHERE projection_name=$1 AND shard_number=$2`,
+		WHERE tenant_id=$1 AND projection_name=$2 AND shard_number=$3`,
+		tenantID,
 		projectionID.GetProjectionName(),
 		projectionID.GetShardNumber(),
 	)
 
 	var offset egopb.Offset
-	err := row.Scan(
+	err = row.Scan(
 		&offset.ProjectionName,
 		&offset.ShardNumber,
 		&offset.Value,
 		&offset.Timestamp,
 	)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -128,8 +149,16 @@ func (s *OffsetStore) GetCurrentOffset(ctx context.Context, projectionID *egopb.
 }
 
 func (s *OffsetStore) ResetOffset(ctx context.Context, projectionName string, value int64) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE offsets_store SET current_offset=$1 WHERE projection_name=$2`,
-		value, projectionName)
+	return s.ResetScopedOffset(ctx, persistence.Unscoped(), projectionName, value)
+}
+
+func (s *OffsetStore) ResetScopedOffset(ctx context.Context, scope persistence.Scope, projectionName string, value int64) error {
+	tenantID, err := scopeKey(scope)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE offsets_store SET current_offset=$1 WHERE tenant_id=$2 AND projection_name=$3`,
+		value, tenantID, projectionName)
 	return err
 }

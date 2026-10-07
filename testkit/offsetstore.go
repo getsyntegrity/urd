@@ -32,10 +32,12 @@ import (
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/offsetstore"
+	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/port/adapter"
 )
 
 type OffsetKey struct {
+	TenantID       string
 	ProjectionName string
 	ShardNumber    uint64
 }
@@ -86,17 +88,33 @@ func (x *OffsetStore) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (x *OffsetStore) WriteOffset(_ context.Context, offset *egopb.Offset) error {
+func (x *OffsetStore) WriteOffset(ctx context.Context, offset *egopb.Offset) error {
+	return x.WriteScopedOffset(ctx, persistence.Unscoped(), offset)
+}
+
+func (x *OffsetStore) WriteScopedOffset(_ context.Context, scope persistence.Scope, offset *egopb.Offset) error {
+	if !scope.Valid() {
+		return persistence.ErrInvalidScope
+	}
 	key := OffsetKey{
+		TenantID:       string(scope.TenantID()),
 		ProjectionName: offset.GetProjectionName(),
 		ShardNumber:    offset.GetShardNumber(),
 	}
-	x.db.Store(key, offset)
+	x.db.Store(key, proto.Clone(offset).(*egopb.Offset))
 	return nil
 }
 
-func (x *OffsetStore) GetCurrentOffset(_ context.Context, projectionID *egopb.ProjectionId) (currentOffset *egopb.Offset, err error) {
+func (x *OffsetStore) GetCurrentOffset(ctx context.Context, projectionID *egopb.ProjectionId) (*egopb.Offset, error) {
+	return x.GetScopedOffset(ctx, persistence.Unscoped(), projectionID)
+}
+
+func (x *OffsetStore) GetScopedOffset(_ context.Context, scope persistence.Scope, projectionID *egopb.ProjectionId) (*egopb.Offset, error) {
+	if !scope.Valid() {
+		return nil, persistence.ErrInvalidScope
+	}
 	key := OffsetKey{
+		TenantID:       string(scope.TenantID()),
 		ProjectionName: projectionID.GetProjectionName(),
 		ShardNumber:    projectionID.GetShardNumber(),
 	}
@@ -104,14 +122,21 @@ func (x *OffsetStore) GetCurrentOffset(_ context.Context, projectionID *egopb.Pr
 	if !ok {
 		return nil, nil
 	}
-	return value.(*egopb.Offset), nil
+	return proto.Clone(value.(*egopb.Offset)).(*egopb.Offset), nil
 }
 
-func (x *OffsetStore) ResetOffset(_ context.Context, projectionName string, value int64) error {
+func (x *OffsetStore) ResetOffset(ctx context.Context, projectionName string, value int64) error {
+	return x.ResetScopedOffset(ctx, persistence.Unscoped(), projectionName, value)
+}
+
+func (x *OffsetStore) ResetScopedOffset(_ context.Context, scope persistence.Scope, projectionName string, value int64) error {
+	if !scope.Valid() {
+		return persistence.ErrInvalidScope
+	}
 	ts := time.Now().UnixMilli()
 	x.db.Range(func(k interface{}, v interface{}) bool {
 		key := k.(OffsetKey)
-		if key.ProjectionName != projectionName {
+		if key.ProjectionName != projectionName || key.TenantID != string(scope.TenantID()) {
 			return true
 		}
 		// Store a copy: the stored offset may be the caller's own pointer, which

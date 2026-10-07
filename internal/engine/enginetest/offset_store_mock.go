@@ -29,6 +29,7 @@ import (
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/offsetstore"
+	"github.com/getsyntegrity/urd/persistence"
 )
 
 // OffsetStoreMock is an offsetstore.OffsetStore backed by a go-specs
@@ -72,4 +73,20 @@ func (m *OffsetStoreMock) GetCurrentOffset(ctx context.Context, projectionID *eg
 // ResetOffset forwards to the controller.
 func (m *OffsetStoreMock) ResetOffset(ctx context.Context, projectionName string, value int64) error {
 	return m.c.Method("ResetOffset").Call(ctx, projectionName, value).Err(0)
+}
+
+// WriteScopedOffset forwards the explicit scope for tenant-aware runners.
+func (m *OffsetStoreMock) WriteScopedOffset(ctx context.Context, scope persistence.Scope, offset *egopb.Offset) error {
+	return m.c.Method("WriteScopedOffset").Call(ctx, scope, offset).Err(0)
+}
+
+// GetScopedOffset forwards the explicit scope.
+func (m *OffsetStoreMock) GetScopedOffset(ctx context.Context, scope persistence.Scope, id *egopb.ProjectionId) (*egopb.Offset, error) {
+	r := m.c.Method("GetScopedOffset").Call(ctx, scope, id)
+	return mock.Value[*egopb.Offset](r, 0), r.Err(1)
+}
+
+// ResetScopedOffset forwards the explicit reset scope.
+func (m *OffsetStoreMock) ResetScopedOffset(ctx context.Context, scope persistence.Scope, name string, value int64) error {
+	return m.c.Method("ResetScopedOffset").Call(ctx, scope, name, value).Err(0)
 }

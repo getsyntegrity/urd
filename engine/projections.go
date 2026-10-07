@@ -33,6 +33,7 @@ import (
 
 	"github.com/getsyntegrity/urd/egopb"
 	"github.com/getsyntegrity/urd/internal/extensions"
+	"github.com/getsyntegrity/urd/offsetstore"
 	"github.com/getsyntegrity/urd/persistence"
 	"github.com/getsyntegrity/urd/projection"
 )
@@ -195,6 +196,15 @@ func (engine *Engine) RebuildProjection(ctx context.Context, name string, from t
 		return fmt.Errorf("offset store is required to rebuild projection")
 	}
 
+	scope, registered := engine.projectionScopes[name]
+	if !registered {
+		return ErrProjectionNotRegistered
+	}
+	scopedOffsets, err := offsetstore.ForScope(offsetStore, scope)
+	if err != nil {
+		return err
+	}
+
 	// stop the running projection
 	if err := engine.StopProjection(ctx, name); err != nil {
 		return fmt.Errorf("failed to stop projection %s for rebuild: %w", name, err)
@@ -207,7 +217,7 @@ func (engine *Engine) RebuildProjection(ctx context.Context, name string, from t
 	engine.awaitProjectionReleased(ctx, name)
 
 	// reset the offset
-	if err := offsetStore.ResetOffset(ctx, name, from.UnixMilli()); err != nil {
+	if err := scopedOffsets.ResetOffset(ctx, name, from.UnixNano()); err != nil {
 		return fmt.Errorf("failed to reset offset for projection %s: %w", name, err)
 	}
 
@@ -311,6 +321,10 @@ func (engine *Engine) ProjectionLag(ctx context.Context, projectionName string) 
 	// aggregate number. ShardOffsets answers "which shards exist" and "what is
 	// the newest event timestamp per shard" in one round trip, so the only
 	// per-shard work left is reading the projection's committed offset.
+	scopedOffsets, err := offsetstore.ForScope(offsetStore, scope)
+	if err != nil {
+		return nil, err
+	}
 	shardOffsets, err := eventsStore.ShardOffsets(ctx, scope)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch shard offsets: %w", err)
@@ -328,7 +342,7 @@ func (engine *Engine) ProjectionLag(ctx context.Context, projectionName string) 
 		// successfully processed. A brand-new projection returns a zero-value
 		// offset, which will naturally yield a lag equal to the age of the
 		// oldest-to-newest span of events.
-		offset, err := offsetStore.GetCurrentOffset(ctx, projectionID)
+		offset, err := scopedOffsets.GetCurrentOffset(ctx, projectionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get offset for shard %d: %w", shard, err)
 		}

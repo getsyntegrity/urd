@@ -240,6 +240,12 @@ func (x *Runner) Start(ctx context.Context) error {
 		return errors.New("events store is not defined")
 	}
 
+	boundOffsets, bindErr := offsetstore.ForScope(x.offsetsStore, x.scope)
+	if bindErr != nil {
+		return bindErr
+	}
+	x.offsetsStore = boundOffsets
+
 	// we will ping the stores 5 times to see whether there have started successfully or not.
 	// The attempts are one second apart, measured on the runner's clock.
 	// Once the retries have completed and still not connected we fail the start process of the projection.
@@ -505,7 +511,7 @@ func (x *Runner) pendingShards(ctx context.Context) ([]uint64, error) {
 	// A configured starting offset overrides committed offsets on every
 	// pull (see currentOffset), so the pending decision must mirror it.
 	if !x.startingOffset.IsZero() {
-		startOffset := x.startingOffset.UnixMilli()
+		startOffset := x.startingOffset.UnixNano()
 		for shard, latest := range shardOffsets {
 			if latest > startOffset {
 				shards = append(shards, shard)
@@ -660,7 +666,7 @@ func (x *Runner) currentOffset(ctx context.Context, shard uint64) (int64, error)
 	}
 
 	if !x.startingOffset.IsZero() {
-		currOffset = x.startingOffset.UnixMilli()
+		currOffset = x.startingOffset.UnixNano()
 	}
 
 	return currOffset, nil
@@ -866,7 +872,7 @@ func newHandlerPanicError(value any) error {
 // preStart is used to perform some tasks before the projection starts
 func (x *Runner) preStart(ctx context.Context) error {
 	if !x.resetOffsetTo.IsZero() {
-		if err := x.offsetsStore.ResetOffset(ctx, x.name, x.resetOffsetTo.UnixMilli()); err != nil {
+		if err := x.offsetsStore.ResetOffset(ctx, x.name, x.resetOffsetTo.UnixNano()); err != nil {
 			x.logger.ErrorContext(ctx, "failed to reset projection offset", "projection", x.name, "error", err)
 			return fmt.Errorf("failed to reset projection=%s: %w", x.name, err)
 		}

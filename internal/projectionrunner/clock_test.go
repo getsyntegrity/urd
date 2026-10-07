@@ -139,7 +139,7 @@ func seededShard(ctx *specs.Context, name string, shard uint64, committed, event
 	ctx.Expect(offsets.Connect(bg)).To(specs.BeNil())
 
 	if committed != 0 {
-		ctx.Expect(offsets.WriteOffset(bg, &egopb.Offset{ProjectionName: name, ShardNumber: shard, Value: committed})).To(specs.BeNil())
+		ctx.Expect(offsets.WriteScopedOffset(bg, runnerTestScope, &egopb.Offset{ProjectionName: name, ShardNumber: shard, Value: committed})).To(specs.BeNil())
 	}
 
 	event, err := anypb.New(&testpb.AccountCredited{})
@@ -396,7 +396,7 @@ func TestRunnerOnAManualClock(t *testing.T) {
 			projectionID := &egopb.ProjectionId{ProjectionName: name, ShardNumber: shard}
 			ctx.Eventually(offsetOf(offsetStore, projectionID), committedAt(eventTimestamp), poll...)
 
-			offset, err := offsetStore.GetCurrentOffset(bg, projectionID)
+			offset, err := offsetStore.GetScopedOffset(bg, runnerTestScope, projectionID)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(offset.GetTimestamp()).To(specs.Equal(clk.Now().UnixMilli()))
 
