@@ -4,7 +4,7 @@
 |---|---|
 | Status | **Draft specification and provisional harness.** Not an approved contract. |
 | Tracker | #348 (I-02), epic #342, phase 0. The contract that this oracle will test is #351 (I-05); the mechanism comparison is #352 / Gate A. |
-| Code | `persistence/conformance/internal/readertck` (internal, unexported to adapter authors) |
+| Code | `persistence/conformance/readertck` (provisional, no compatibility promise; outside `internal` only so that the separate `inttest` module can import it, see D1). The PostgreSQL run is `inttest/flows/reader`. |
 | Not decided here | The read mechanism, the number of slices N, the hash, the key or cursor encoding, the public reader API. PR #436 (provisional `SliceOf`) is untouched. |
 
 Three words are used with a fixed meaning: **specified** (this document says what must hold), **executed** (a unit test in this change runs it today, with fakes, no database), **pending** (cannot run until a real adapter or an approved SPI exists).
@@ -125,16 +125,18 @@ Not in the catalogue: concurrent writers on the same persistence id (a write con
 | Stalls three polls before every batch | Progress `stall`, Safety still passes |
 | Makes committed events wait one tick past T | Eligibility `late-visibility`, Safety still passes |
 
-Against testkit's `EventsStore` (`testkit_test.go`): a store-backed reference reader passes all scenarios; a shim over the **current** `GetShardEvents(scope, shard, offset, limit)` fails the five scenarios in which an event commits behind the cursor (`legacyKnownFailures`) and passes the rest. testkit is an in-memory model, not the PostgreSQL adapter.
+Against testkit's `EventsStore` (`testkit_test.go`): a store-backed reference reader passes all scenarios; a shim over the **current** `GetShardEvents(scope, shard, offset, limit)` fails the five scenarios in which an event commits behind the cursor (`LegacySafetyFailure`) and passes the rest. testkit is an in-memory model, not the PostgreSQL adapter. The two subjects (`LegacyReader`, `StoreSetReader`) are the exported ones of `reference.go`, so testkit and PostgreSQL evaluate the same code.
+
+Against a real PostgreSQL (`inttest/flows/reader`, integration lane): one catalogue scenario, `late-commit-issue-case`, with writers that are real transactions on their own connections. The current `GetShardEvents` fails Safety with `omission` (the known failure, asserted), and the store-backed reference reader over the same adapter and the same writers passes the whole oracle, so the omission belongs to the timestamp cursor and not to the backend. The other four legacy known failures are not repeated there: they are the same timestamp-cursor behavior and are covered by the unit run.
 
 ## 6. Acceptance criteria matrix (live body of #348, read 2026-10-07)
 
 | Criterion | Document | Executed test | Pending |
 |---|---|---|---|
-| The omission check fails deterministically with the current PostgreSQL adapter and is marked as a known failure | Sections 2.1, 4 (`late-commit-issue-case`) | Same scenario fails, deterministically, on the legacy timestamp cursor over testkit and on the timestamp-cursor mutant; the known failures are listed in `legacyKnownFailures` | **Pending real adapter**: running it against `persistence/postgres` in the integration lane, and the form of the "known failure" mark there (decision D5). Not claimed as done |
+| The omission check fails deterministically with the current PostgreSQL adapter and is marked as a known failure | Sections 2.1, 4 (`late-commit-issue-case`) | Same scenario fails, deterministically, on the legacy timestamp cursor over testkit and on the timestamp-cursor mutant; the known failures are listed in `LegacySafetyFailure`. Over the real adapter: `TestLateCommitOverPostgreSQL` in `inttest/flows/reader` asserts the omission with real transactions (deterministic over repeated runs; it fails if the legacy reader is replaced by a correct one) | The run exists and passes locally with Docker. Its execution in the CI integration lane (push to `develop`, release PR) is pending; D5 is chosen provisionally as an assertion, not a skip |
 | Eligibility and progress checks do not promise application latency | Section 2.2, 2.3 | By construction: the harness has no apply step, the handler never fails, and only delivery to the consumer is measured. No test can assert an absence | none |
 | All run against testkit too | Section 5 | `TestScenariosRunAgainstTestkit`: every scenario on testkit's `EventsStore`. The reader is a harness reference reader, because testkit has no reader | **Pending approved SPI**: a testkit-native reader running the suite through the final interface |
-| Objective: safety case a@100, b@200, late@150, two concurrent transactions | 4 | `late-commit-issue-case` | PostgreSQL run as above |
+| Objective: safety case a@100, b@200, late@150, two concurrent transactions | 4 | `late-commit-issue-case` | `TestLateCommitOverPostgreSQL` (two real transactions, the late one committing after the reader passed 200) |
 | Objective: eligibility, event readable within T with a bounded long transaction | 2.2, 4 | `long-transaction-bounded` (correct readers pass, delaying mutant fails) | Measuring T on a real database under real timeouts |
 | Objective: progress, cursor advances when the transaction is released | 2.3, 4 | `aborted-transaction-releases-the-reader`, issue case, stall mutant | none |
 | Objective: handler that never fails | 1 | the runner persists after every batch | Runner errors are I-22 |
@@ -145,11 +147,11 @@ Cross-checks against #351 (so its author can reuse the oracle): `OneScope(Unscop
 
 | # | Decision | Chosen here (provisional) | Alternatives |
 |---|---|---|---|
-| D1 | Where the harness lives and what is exported | Internal package under `persistence/conformance`, nothing exported | Export a minimal `Run...ReaderConformance` in `persistence/conformance` once the SPI is approved; keep it in a `testkit` sub-package; test-only files |
+| D1 | Where the harness lives and what is exported | `persistence/conformance/readertck`, exported but provisional (no compatibility promise). It left `internal` because `inttest` is a separate module and Go forbids importing another module's internal package; the alternative to a second copy of the scenarios is this export | Move it back under `internal` and keep the PostgreSQL run in a package rooted there; export a minimal `Run...ReaderConformance` in `persistence/conformance` once the SPI is approved; keep it in a `testkit` sub-package |
 | D2 | Duplicate policy | Any redelivery is allowed if the token is stable and unique | Only inside the unpersisted window; forbid duplicates (needs exactly-once, not offered) |
 | D3 | Meaning of `limit` | Not constrained (a poll with `limit` >= 1 must be able to progress) | Hard cap on batch size; keep today's minimum-batch target |
 | D4 | Progress numbers | `EmptyPollBudget` 2, `Settle` 0, final catch-up budget generous | Stricter or looser budgets per mechanism, once #352 has data |
-| D5 | How the PostgreSQL known failure is marked | Not decided | An assertion that the check fails (flips red when fixed, preferred) versus a skip with a reason (the `inttest` lane forbids skips) |
+| D5 | How the PostgreSQL known failure is marked | An assertion that the check fails, in `inttest/flows/reader` (provisional, awaiting confirmation) | An assertion that the check fails (flips red when fixed, preferred) versus a skip with a reason (the `inttest` lane forbids skips) |
 | D6 | Is a bounded-eligibility claim mandatory or an optional adapter capability | Optional, only judged under declared conditions | Mandatory capability with the conditions as a startup check (links to ADR #347 D5) |
 | D7 | Ordering guarantee | Per persistence id only | Also a causal order across aggregates of the same transaction |
 | D8 | Scope enumeration | The harness gives the reader the cell's scopes; `EventsStore` cannot list scopes | A capability in the SPI for `AllScopesInCell`; decided in #351 |
@@ -162,3 +164,11 @@ The ADR on module topology (#347) is still Proposed and its merge is not approva
 go test -race -count=1 ./persistence/conformance/...
 go run ./.github/scripts/unitgate -strict
 ```
+
+The PostgreSQL run needs Docker and belongs to the integration lane only, never to a unit or feature build:
+
+```sh
+go -C inttest test -count=1 -race ./flows/reader/
+```
+
+With Colima, point Testcontainers at its socket: `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock`.

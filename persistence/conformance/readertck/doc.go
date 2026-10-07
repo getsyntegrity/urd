@@ -27,14 +27,22 @@
 // docs/testing/reader-conformance.md for their definitions and for the
 // necessary conditions of each.
 //
-// # Status: provisional, internal, mechanism-neutral
+// # Status: provisional, mechanism-neutral
 //
 // No reader SPI is approved yet (#351 specifies the contract, #347 is not
-// merged). Everything here is written against the small test-local interfaces
-// Backend and Subject. They are NOT a proposal for the public API: names,
-// shapes and the opaque []byte cursor are placeholders. The package is
-// internal to persistence/conformance on purpose, so nothing is exported to
-// adapter authors until the maintainers approve a contract.
+// merged). Everything here is written against the small interfaces Backend
+// and Subject. They are NOT a proposal for the public API: names, shapes and
+// the opaque []byte cursor are placeholders, and this package carries NO
+// compatibility promise until the maintainers approve a contract (decision D1
+// of docs/testing/reader-conformance.md).
+//
+// The package lives outside "internal" for one reason: the integration module
+// (inttest) is a separate Go module, and Go does not let it import an
+// internal package of another module. The integration lane needs to run the
+// same scenarios and the same oracle against a real PostgreSQL, not a copy of
+// them. Exporting it is therefore a consequence of D1, and moving it back
+// under "internal" is the alternative if the maintainers prefer another
+// location.
 //
 // The package does not choose, favour or implement a read mechanism (commit
 // position, transaction-id horizon, set of delivered keys, ...). Choosing is
