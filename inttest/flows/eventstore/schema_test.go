@@ -36,7 +36,7 @@ import (
 
 // postgresLatestSchemaVersion is the version of the newest file in persistence/postgres/schema. Adding a file
 // means raising it here.
-const postgresLatestSchemaVersion = 5
+const postgresLatestSchemaVersion = 6
 
 // legacyEventsStoreDDL is events_store as it existed before
 // events_store_revisions: the revision was derived from MAX(sequence_number).
@@ -281,7 +281,7 @@ func TestPostgresEventStore_MigrateRefusesASchemaNewerThanTheBinary(t *testing.T
 
 			err = store.Migrate(ctx)
 			sc.Expect(err).To(specs.MatchError(postgres.ErrSchemaAhead))
-			sc.Expect(err.Error()).To(specs.MatchRegex("database is at version 99, this binary knows up to 5"))
+			sc.Expect(err.Error()).To(specs.MatchRegex("database is at version 99, this binary knows up to 6"))
 
 			version, err := store.SchemaVersion(ctx)
 			sc.Expect(err).To(specs.BeNil())
