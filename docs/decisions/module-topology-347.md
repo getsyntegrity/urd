@@ -6,7 +6,7 @@
 | Date | 2026-10-07 |
 | Tracker | #347 (I-01), epic #345, phase 0 |
 | Amends | ego-arch-001 "Canonical package and module topology" ([archived text](../archive/2026-10-06-pre-persistence-refactor/openspec/changes/ego-arch-001/design.md), historical reference only) |
-| Baseline | `develop` at `f5234a6` (#437). Every statement tagged **Current** was read on that SHA with `go1.27.0 darwin/arm64`. |
+| Baseline | Code inspected: `develop` at `f5234a6` (#437), with `go1.27.0 darwin/arm64`. Statements tagged **Current** refer to that code snapshot, not to later ADR commits. #440 and the documentation corrections following `5b548bb` are subsequent tracker/design updates; no newer code inspection is claimed. |
 | Inputs | `docs/prd/urd-platform-prd.md` (sections 2, 3, 4), `docs/prd/i-00-baseline-develop.md` and `docs/prd/i-00-epic-345-audit.md` (historical evidence, not edited here), `docs/prd/urd-module-separation-plan.md` (PR #434, **not merged** at the time of writing), `docs/decisions/actor-reuse-427.md`, `docs/decisions/scoped-offsets-retention.md`, the live body of #347 |
 | Scope | Documentation only. No code, schema, `go.mod`, GoAkt or hook change. |
 
@@ -67,7 +67,9 @@ The names are logical. Package paths marked **proposed** are not decided here; t
 | Workflow | public `projection`, `persistence`, `egopb`; its own `CommandDispatcher` port | `engine`, `compose`, `command` (Urd's envelope), `integration`, `management`, a second journal runner |
 | Management | public control interfaces of `projection`, `tenancy`, `persistence` | `engine`, `compose`, direct SQL or backend types, a reimplementation of replay, rebuild or migration |
 | Testkit and TCK | public contracts, `egopb`, standard library | any production package importing it back (section 4, R11) |
-| Inspector core | standard library | `engine`, `tenancy`, `command`, any Urd domain package |
+| Inspector core (DTO/Source) | standard library | GoAkt, `engine`, `tenancy`, `command`, any Urd domain package |
+| Read-only GoAkt inspector collector adapter (#419; R4 exception) | standard library, generic Inspector DTO/Source, public GoAkt observation APIs | Urd domain/runtime (`engine`, `compose`, `command`), `tenancy`, database/broker adapters; no runtime implementation or actor mutation controls |
+| Urd inspector enrichment adapter (optional) | generic Inspector DTO/Source, authorized public `engine` and `tenancy` metadata interfaces | backend drivers, `testkit`, `cmd/*`; no unauthorized domain-state access |
 | Adapters (nested modules) | their contracts, `egopb`, third-party backend libraries | `engine`, `compose`, GoAkt, `testkit`, `migration` |
 
 ### 3.3 Target dependency graph
@@ -91,12 +93,16 @@ flowchart TD
   PUBS["publisher/*: nested modules"]
   INSC["Inspector core (generic DTO and source)"]
   INSU["Urd enrichment adapter"]
+  INSG["Read-only GoAkt collector adapter"]
 
   CMD --> U
   CMD --> PGA
   CMD --> PUBS
   CMD --> INSC
   CMD --> INSU
+  CMD --> INSG
+  INSG --> INSC
+  INSG --> GK
   U --> GK
   U --> INT
   U --> WF
@@ -125,6 +131,8 @@ flowchart TD
   INSU --> INSC
   INSU --> U
 ```
+
+The inspector collector is a named adapter boundary: #353 checks its allowed imports separately from the generic core and Urd enrichment. Its GoAkt edge is the explicit R4 exception, not permission for the generic core to depend on the runtime.
 
 `Urd --> Workflow` shows who imports whom. The port is declared in Workflow and implemented by Urd, so the dependency never points from Workflow to the root.
 
@@ -224,7 +232,7 @@ Because `persistence`, `offsetstore` and `port/publishing` import `egopb`, their
 2. Validate the proposed split with the pinned protobuf generator and runtime before adopting it: generate both packages, build all consumers, and inspect cross-file dependencies, imports and global registry registration. `PACKAGE_SAME_GO_PACKAGE` needs a narrowly scoped, justified lint exception if this layout is selected. Run the existing `buf breaking` policy and separately assess wire compatibility; record each intentional source/file/descriptor break with scope and approval. Do not silently downgrade to a wire-only category to obtain green CI. P6 owns the final layout and compatibility policy; revise the proposal if generation, registry or import constraints fail.
 3. Change imports in `engine` and `internal/engine/*` only.
 4. Tests that must pass before the implementation merges: descriptor test over both files (the pattern in `egopb/descriptor_test.go`); golden marshaled bytes for every moved message; registry lookup of each full name `egopb.<Name>`; `go list -deps ./persistence ./offsetstore ./port/publishing` contains no engine message package; a mixed-version check between a node built before the move and one after (the #427 decision already states older nodes fail closed on newer queries; the test shows the rest of the protocol is unaffected).
-Preserved protobuf full names and field numbers constrain binary/Any wire compatibility, not all compatibility dimensions. Moving exported Go engine types can break consumer imports; moving declarations changes file-descriptor contents and may affect reflection. Audit exported signatures (including multiline signatures and struct fields), regeneration consumers and known external users. Source compatibility strategy and mixed-version runtime behavior must be demonstrated separately; no rolling-upgrade claim is accepted from field-number preservation alone.
+   Preserved protobuf full names and field numbers constrain binary/Any wire compatibility, not all compatibility dimensions. Moving exported Go engine types can break consumer imports; moving declarations changes file-descriptor contents and may affect reflection. Audit exported signatures (including multiline signatures and struct fields), regeneration consumers and known external users. Source compatibility strategy and mixed-version runtime behavior must be demonstrated separately; no rolling-upgrade claim is accepted from field-number preservation alone.
 
 5. Journal types are not moved in phases 0 to 2. If they ever change Go path, the old path keeps type aliases (identity-preserving) and the proto package, names and numbers do not change. Changing any of those is a data migration with its own decision, never a reorganization.
 6. If #362 introduces a new checkpoint identity (mode, scope or cell, processor, projection version, slice), it adds new messages or fields additively. It does not edit `Offset` or `ProjectionId` in place.
@@ -270,7 +278,7 @@ Legacy adapters: **Target** is that an undeclared adapter is treated as declarin
 
 ### 7.4 What is and is not promised
 
-- Effect, applied marker and checkpoint are atomic **only** when they commit in one transaction of one backend (invariant I3). When the destination cannot offer one, it must declare an idempotent-upsert strategy plus fencing, and the guarantee is at-least-once with an idempotent effect.
+- Effect, applied marker and checkpoint are atomic **only** when they commit in one transaction of one backend (invariant I3). A destination without that transaction may serve only projection features whose contract explicitly permits an idempotent-upsert strategy plus fencing and a recoverable checkpoint protocol; the effect guarantee is at-least-once. This fallback does **not** satisfy Integration or Workflow, whose feature-specific transaction requirements must be enforced as in section 7.3.
 - **No cross-database atomicity.** A journal in one backend and a destination in another gives no atomic append-plus-effect. SharedCell with independent destinations under one shared checkpoint is rejected in V1 (PRD C-05).
 - **No external exactly-once.** A publication to a broker is at-least-once with a stable identity: the intent is recorded in the destination transaction (outbox), the relay claims it with a fence, and a crash after the broker acknowledges may duplicate delivery. Consumers deduplicate on the stable ID. Compensation does not roll back external effects.
 - Notifications only improve latency. Polling and durable state are the recovery source.
@@ -336,7 +344,7 @@ Tenancy mode is independent of node count, cell placement, Shared or Dedicated p
 | Projection, SharedCell | explicit privileged selection, never implied by `Unscoped` | same | same |
 | Command entry and context propagation | none | fixed resolver | resolver |
 | Resource profile and cell routing (#368) | default cell, trivial router | default cell, optional profile | tenancy policy services when configured |
-| Integration and workflow identities | include the explicit unscoped scope | include the fixed scope | include the resolved scope |
+| Integration and workflow identities | destination must preserve explicit Unscoped identity and feature transaction requirements | destination must preserve the fixed scope and feature transaction requirements | destination must isolate the resolved scope and preserve feature transaction requirements |
 | Management | operates in the configured scope | same | needs tenancy control interface |
 | Inspector | none | none | none |
 
@@ -347,7 +355,7 @@ Persistence and projection never require tenancy: the persistence-side requireme
 - Multitenant requested without a `TenantResolver`.
 - A fixed identity that fails tenant-ID validation, or two explicit identities that conflict (a fixed resolver plus a different spawn-time tenant).
 - A tenant-scoped projection on an adapter without `ScopedOffsetStore` (**Current:** fails closed).
-- A missing role capability (section 7), including a mode that needs a scoped capability the adapter does not declare.
+- A missing role or enabled-feature capability (section 7.3), including a destination that cannot preserve/isolate the configured identity. Integration and Workflow require scope-aware state/intents/marks/checkpoints and their common destination transaction in all three tenancy modes; an upsert-only destination is rejected before work starts. Unscoped remains an explicit identity, not an exception to these guarantees.
 - A mode that implies a service the composition did not supply. Unscoped needs none, so it can never fail for that reason.
 
 Not rejected automatically: starting in fixed or multitenant mode over a database that holds unscoped rows. That cannot always be detected without I/O and is a data-adoption matter (below). Whether a startup probe warns is P5.
@@ -454,7 +462,7 @@ Criteria are the live body of #347 (original acceptance, the amendment on additi
 | 7 | Workflow #397 consumes public projection/persistence and defines a local `CommandDispatcher` implemented and injected by Urd | 8.2, R8 | Stated |
 | 8 | Management #398 consumes public control interfaces; durable projection primitives do not import management | 8.3, 3.2 | Stated |
 | 9 | Testkit #396 uses public contracts; no production package imports testkit or `cmd` | 8.4, R11, T9 | Stated; verified on `f5234a6` |
-| 10 | Generic inspector #419 to #422: DTO and source in a defined tool boundary, no Urd domain or tenancy; Urd adapter enriches; `cmd` is the composition root | 8.5 | Stated; paths P9 |
+| 10 | Generic inspector #419 to #422: DTO/Source core is independent; named read-only GoAkt collector adapter uses R4 exception; optional Urd adapter enriches; `cmd` is composition root | 3.2, 3.3, R4, 8.5 | All three boundaries stated; #353 checks their separate imports, paths P9 |
 | 11 | No new `go.mod`, no new broker, transport or backend; extraction follows #372 and its gates | 11, R12, T10 | Stated |
 | 12 | Workflow is Urd's own consolidation with no exact Akka or Lagom equivalent; diagram of allowed dependencies | 8.2, 3.3 | Stated; diagram in 3.3 |
 | 13 | Single-tenant clarification: record unscoped (default), fixed and multitenant; persistence and projection do not require tenancy; services required per capability; adoption when identity changes | 9, R3 | Stated; names P5 |
