@@ -23,12 +23,12 @@ package tenancy_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/specs"
 	"github.com/google/uuid"
 
+	"github.com/getsyntegrity/urd/engine"
 	"github.com/getsyntegrity/urd/internal/engine/enginetest"
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/inttest/infra/tenantfx"
@@ -45,17 +45,14 @@ func (soleWriterFence) Acquire(context.Context, persistence.Scope, string) (func
 	return func() {}, nil
 }
 
-// #346 / #428: characterization. Adopting legacy rows over a real Postgres fails today, because the adopter
-// replays with the sequence bound math.MaxUint64 and the sequence column is int8. The legacy rows are untouched
-// and still recoverable by a legacy node. When #428 is fixed this test becomes the single-tenant recovery check:
-// the adoption completes and a single-tenant node recovers balance 15 at revision 2. The in-memory twin that
-// passes today is migration.TestTenantAdopterEndToEndRecoveryThroughRealActor.
-func TestAdoptionOfLegacyDataFailsOnPostgres(t *testing.T) {
+// #428: adoption preserves legacy rows and a new single-tenant node recovers
+// the copied journal, then continues writing at the recovered revision.
+func TestAdoptionOfLegacyDataRecoversOnPostgres(t *testing.T) {
 	t.Parallel()
 	dsn := shared.NewDatabase(t)
 
 	specs.Describe(t, "legacy rows adopted into a single tenant, over postgres.EventStore", func(s *specs.Spec) {
-		s.It("fails to read the source events, copies nothing and leaves the legacy rows recoverable", func(sc *specs.Context) {
+		s.It("copies and verifies the journal, recovers it in single-tenant mode and continues commands", func(sc *specs.Context) {
 			ctx := context.Background()
 			id := uuid.NewString()
 
@@ -76,17 +73,25 @@ func TestAdoptionOfLegacyDataFailsOnPostgres(t *testing.T) {
 			sc.Expect(err).To(specs.BeNil())
 			report, err := adopter.Run(ctx)
 			sc.Expect(err).To(specs.BeNil())
-			sc.Expect(report.Copied).To(specs.Equal(0))
-			sc.Expect(report.Failed).To(specs.Equal(1))
-			sc.Expect(strings.Contains(report.String(), "greater than maximum value for int64")).To(specs.BeTrue())
+			sc.Expect(report.Copied).To(specs.Equal(1))
+			sc.Expect(report.Failed).To(specs.Equal(0))
+			sc.Expect(report.Verified).To(specs.Equal(1))
 
-			// No adopted row was written, and a legacy node still recovers the data.
-			sc.Expect(len(tenantfx.Rows(sc, dsn, id))).To(specs.Equal(2))
-			node := tenantfx.StartNode(sc, dsn)
+			// Both scopes retain their journal; a new node must recover from PostgreSQL.
+			sc.Expect(len(tenantfx.Rows(sc, dsn, id))).To(specs.Equal(4))
+			resolver, err := tenancy.WithSingleTenant("acme")
+			sc.Expect(err).To(specs.BeNil())
+			node := tenantfx.StartNode(sc, dsn, engine.WithTenantResolver(resolver))
 			sc.Expect(node.Engine.Entity(ctx, enginetest.NewAccountEventSourcedBehavior(id))).To(specs.BeNil())
 			bal, rev := recovered(sc, node, ctx, id)
 			sc.Expect(bal).To(specs.Equal(15.0))
 			sc.Expect(rev).To(specs.Equal(uint64(2)))
+			bal, rev = send(sc, node, ctx, id, &testpb.CreditAccount{AccountId: id, Balance: 7})
+			sc.Expect(bal).To(specs.Equal(22.0))
+			sc.Expect(rev).To(specs.Equal(uint64(3)))
+			rows := tenantfx.Rows(sc, dsn, id)
+			expectRowsOf(sc, rows, "", 2, "")
+			expectRowsOf(sc, rows, "acme", 3, "acme")
 		})
 	})
 }

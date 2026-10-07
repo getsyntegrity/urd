@@ -426,6 +426,14 @@ func (s *EventStore) ReplayEvents(ctx context.Context, scope persistence.Scope, 
 	if err != nil {
 		return nil, err
 	}
+	// PostgreSQL stores sequences as int8. An inclusive upper bound above
+	// MaxInt64 still means every representable sequence, not an encoding error.
+	// A lower bound above it describes an empty range; never clamp it downward.
+	if fromSequenceNumber > math.MaxInt64 || fromSequenceNumber > toSequenceNumber || limit == 0 {
+		return nil, nil
+	}
+	toSequenceNumber = min(toSequenceNumber, uint64(math.MaxInt64))
+	limit = min(limit, uint64(math.MaxInt64))
 	rows, err := s.pool.Query(ctx, `
 		SELECT persistence_id, sequence_number, is_deleted, event_payload, event_manifest,
 		       timestamp, shard_number, encryption_key_id, is_encrypted, tenant_metadata
