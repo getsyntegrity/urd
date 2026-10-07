@@ -1,13 +1,44 @@
 # I-00 — Baseline of `develop` and gaps (#346)
 
-Evidence collected on 2026-10-06 (historical baseline) and updated on
-2026-10-07 (current `develop`). Epic: #345. This change adds this report and
-characterization tests; it changes no production code.
+Evidence collected on 2026-10-06 (historical baseline), updated on
+2026-10-07 (first update, `4c66286`) and refreshed on 2026-10-07 against
+`develop` `01da644` (this update). Epic: #345. This change edits documents
+only; it changes no production code, test or `go.mod`.
 
-**Status: baseline validated on both SHAs; two findings recorded (#427, #428);
-#346 stays open** (see "Status of the #346 criteria").
+**Status: baseline validated on three SHAs. B4 is fixed (#430, #427 closed).
+The adoption finding (#428) is fixed (#429; snapshot and durable-state
+adoption moved to #435). B2 stays open as a coverage gap. #346 can close as an
+evidence gate once the open items under "Status of the #346 criteria" are
+accepted or moved to their own issues.**
 
-## Update on current `develop` (2026-10-07)
+## Refresh on `develop` `01da644` (2026-10-07)
+
+| Item | Value |
+| --- | --- |
+| `develop` SHA | `01da644a9515355ed8c21de90d88566407ac2fcc` (#433), on top of #426, #429, #430, #431, #432 |
+| Toolchain used | `go1.27.0 darwin/arm64`. The "Go 1.26" in the text of #346 was superseded by #426 (all ten modules declare `go 1.27.0`; the root `go.mod` was read on this SHA). |
+| Dependency graph (root module) | `go list -deps ./... \| wc -l` gives 523 lines. `go list -deps ./... \| grep -c '^github.com/getsyntegrity/urd/'` gives 43 packages of the root module (module path `github.com/getsyntegrity/urd`). Recomputed on this SHA with go1.27.0. For comparison, `4ebdc3d` under Go 1.26 recorded 512 lines and 43 packages. |
+| Module and PostgreSQL results | CI run 37635241381 (workflow `ci`, `push` to `develop`, head SHA `01da644a9515355ed8c21de90d88566407ac2fcc`, conclusion success, read with `gh run view`). Green jobs: `test (shard 0)`, `test (shard 1)`, `race`, `cluster`, `architecture`, `tidy`, `inttest`, `test (min)`, and `modules` for `benchmark`, `example`, `inttest`, `persistence/postgres`, `publisher/{kafka,nats,pulsar,websocket}` and `test/compat`; `lint` and `api` show as skipped (no result). In the `inttest` job log, `inttest/flows/{eventstore,restart,tenancy}` and `inttest/infra/postgres` report `ok`. |
+
+What was not re-run locally for this refresh: the module test suites and the
+`inttest` lane (evidence is the CI run above, not a local run); the earlier
+local PostgreSQL results below are from `4c66286` and are kept as history. The
+run's log was read for the `ok` lines of the `inttest` packages only; per-test
+names for the `cluster` job were not visible in the log that was read.
+
+### Findings of the previous update, now resolved
+
+| Finding | State on `01da644` | Evidence read |
+| --- | --- | --- |
+| B4, actor name collisions (#427, closed) | fixed by #430 | `engine/actor_binding.go` defines `ErrSpawnIdentityMismatch` and `ActorIdentityError` (`Unwrap` returns the sentinel); `engine.WithActorNamespace` exists (`engine/option.go:590`). `TestBaseline346` case B4 now asserts `SpawnDurableState` and `SpawnSaga` on an event-sourced ID return `ErrSpawnIdentityMismatch` and leave the first actor unchanged. |
+| TenantAdopter on PostgreSQL (#428, closed) | fixed by #429 | `TestAdoptionOfLegacyDataFailsOnPostgres` no longer exists; `inttest/flows/tenancy/adoption_test.go:50` is `TestAdoptionOfLegacyDataRecoversOnPostgres` (adopt 1 aggregate, 4 rows, recover balance 15 at revision 2 in single-tenant mode, continue to revision 3). Its result is `ok` in the `inttest` job of CI run 37635241381 (package `flows/tenancy`). |
+
+The table "Update on current `develop` (2026-10-07)" below and the sections
+that describe the failure of #428 and the B4 collision are the **history** of
+`4c66286`. Their statements about those two findings are superseded by the
+table above.
+
+## Previous update on `4c66286` (2026-10-07, history)
 
 #426 is merged: the ten modules declare `go 1.27.0`. The sections below the
 "Baseline" heading are the **historical** results, obtained on `4ebdc3d` with
@@ -21,14 +52,14 @@ container (Testcontainers over Colima).
 | Build, vet, tests per module (10 modules) | `go build ./... && go vet ./... && go test -count=1 ./...` in each module | pass; root 40 packages `ok`; `example` has no test files |
 | PostgreSQL integration | `cd inttest && go test -count=1 ./...` with `DOCKER_HOST` set to the Colima socket | `flows/eventstore`, `flows/restart`, `flows/tenancy`, `infra/postgres` `ok` |
 | B2/B4 characterization | `go test -count=1 -race -run TestBaseline346 ./engine` | pass |
-| Adoption of legacy data on PostgreSQL | `TestAdoptionOfLegacyDataFailsOnPostgres` (`inttest/flows/tenancy`) | the adopter fails: see #428 |
+| Adoption of legacy data on PostgreSQL | `TestAdoptionOfLegacyDataFailsOnPostgres` (`inttest/flows/tenancy`) | the adopter failed (#428); replaced by `TestAdoptionOfLegacyDataRecoversOnPostgres` after #429 |
 
 Without `DOCKER_HOST`, the `inttest` packages fail at start ("rootless Docker
 not found"): that is a local Docker socket issue, not a test result. These
 tests run in the `inttest` lane of CI, not in the feature/hotfix PR lane; this
 PR adds no job to it.
 
-Finding #428: `migration.TenantAdopter` cannot read legacy events from
+Finding #428 (fixed by #429; kept as history): `migration.TenantAdopter` cannot read legacy events from
 `postgres.EventStore`. It replays with `maxReplaySequence = math.MaxUint64`
 (`migration/tenant_adoption.go:58`) and the sequence column is `int8`, so the
 query fails to encode its argument. The in-memory adoption test passes, which
@@ -66,18 +97,22 @@ Read-only inspection APIs on `goakt.ActorSystem` in that fork, as candidates
 for #419 (public API presence only; local/remote access not yet checked):
 `Metric`, `Actors`, `NumActors`, `ActorOf`, `Peers`, `Running`.
 
-## B2 — `Partition` outside a cluster: not reproduced as a bug
+## B2 — `Partition` outside a cluster: not reproduced as a bug; propagation gap open
 
-Scope of the evidence: standalone mode with shard 0 only. It does not show how
-a non-zero partition propagates.
+Scope of the evidence in `TestBaseline346` case "B2": standalone mode with
+shard 0 only. That case alone does not show how a non-zero partition
+propagates; the cluster test below does for events only.
 
-Call sites in Urd (the only two):
+Call sites in Urd (the only two, checked with `grep -rn "Partition(" internal engine`
+excluding tests, on `01da644`):
 
-- `internal/engine/eventsource/event_sourced_actor.go:353`, on `PostStart`;
-- `internal/engine/durablestate/durable_state_actor.go:167`, during start.
+- `internal/engine/eventsource/event_sourced_actor.go:355`, on `PostStart`
+  (`entity.shardNumber = ctx.ActorSystem().Partition(entity.persistenceID)`);
+- `internal/engine/durablestate/durable_state_actor.go:169`, during start.
 
 Both store the result in `shardNumber`, which is written into the stored event
-envelopes and durable-state `Shard` fields.
+envelopes (`event_sourced_actor.go:1323`, `Shard: shard`) and durable-state
+`Shard` fields.
 
 In the effective fork, `actorSystem.Partition` returns
 `cluster.GetPartition(name)` when `InCluster()` and `uint64(0)` otherwise. It
@@ -90,8 +125,50 @@ each spawn and answer `CreateAccount` with revision 1 and the expected state.
 No errors. The test also reads back what was persisted: the stored event and
 the stored durable state both carry `Shard == 0`. That does not prove the
 shard came from `Partition`: 0 is also the zero value of the field, so it
-would read the same if the actors never wrote it. Proving the propagation
-would need a test that injects a non-zero partition; none exists.
+would read the same if the actors never wrote it.
+
+Correction to the previous revision of this report, which said no test injects
+a non-zero partition: `TestClusterEventPublisherHighPartitionCount`
+(`engine/publisher_test.go:409`) starts a cluster with `WithPartitionCount(1009)`
+and 40 entities, and asserts (lines 526-535) that at least one event delivered
+to the cluster publisher has `GetShard() >= 271`. So for **events in a
+cluster**, a non-zero value from `Partition` reaching the published event
+envelope is covered. Limits of that evidence: it is a `TestCluster*` test (CI
+`cluster` job, which was green in run 37635241381; the log read does not show
+whether this test ran or took its documented `t.Skip` at `publisher_test.go:483`
+when no shard >= 271 appeared within 60 s); it observes the published event,
+not the persisted row.
+
+Still not covered by any test found (searched `engine/publisher_test.go`,
+`engine/baseline_346_test.go`, `testkit`, `inttest`):
+
+- a non-zero `Shard` on **durable state** (published or stored);
+- a non-zero `Shard` on the **persisted** event row (read back from an events
+  store), as opposed to the published event;
+- a non-zero `Shard` on persisted durable state.
+
+Possible issue, from code reading only, not reproduced or tested: after #430
+`bindIdentity` rebinds `entity.persistenceID = entity.behavior.ID()`
+(`event_sourced_actor.go:481`, `durable_state_actor.go:209`). In the
+durable-state actor, `Partition(entity.persistenceID)` runs right after
+`bindIdentity` in `PreStart` (`durable_state_actor.go:166-169`), so it hashes
+the behavior ID. In the event-sourced actor `bindIdentity` is called from
+`PreStart` (`event_sourced_actor.go:296`, call at line 332) and
+`Partition(entity.persistenceID)` runs later, on `PostStart` (line 355), so by
+reading it also uses the rebound behavior ID, not `ctx.ActorName()`. That is
+consistent for both actors, but it differs from what #346 expected (name-based)
+and from the pre-#430 behaviour in multi-tenant engines, where the name is
+tenant-qualified: the shard of an existing entity may have changed across the
+upgrade. This is from code reading only; no test pins which identity feeds
+`Partition`, and the order of the GoAkt `PreStart` and `PostStart` calls was
+not observed by running anything. It belongs with the propagation gap, not
+with B4.
+
+This propagation gap (does a non-zero partition reach the stored `Shard`, and
+from which identity is it computed) is **not** the same as the criterion of
+#350, which asks that the slice be stable across 1, 3 and 5 nodes. A
+stable-slice test does not cover propagation, and a propagation test does not
+show stability. See "#350" in `i-00-epic-345-audit.md`.
 
 Open observation (not a bug claim): outside a cluster the stored shard is 0
 for every entity, so any consumer that groups by shard sees one shard. Whether that
@@ -101,75 +178,79 @@ B2 is independent of tenancy: single-tenant with cluster and multi-tenant
 without cluster are both possible. This test covers the no-resolver
 standalone case only; the other combinations are not tested here.
 
-## B4 — actor name collisions: reproduced
+## B4 — actor name collisions: fixed by #430 (#427 closed)
 
-Actor names come from `engine.actorName(tenantID, id)`. Without a tenant
-resolver, or with a fixed single-tenant resolver, the name is the bare entity
-ID; only multi-tenant engines qualify it. Event-sourced, durable-state and saga
-actors are spawned into the same GoAkt actor system.
+Status on `01da644`: **fixed.** The reproduction below is the behaviour on
+`4ebdc3d` and `4c66286` and is kept as history.
 
-Reproduction: `TestBaseline346`, case "B4". One engine,
-one ID:
+What #430 added (read in code):
 
-- `SpawnEventSourced(id)` returns nil;
-- `SpawnDurableState(id)` returns nil (no error);
-- `SpawnSaga(id)` returns nil (no error);
-- `SendCommand(id, CreateAccount)` succeeds with revision 1, the event store
-  holds an event for `id`, and the durable store holds no state for `id`.
+- `ErrSpawnIdentityMismatch` and the typed `ActorIdentityError`
+  (`engine/actor_binding.go`); `errors.Is` matches the sentinel through `Unwrap`.
+- `engine.WithActorNamespace(namespace)` (`engine/option.go:590`), so engines
+  that share one `ActorSystem` can use distinct, explicit address namespaces.
+- `bindIdentity` makes `behavior.ID()` the persistence ID instead of the actor
+  name (`event_sourced_actor.go:481`, `durable_state_actor.go:209`), so a
+  qualified actor name no longer changes journal keys; #433 adds a test that
+  persisted keys survive namespace addressing.
 
-What the test proves:
+Tests that exist now:
 
-- neither later spawn returns an error;
-- the name keeps its first holder: `ActorOf(id)` resolves to the
-  event-sourced actor (by its type) after the first spawn, and resolves to the
-  same actor (same ID, still running, same type) after `SpawnDurableState`
-  and `SpawnSaga`. Neither spawn replaced it or registered an actor of its own
-  under that name. The check is by name, not by a count of the actors in the
-  system, so it does not depend on what else starts or stops there. (An
-  earlier version counted actors and needed a wait for the entity's child
-  actor; it was replaced because the count is only a proxy);
-- a command to the shared ID is handled as an event-sourced entity, and the
-  durable store stays empty.
+- `TestBaseline346` case B4 (`engine/baseline_346_test.go`): one engine, one ID;
+  `SpawnDurableState` and `SpawnSaga` return `ErrSpawnIdentityMismatch`, the
+  name still resolves to the same running event-sourced actor, a command is
+  handled as event-sourced and the durable store stays empty.
+- `TestSpawnVerifiesDefinition` (`engine/actor_binding_test.go:22`): the same
+  family with a different definition is rejected with `*ActorIdentityError`
+  and the original actor is untouched.
+- `TestActorNamespacesOnSharedSystem` (`engine/actor_binding_test.go:49`):
+  **a two-engines-one-ActorSystem case exists, for distinct namespaces.**
+  Engine `a` (`WithActorNamespace("accounts")`) is started, engine `b`
+  (`"payments"`) is created over `a`'s actor system with `NewEngine`; the same
+  ID `shared-id` is spawned as event-sourced on `a` and as durable-state on
+  `b`; both handle `CreateAccount` independently at revision 1, the persisted
+  IDs stay `shared-id`, and the two actor names differ.
+- Not found: a test of two engines on one `ActorSystem` with the **same**
+  namespace (or with none) and the same ID, asserting
+  `ErrSpawnIdentityMismatch`. `engine_tenant_actor_identity_test.go` has five
+  tests (two tenants under one ID, cross-tenant access rejected, single-tenant
+  names, restart per tenant, stopping one tenant's actor); none creates a
+  second engine on a shared system.
 
-`SagaStatus` is not asserted. An exploratory probe showed that it answers
-without error and reports `running` for the shared ID, but a reply with no
-saga status also maps to `running` (`saga.StatusFromProto`), so the
-event-sourced actor that holds the name gives the same answer. It cannot
-tell the two apart, and pinning it would only fix incidental behaviour.
-
-So the collision is silent for both later kinds: no error, and the name stays
-with the first actor. `resolveExistingSpawn` only verifies the binding of an
-existing actor in the tenant-aware path.
-
-The test asserts today's behaviour. The fix is tracked in #427 and will flip
-its assertions.
-
-### Target solution (decided by the owner, tracked in #427, not implemented here)
+### Target solution (history; implemented by #430 except as noted)
 
 - The actor name must distinguish scope, actor family and logical definition.
   When several engine instances share one `ActorSystem`, a stable, explicit
-  namespace is required. Adding only event-sourced/durable-state/saga kinds
-  does not cover all collisions.
+  namespace is required.
 - Reusing an existing actor must verify its identity and return a typed error
   on incompatibility.
 - Renaming actors must not silently change journal keys, snapshots or any
-  persisted identity. Today `persistenceID` is taken from `ctx.ActorName()`
-  (`event_sourced_actor.go:313`, `durable_state_actor.go:138`,
-  `saga_actor.go:183`), so a name change would change it unless the persistence
-  ID is decoupled first. That coupling needs its own decision in the fix.
+  persisted identity: `persistenceID` is now decoupled from the actor name for
+  event-sourced and durable-state actors, and `sagaID` is rebound to
+  `behavior.ID()` in `saga_actor.go:218` (read, not run).
+
+### Reproduction on `4ebdc3d` / `4c66286` (history)
+
+Actor names came from `engine.actorName(tenantID, id)`. Without a tenant
+resolver, or with a fixed single-tenant resolver, the name is the bare entity
+ID. With one engine and one ID, `SpawnDurableState(id)` and `SpawnSaga(id)`
+returned nil, the name kept its first holder (the event-sourced actor), a
+command was handled as event-sourced and the durable store stayed empty. The
+characterization test asserted that behaviour and #427 was to flip it; it did.
 
 ## Go version
 
 Decision of the owner: the common minimum is **Go 1.27.x** (first proposed as
-1.26.2, then changed). All ten modules build on 1.26.2, and on 1.27.0 with the
-root module's vet and tests passing. The alignment of module `go` directives,
-the readme and CI documentation is a separate PR (#426, draft), which assumes
-`1.27.0` as the floor. This PR does not change any `go` directive.
+1.26.2, then changed). #426 is merged: the ten modules declare `go 1.27.0`,
+and this refresh used `go1.27.0`. This change does not touch any `go`
+directive.
 
 ## Tracker review (#345 and its tasks)
 
-All 79 issues from #345 to #424 are open (2026-10-06); none is closed or
-partially closed in the tracker. Checked against `develop` by searching
+All 79 issues from #345 to #424 were open on 2026-10-06; none was closed or
+partially closed in the tracker. The tracker was not re-queried for this
+refresh (only #427 and #428 are known to be closed, from the task statement
+and from the merged PRs #429 and #430). Checked against `develop` by searching
 non-test Go code for the signature of each area:
 
 | Area (issues) | Found in code | Reading |
@@ -178,29 +259,30 @@ non-test Go code for the signature of each area:
 | Per-tenant quotas (#380), tenant delete (#382) | no symbol (entity erase exists, see below) | pending |
 | `ReadSideProcessor` (#366), parked entities (#356, #375) | no symbol | pending |
 | Outbox and relay (#399–#403) | no symbol | pending |
-| Offsets keyed by full identity (#362) | `offsets_store` has no tenant column (see single tenant) | pending |
-| Rebuild per tenant (#381) | `Engine.RebuildProjection` exists, global per projection (`engine/projections.go:185`) | baseline exists; per-tenant part pending |
+| Offsets keyed by full identity (#362) | after #431 `offsets_store` has `tenant_id` (migration `006_scoped_offsets.sql`, primary key `(tenant_id, projection_name, shard_number)`); no processor/version identity | partial; see below |
+| Rebuild per tenant (#381) | `Engine.RebuildProjection` exists; after #431 it resets through `offsetstore.ForScope(offsetStore, scope)` using the scope registered for that projection (`engine/projections.go:199-220`) | partial; see below |
 | Wake after commit (#371) | `internal/engine/projection/wake_stream.go` exists | partial; not verified against #371's scope |
 | Tenant context (#379) | `tenancy/` package and propagation exist | baseline exists; the audit is the task |
 | Sagas (#409–#413) | public API and persisted saga events exist | partial, see below |
 
 This table is a code-signature check. A missing symbol is not proof that a
 capability is absent, and a present one does not prove a criterion. For four
-tasks the acceptance criteria were read against the code (2026-10-07):
+tasks the acceptance criteria were read against the code (2026-10-07, rows for #381 and #362 re-read on `01da644` after #431):
 
 | Task | Criterion | Evidence | State |
 | --- | --- | --- | --- |
-| #381 rebuild per tenant | rebuild keeps other tenants' offsets | `Engine.RebuildProjection(ctx, name, from)` stops the projection by name and calls `offsetStore.ResetOffset(ctx, name, ...)` (`engine/projections.go:185`): no tenant parameter | not met |
-| #362 offsets keyed by full identity | `ResetOffset` receives the full identity | same call: only `name` | not met |
+| #381 rebuild per tenant | rebuild keeps other tenants' offsets | `RebuildProjection(ctx, name, from)` keeps its signature but looks up the scope registered for `name` and resets through `offsetstore.ForScope` (`ResetScopedOffset`); the reset is limited to that scope. `TestScopedOffsetsPreserveLegacyAndIsolateResetOnPostgres` (`inttest/flows/tenancy/scoped_offsets_test.go`, store level, `ok` in CI run 37635241381) shows a reset of tenant `acme` leaving another tenant and the Unscoped cursor intact. No engine-level test of a rebuild with two scopes was found (the only `RebuildProjection` test in `engine/engine_test.go` covers error guards). The caller still cannot choose a scope per call | partially met (store level); engine level not shown |
+| #362 offsets keyed by full identity | `ResetOffset` receives the full identity | the key now includes the tenant (`tenant_id`, `projection_name`, `shard_number`); no processor, version or full scope identity beyond the tenant | partially met |
 | #379 tenant context | three modes validated | single-tenant, legacy and multi-tenant paths covered by `TestConformance_W7_*` over PostgreSQL (passing); remote propagation and the #305 comparison not checked | partially verified |
 | #371 wake after commit | conformance with notifications off; p50 before/after | `wake_stream.go` exists; no measurement or conformance run | not verified |
 
 The other 76 linked tasks are audited criterion by criterion, in two passes,
-in `i-00-epic-345-audit.md` (develop `4c66286`, 2026-10-07): 431 criteria
+in `i-00-epic-345-audit.md` (audited on `4c66286`, 2026-10-07; rows touched by #429-#433 re-read on `01da644`, state counts not recomputed): 431 criteria
 (one count, reproducible with the command in that file): 23 cumplido (17
 negative criteria met because nothing was built, 6 demonstrated), 88 parcial,
 240 no implementado, 6 no verificado, 74 bloqueado, each blocked row naming
-its dependency. By kind: 14 current defects, 394 new capabilities, 17
+its dependency. By kind (re-derived on `01da644`): 13 current defects (the #416 raw-reset
+row was reclassified after #431; 14 on `4c66286`), 395 new capabilities, 17
 negative, 6 met.
 
 ## Inventory for #395–#398
@@ -298,12 +380,27 @@ only observe by joining the cluster as a node, which is not read-only.
 Would need a GoAkt change: an exported read-only remote introspection client,
 a remote "list actors" and "node metric" call, a mailbox size accessor,
 dead-letter inspection, and a remote event-stream subscription. Not verified:
-`remote.Peer` fields and passivation-strategy visibility for remote PIDs. No
-API was found marked unsupported or deprecated.
+`remote.Peer` fields and passivation-strategy visibility for remote PIDs. On the claim
+that no API was found marked unsupported or deprecated: a probe was run on
+2026-10-07 against the fork source in the module cache
+(`go list -m -f '{{.Dir}}' github.com/tochemey/goakt/v4` resolves to
+`pablogore/goakt/v4@v4.5.7-actorof.1`), using
+`grep -rniE "^\s*//\s*Deprecated" . --include='*.go'` excluding tests. It
+found `Deprecated:` notices only on grain-factory functions (`GrainOf`
+replacements), the options `WithPartitionHasher` and `WithTLS`
+(`actor/option.go:152` and `:210`), the error `ErrSingletonAlreadyExists`
+(`errors/errors.go:208`), and the Kubernetes discovery config. None is on the
+introspection APIs listed above (`Actors`, `ActorOf`, `NumActors`, `Metric`,
+`Peers`, `InCluster`, `IsLeader`, `Subscribe`). The probe covers doc-comment
+deprecation only; a grep for "unsupported" found no API marked that way, only
+error text and a memory stub. It does not show the APIs are stable or
+supported beyond that, and I did not read each API's godoc individually, so
+"no API marked unsupported or deprecated" holds for these greps and is
+otherwise unverified.
 
 ## Single tenant (#424)
 
-Read from code and tests; the tests named below were run on 2026-10-07. Three modes
+Read from code and tests. The tests named below were run locally on 2026-10-07 on `4c66286`; the PostgreSQL ones were also green in CI run 37635241381 on `01da644`. Three modes
 (`engine.WithTenantResolver`, first registration wins; a second non-nil one is
 `ErrAmbiguousTenantResolver`):
 
@@ -329,39 +426,60 @@ does not see legacy Unscoped rows; an existing aggregate restarts empty unless
   (`inttest/flows/tenancy/conformance_test.go`, PostgreSQL), and
   `TestTenantAdopterEndToEndRecoveryThroughRealActor`
   (`migration/tenant_adoption_test.go`, `testkit.EventsStore` only).
-- Shown not to work: adoption over PostgreSQL (#428). Recovery after adoption
-  on PostgreSQL cannot be demonstrated yet; the characterization test records
-  the current failure.
-- Not verified: snapshot and durable-state adoption in a database;
-  `MIGRATION.md` guidance.
-- Gap: `offsets_store` has no tenant column (keyed by projection name and
-  shard), and no offset migration was found for a switch of mode.
+- Proven (passing, `01da644`): adoption over PostgreSQL recovers.
+  `TestAdoptionOfLegacyDataRecoversOnPostgres` (replacing
+  `TestAdoptionOfLegacyDataFailsOnPostgres`, #429) adopts a legacy aggregate
+  into tenant `acme`, finds 4 rows (2 Unscoped, 2 `acme`), recovers balance 15
+  at revision 2 in single-tenant mode and continues to revision 3 without
+  touching the Unscoped rows.
+- Not covered: snapshot and durable-state adoption. Moved to #435 (#428 is
+  closed); the adopter's test above covers the event journal only. Whether
+  `MIGRATION.md` guidance exists or is correct was not verified.
+- Offsets: the earlier gap "`offsets_store` has no tenant column" is
+  **closed** by #431. `persistence/postgres/schema/006_scoped_offsets.sql` adds
+  `tenant_id TEXT NOT NULL DEFAULT ''`, keeps old rows under `''` (Unscoped)
+  and makes the primary key `(tenant_id, projection_name, shard_number)`;
+  `OffsetStore` implements `offsetstore.ScopedOffsetStore`; the projection
+  runner binds `offsetstore.ForScope(x.offsetsStore, x.scope)`. The migration
+  upgrade is exercised by `TestScopedOffsetsPreserveLegacyAndIsolateResetOnPostgres`.
+  Remaining: no offset migration was found for a *switch of mode*
+  (Unscoped cursor to a tenant cursor): by design old offsets stay Unscoped
+  and a tenant starts at 0, which is a documented choice in the SQL comment,
+  not a copy. Whether that is acceptable for a single-tenant adopter is a
+  question for #424/#435, not verified here.
 
 ## Status of the #346 criteria
 
+State on `develop` `01da644` (go1.27.0):
+
 | Criterion | State |
 | --- | --- |
-| Record the SHA, build with Go 1.26, get the `go list` graph | done on `4ebdc3d`/Go 1.26 (historical); modules re-built and tested on current `develop`/Go 1.27.0 |
-| Confirm or discard B2 and B4 | B2 not reproduced as a bug (non-zero partition not tested); B4 reproduced, fix tracked in #427 |
-| Review each task against code and tracker | done: 81 linked tasks, all open; 5 here and 76 in `i-00-epic-345-audit.md`, 431 criteria, two passes; static reading, targeted tests only where a doubt could be settled |
-| Audit publishers, sagas, testkit and controls for #395–#398 | done from code; not exercised by tests |
-| Fix the GoAkt version and fork for #419 | done |
-| Single-tenant inventory (#424) | done; the PostgreSQL adoption path fails (#428) |
-| Module tests and PostgreSQL integration | done on current `develop` |
-| Recovery after adopting legacy data to single-tenant | not demonstrated: blocked by #428 |
+| Record the SHA, build with the common Go version, get the `go list` graph | done on `01da644` with go1.27.0: 523 lines, 43 root-module packages (`go list -deps ./...`, command above). The Go 1.26 wording of the issue was superseded by #426. Earlier SHAs kept as history |
+| Confirm or discard B2 and B4 | B4 reproduced, then fixed by #430 (#427 closed); two-engines-one-system exists for distinct namespaces only. B2 not reproduced as a bug; events in a cluster reach a non-zero `Shard` (`TestClusterEventPublisherHighPartitionCount`); durable-state and persisted-row propagation untested |
+| Review each task against code and tracker | done on `4c66286`; rows for #362, #381, actor identity and adoption re-read on `01da644`; counts not recomputed |
+| Audit publishers, sagas, testkit and controls for #395-#398 | done from code on `4c66286`; not exercised by tests; not re-read in this refresh |
+| Fix the GoAkt version and fork for #419 | done; the "no unsupported API" statement is backed by a grep (see #419) with its limits |
+| Single-tenant inventory (#424) | done; PostgreSQL adoption recovers (#429); the offsets tenant-column gap is closed (#431) |
+| Module tests and PostgreSQL integration | done: CI run 37635241381 on `01da644`, all listed jobs green |
+| Recovery after adopting legacy data to single-tenant | demonstrated for the event journal on PostgreSQL (`TestAdoptionOfLegacyDataRecoversOnPostgres`); snapshots and durable state are #435 |
 
-#346 stays open. Pending:
+Open items after this refresh (none is a regression introduced by it):
 
-- recovery after adoption on PostgreSQL, blocked by #428;
-- a test that a non-zero partition reaches the stored `Shard` of events and
-  durable state. No acceptance criterion in #350 or elsewhere asks for it
-  (#350 asks for slice stability across 1, 3 and 5 nodes, a different
-  guarantee); it is a gap found by B2, and a stable-slice test would not cover
-  it;
-- the 14 current defects and the 74 blocked criteria of the epic audit, which
-  belong to their own issues, not to this PR;
+- B2 propagation gap: a test that a non-zero partition reaches the stored
+  `Shard` of durable state and of persisted events, and a decision on which
+  identity feeds `Partition` after #430. No acceptance criterion in #350 or
+  elsewhere asks for it (#350 asks for slice stability across 1, 3 and 5
+  nodes, a different guarantee); a stable-slice test would not cover it;
+- no test of two engines on one `ActorSystem` with the same namespace and the
+  same ID asserting `ErrSpawnIdentityMismatch`;
+- snapshot and durable-state adoption (#435);
+- an engine-level test that a per-scope rebuild leaves another scope's offsets
+  alone (the store-level test exists);
+- the 13 current defects and the 74 blocked criteria of the epic audit, which
+  belong to their own issues, not to this PR (counts from `4c66286`);
 - limits of the audit: static reading plus targeted tests, so an equivalent
-  implementation under an unsearched name may exist.
+  implementation under an unsearched name may exist. This refresh did not
+  re-run the test suites locally; CI run 37635241381 is the evidence.
 
 `no implementado` on criteria of new guarantees is the expected baseline, not
 a defect.
