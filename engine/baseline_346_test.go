@@ -6,10 +6,28 @@ import (
 	"time"
 
 	"github.com/getsyntegrity/go-specs/specs"
+	goakt "github.com/tochemey/goakt/v4/actor"
 
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/persistence"
 )
+
+// settledActorCount returns the number of actors in sys once the count has
+// not changed for several consecutive reads, or the last read after a
+// bounded wait.
+func settledActorCount(sys goakt.ActorSystem) uint64 {
+	last := sys.NumActors()
+	stable := 0
+	for i := 0; i < 100 && stable < 5; i++ {
+		time.Sleep(20 * time.Millisecond)
+		if n := sys.NumActors(); n == last {
+			stable++
+		} else {
+			last, stable = n, 0
+		}
+	}
+	return last
+}
 
 // TestBaseline346 is characterization evidence for #346 (I-00). It records
 // what develop does today; it does not endorse it. The fix for B4 is tracked
@@ -46,24 +64,57 @@ func TestBaseline346(t *testing.T) {
 				}
 				ctx.Expect(account.GetAccountBalance()).ToEqual(float64(5))
 			}
+
+			// The shard the entity actors persist is the one Partition returned.
+			event, err := es.GetLatestEvent(bg, persistence.Unscoped(), esID)
+			ctx.Expect(err).To(specs.BeNil())
+			if event == nil {
+				ctx.T.Fatalf("event store has no event for %s", esID)
+			}
+			ctx.Expect(event.GetShard()).ToEqual(uint64(0))
+
+			durable, err := ds.GetLatestState(bg, persistence.Unscoped(), dsID)
+			ctx.Expect(err).To(specs.BeNil())
+			if durable == nil {
+				ctx.T.Fatalf("durable store has no state for %s", dsID)
+			}
+			ctx.Expect(durable.GetShard()).ToEqual(uint64(0))
 		})
 
 		// B4: with no tenant resolver the actor name is the bare entity ID, so
-		// a durable-state entity spawned with the ID of an event-sourced entity
-		// returns no error and creates no durable-state state. The saga spawn
-		// with the same ID is only checked for the absence of an error; what
-		// it creates is not verified here.
-		s.It("B4: a durable-state spawn with the ID of an event-sourced entity returns no error and creates no state", func(ctx *specs.Context) {
+		// a durable-state entity and a saga spawned with the ID of an
+		// event-sourced entity return no error and add no actor to the system;
+		// a command to that ID is handled by the event-sourced entity.
+		s.It("B4: a durable-state or saga spawn with the ID of an event-sourced entity returns no error and creates no actor", func(ctx *specs.Context) {
 			es, ds := connectedEventsStore(ctx), connectedDurableStore(ctx)
 			e := newTestEngine(ctx.T, "baseline346b4", es, WithLogger(DiscardLogger), WithStateStore(ds))
 			ctx.Expect(e.Start(bg)).To(specs.BeNil())
 
 			id := "11111111-2222-3333-4444-555555555555"
+			sys := e.actorSystem.Load().sys
+			before := sys.NumActors()
 			ctx.Expect(e.SpawnEventSourced(bg, &domainOnlyEventSourced{id: id})).To(specs.BeNil())
-			// Observed today: the later spawns return nil instead of a typed error.
+			// The entity starts a child actor of its own after the spawn
+			// returns, so the count is read once it stops changing.
+			afterEventSourced := settledActorCount(sys)
+			if afterEventSourced <= before {
+				ctx.T.Fatalf("event-sourced spawn added no actor: before=%d after=%d", before, afterEventSourced)
+			}
+
+			// Observed today: the later spawns return nil instead of a typed
+			// error, and neither adds an actor to the system.
 			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: id})).To(specs.BeNil())
-			// Saga: only the absence of an error is asserted; no actor is checked.
 			ctx.Expect(e.SpawnSaga(bg, &domainOnlySaga{id: id}, 0)).To(specs.BeNil())
+			ctx.Expect(settledActorCount(sys)).ToEqual(afterEventSourced)
+
+			// SagaStatus answers without error and reports running. That does
+			// not tell a saga from the event-sourced actor that holds the name:
+			// a reply with no saga status also maps to running
+			// (saga.StatusFromProto). The actor count above is the evidence
+			// that no saga actor was created.
+			info, err := e.SagaStatus(bg, id, time.Second)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(info.Status).ToEqual(SagaRunning)
 
 			// The command is handled as an event-sourced entity (an event is
 			// stored) and the durable store stays empty, which is indirect

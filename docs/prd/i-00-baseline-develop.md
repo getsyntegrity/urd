@@ -60,7 +60,8 @@ Reproduction: `TestBaseline346`, case "B2" (`engine`). A standalone
 engine with in-memory event and state stores: `InCluster()` is false,
 `Partition("any-name")` is 0, and an event-sourced and a durable-state entity
 each spawn and answer `CreateAccount` with revision 1 and the expected state.
-No errors.
+No errors. The test also reads back what was persisted: the stored event and
+the stored durable state both carry `Shard == 0`.
 
 Open observation (not a bug claim): outside a cluster every entity records
 shard 0, so any consumer that groups by shard sees one shard. Whether that
@@ -86,16 +87,27 @@ one ID:
 - `SendCommand(id, CreateAccount)` succeeds with revision 1, the event store
   holds an event for `id`, and the durable store holds no state for `id`.
 
-What the test proves: neither later spawn returns an error, and a command to
-the shared ID is handled as an event-sourced entity. The empty durable store
-is indirect evidence that the durable-state spawn did not create its own
-actor. What it does not prove: whether the saga spawn created an actor, or
-was absorbed by the existing one. The test only checks that `SpawnSaga`
-returns nil. That part is unverified.
+What the test proves:
 
-So the collision is silent for the durable-state case, and for the saga case
-the only observed fact is the absence of an error. `resolveExistingSpawn` only
-verifies the binding of an existing actor in the tenant-aware path.
+- neither later spawn returns an error;
+- neither later spawn adds an actor: the actor count of the system, read once
+  it stops changing, is the same before and after `SpawnDurableState` and
+  `SpawnSaga`. (An event-sourced entity starts a child actor of its own after
+  its spawn returns, so reading the count right away is a race; the count is
+  `before + 1` immediately and `before + 2` once settled, in 30 of 30 probe
+  runs.);
+- a command to the shared ID is handled as an event-sourced entity, and the
+  durable store stays empty.
+
+What it does not prove: that `SagaStatus` tells the two apart. `SagaStatus`
+answers without error and reports `running`, but a reply with no saga status
+also maps to `running` (`saga.StatusFromProto`), so the event-sourced actor
+that holds the name would give the same answer. The test asserts it only as
+the observed behaviour.
+
+So the collision is silent for both later kinds: no error, and no actor of
+their own. `resolveExistingSpawn` only verifies the binding of an existing
+actor in the tenant-aware path.
 
 The test asserts today's behaviour. The fix will flip its assertions.
 
