@@ -6,28 +6,10 @@ import (
 	"time"
 
 	"github.com/getsyntegrity/go-specs/specs"
-	goakt "github.com/tochemey/goakt/v4/actor"
 
 	testpb "github.com/getsyntegrity/urd/internal/testpb"
 	"github.com/getsyntegrity/urd/persistence"
 )
-
-// settledActorCount returns the number of actors in sys once the count has
-// not changed for several consecutive reads, or the last read after a
-// bounded wait.
-func settledActorCount(sys goakt.ActorSystem) uint64 {
-	last := sys.NumActors()
-	stable := 0
-	for i := 0; i < 100 && stable < 5; i++ {
-		time.Sleep(20 * time.Millisecond)
-		if n := sys.NumActors(); n == last {
-			stable++
-		} else {
-			last, stable = n, 0
-		}
-	}
-	return last
-}
 
 // TestBaseline346 is characterization evidence for #346 (I-00). It records
 // what develop does today; it does not endorse it. The fix for B4 is tracked
@@ -94,18 +76,21 @@ func TestBaseline346(t *testing.T) {
 			sys := e.actorSystem.Load().sys
 			before := sys.NumActors()
 			ctx.Expect(e.SpawnEventSourced(bg, &domainOnlyEventSourced{id: id})).To(specs.BeNil())
-			// The entity starts a child actor of its own after the spawn
-			// returns, so the count is read once it stops changing.
-			afterEventSourced := settledActorCount(sys)
-			if afterEventSourced <= before {
-				ctx.T.Fatalf("event-sourced spawn added no actor: before=%d after=%d", before, afterEventSourced)
-			}
+			// An event-sourced entity is two actors: itself, and a child it
+			// starts after the spawn returns. Wait for that observable
+			// condition, with a deadline, instead of for the count to stop
+			// changing. The test fails if the condition is not reached.
+			ctx.Eventually(func() any {
+				return sys.NumActors()
+			}, specs.Equal(before+2), specs.WithTimeout(waitTimeout), specs.WithInterval(10*time.Millisecond))
+			afterEventSourced := sys.NumActors()
 
 			// Observed today: the later spawns return nil instead of a typed
-			// error, and neither adds an actor to the system.
+			// error. Spawn is synchronous, so an actor they created would
+			// already be counted when they return: neither adds one.
 			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: id})).To(specs.BeNil())
 			ctx.Expect(e.SpawnSaga(bg, &domainOnlySaga{id: id}, 0)).To(specs.BeNil())
-			ctx.Expect(settledActorCount(sys)).ToEqual(afterEventSourced)
+			ctx.Expect(sys.NumActors()).ToEqual(afterEventSourced)
 
 			// SagaStatus answers without error and reports running. That does
 			// not tell a saga from the event-sourced actor that holds the name:

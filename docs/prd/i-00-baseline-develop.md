@@ -90,12 +90,13 @@ one ID:
 What the test proves:
 
 - neither later spawn returns an error;
-- neither later spawn adds an actor: the actor count of the system, read once
-  it stops changing, is the same before and after `SpawnDurableState` and
-  `SpawnSaga`. (An event-sourced entity starts a child actor of its own after
-  its spawn returns, so reading the count right away is a race; the count is
-  `before + 1` immediately and `before + 2` once settled, in 30 of 30 probe
-  runs.);
+- neither later spawn adds an actor: the actor count of the system is the
+  same before and after `SpawnDurableState` and `SpawnSaga`. An event-sourced
+  entity is two actors (itself and a child it starts after its spawn
+  returns), so the test first waits, with a 10 s deadline, until the count is
+  the starting count plus two, and fails if it is not reached. The later
+  spawns are synchronous, so an actor they created would already be counted
+  when they return. The `+ 2` is the observed shape today, not a contract;
 - a command to the shared ID is handled as an event-sourced entity, and the
   durable store stays empty.
 
