@@ -76,6 +76,10 @@ func sliceOfN(scope Scope, entityID string, n uint64) uint64 {
 }
 
 // sliceHash returns the full 64-bit FNV-1a hash of the unambiguous key.
+//
+// It reads the tenant through Scope.TenantID today. When Scope becomes opaque
+// (#349), the bytes hashed for a given persisted key must stay identical; the
+// golden vectors in slice_test.go are the contract for that.
 func sliceHash(scope Scope, entityID string) uint64 {
 	h := fnvOffset64
 	mix := func(b byte) {

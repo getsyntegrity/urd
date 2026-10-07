@@ -4,6 +4,14 @@ Status: PROPOSAL. Nothing here is a ratified decision. The slice count N, the ha
 
 Related: #350 (this work), #438 (B2 propagation gap and B4 coverage), #351 (I-05, reader contract and slice range, offset identity), #347 (I-01, ADR on module topology and adapter capabilities), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers). PRD: `docs/prd/urd-platform-prd.md`, requirement P-03 (slices stable independently of node count and physical cell; migration preserves logical identities or explicitly invalidates incompatible cursors) and the risk row "choose slice count and mapping explicitly". The PRD lists the slice count among the product decisions still to be recorded in its linked issue or ADR before any guarantee is claimed.
 
+## Place in the ADR
+
+The module-topology ADR (`module-topology-347.md`, merged via #439) registers the pending decisions this work depends on. None of them is decided by this document.
+
+- P1: slice count N (256 or 1024), hash and key encoding. Not ratified. The unexported `sliceOfProvisional` with `provisionalSliceCount = 1024` in #436 is the provisional implementation only, and the 1024 is a placeholder.
+- P2: offset migration, cutover and events removed by retention. Owned by #359 (with #351 and #362). The outline below feeds that decision and does not make it.
+- P3: the shape of `Scope`, where the TenantID-to-Scope conversion lives, and key validation. Owned by #349.
+
 ## What the code does
 
 `persistence/slice.go` contains an unexported, provisional pure function `sliceOfProvisional(scope, entityID)` and constant `provisionalSliceCount = 1024`. It maps the pair (Scope, entity id) to a slice with FNV-1a 64 over an unambiguous key: marker byte, uvarint tenant length, tenant bytes, 0x00, entity id. Unscoped and the invalid zero Scope have their own markers. It takes no cluster, clock or topology input.
@@ -30,6 +38,16 @@ Consequences of a later change (all are data migrations, not code edits):
 - Changing the hash or key encoding is always a full recompute, whatever N is.
 
 Proposal (not ratified): 1024, on the condition that the workload model (#390, #362) shows that tenants x projections x 1024 offset rows is acceptable. If the measured number of tenants x projections makes the offset table or its write rate a problem, choose 256. The only decisive input is that measurement. Recorded without data, the proposal is a judgement on granularity and on the cheap-coarsening property above, not a measured result.
+
+## Transition to an opaque Scope (#349, ADR T1 and P3)
+
+`sliceHash` currently reads `scope.TenantID()`. ADR finding T1 says #349 makes `Scope` opaque (the persisted key stays `''` for Unscoped and the tenant id otherwise), and P3 leaves the final shape open. Whatever shape #349 chooses, `sliceHash` must produce exactly the same value for the same persisted key:
+
+- Unscoped hashes the Unscoped marker only, with no tenant bytes.
+- A tenant hashes the tenant marker, the uvarint length of the same tenant string bytes, those bytes and the separator, as today.
+- An invalid zero Scope keeps its own marker.
+
+The existing golden vectors in `persistence/slice_test.go` are the contract that proves this, and they must not change as part of #349. If a vector has to change, that is a hash or key change (P1) and a data migration, not a refactor. This note does not ratify the hash or encoding.
 
 ## B2 propagation (#438) versus #350
 
