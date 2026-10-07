@@ -49,13 +49,14 @@ type goldenCase struct {
 	golden uint64
 }
 
-// The golden vectors pin the CANDIDATE algorithm (FNV-1a 64, the key layout and
-// N=1024). They do not ratify any of the three: N, hash and encoding are still
-// pending a maintainer decision (P1 in the ADR, #350). They exist so that the
-// provisional function cannot drift silently. If one changes, every shard_number
+// The golden vectors pin the ratified algorithm (FNV-1a 64, the key layout and
+// N=1024; P1 in the ADR, recorded in #350). The ratification fixes the
+// calculation only: it does not approve the migration strategy (#359) and the
+// function is not wired to any write path. The vectors exist so that the
+// calculation cannot drift silently. If one changes, every shard_number
 // computed with it would change: that is a data migration, not a test update.
-func TestSliceOfProvisionalGoldenVectors(t *testing.T) {
-	specs.Describe(t, "sliceOfProvisional golden vectors", func(s *specs.Spec) {
+func TestSliceOfGoldenVectors(t *testing.T) {
+	specs.Describe(t, "sliceOf golden vectors", func(s *specs.Spec) {
 		specs.Table(s, []goldenCase{
 			{"unscoped, empty id", func(*specs.Context) Scope { return Unscoped() }, "", 991},
 			{"unscoped, order-1", func(*specs.Context) Scope { return Unscoped() }, "order-1", 159},
@@ -63,25 +64,25 @@ func TestSliceOfProvisionalGoldenVectors(t *testing.T) {
 			{"tenant a, bc", func(c *specs.Context) Scope { return sliceTenant(c, "a") }, "bc", 381},
 			{"tenant unscoped, order-1", func(c *specs.Context) Scope { return sliceTenant(c, "unscoped") }, "order-1", 65},
 		}, func(c goldenCase) string { return c.name }, func(ctx *specs.Context, c goldenCase) {
-			ctx.Expect(sliceOfProvisional(c.scope(ctx), c.id)).ToEqual(c.golden)
+			ctx.Expect(sliceOf(c.scope(ctx), c.id)).ToEqual(c.golden)
 		})
 	})
 }
 
-func TestSliceOfProvisionalIsDeterministicAndInRange(t *testing.T) {
-	specs.Describe(t, "sliceOfProvisional", func(s *specs.Spec) {
+func TestSliceOfIsDeterministicAndInRange(t *testing.T) {
+	specs.Describe(t, "sliceOf", func(s *specs.Spec) {
 		s.It("returns the same slice for the same input", func(ctx *specs.Context) {
 			scope := sliceTenant(ctx, "acme")
-			first := sliceOfProvisional(scope, "order-1")
+			first := sliceOf(scope, "order-1")
 			for i := 0; i < 100; i++ {
-				ctx.Expect(sliceOfProvisional(scope, "order-1")).ToEqual(first)
+				ctx.Expect(sliceOf(scope, "order-1")).ToEqual(first)
 			}
 		})
 
-		s.It("stays within [0, provisionalSliceCount)", func(ctx *specs.Context) {
+		s.It("stays within [0, sliceCount)", func(ctx *specs.Context) {
 			scope := sliceTenant(ctx, "acme")
 			for i := 0; i < 10000; i++ {
-				ctx.Expect(sliceOfProvisional(scope, fmt.Sprintf("id-%d", i)) < provisionalSliceCount).To(specs.BeTrue())
+				ctx.Expect(sliceOf(scope, fmt.Sprintf("id-%d", i)) < sliceCount).To(specs.BeTrue())
 			}
 		})
 
@@ -116,14 +117,14 @@ func TestSliceHashSeparatesScopesAndKeys(t *testing.T) {
 	})
 }
 
-func TestSliceOfProvisionalDistribution(t *testing.T) {
-	specs.Describe(t, "sliceOfProvisional distribution", func(s *specs.Spec) {
+func TestSliceOfDistribution(t *testing.T) {
+	specs.Describe(t, "sliceOf distribution", func(s *specs.Spec) {
 		s.It("spreads keys without a degenerate bucket", func(ctx *specs.Context) {
-			const keys = 100 * provisionalSliceCount
-			counts := make([]int, provisionalSliceCount)
+			const keys = 100 * sliceCount
+			counts := make([]int, sliceCount)
 			scope := sliceTenant(ctx, "acme")
 			for i := 0; i < keys; i++ {
-				counts[sliceOfProvisional(scope, fmt.Sprintf("entity-%d", i))]++
+				counts[sliceOf(scope, fmt.Sprintf("entity-%d", i))]++
 			}
 			// The mean is 100 per slice; the bounds are loose on purpose. This
 			// guards against a degenerate hash, not against statistical noise.
@@ -139,11 +140,11 @@ func TestSliceOfProvisionalDistribution(t *testing.T) {
 }
 
 // This test computes the slices of a fixed corpus under topology 1, 3 and 5
-// and asserts they are identical. Honest caveat: sliceOfProvisional takes no
+// and asserts they are identical. Honest caveat: sliceOf takes no
 // topology input, so this holds by construction. The test documents and
 // guards that contract; it does not execute anything on a real cluster.
-func TestSliceOfProvisionalIsIndependentOfTopology(t *testing.T) {
-	specs.Describe(t, "sliceOfProvisional across topologies (by construction)", func(s *specs.Spec) {
+func TestSliceOfIsIndependentOfTopology(t *testing.T) {
+	specs.Describe(t, "sliceOf across topologies (by construction)", func(s *specs.Spec) {
 		type entry struct {
 			scope Scope
 			id    string
@@ -151,7 +152,7 @@ func TestSliceOfProvisionalIsIndependentOfTopology(t *testing.T) {
 		compute := func(corpus []entry, _ int) []uint64 { // topology is deliberately not an input
 			out := make([]uint64, len(corpus))
 			for i, c := range corpus {
-				out[i] = sliceOfProvisional(c.scope, c.id)
+				out[i] = sliceOf(c.scope, c.id)
 			}
 			return out
 		}
@@ -265,15 +266,15 @@ var fullHashCases = []fullHashCase{
 // opaque Scope of #349) kept the hashed bytes: many different hashes share a
 // slice. The full value is what must survive such a change.
 func TestSliceHashFullVectors(t *testing.T) {
-	specs.Describe(t, "sliceHash full 64-bit vectors (candidate algorithm, not ratified)", func(s *specs.Spec) {
+	specs.Describe(t, "sliceHash full 64-bit vectors (ratified algorithm)", func(s *specs.Spec) {
 		specs.Table(s, fullHashCases, func(c fullHashCase) string { return c.name }, func(ctx *specs.Context, c fullHashCase) {
 			key := referenceSliceKey(c.kind, c.tenant, c.id)
 			got := sliceHash(c.scope(ctx), c.id)
 
 			ctx.Expect(got).ToEqual(c.hash)
 			ctx.Expect(referenceFNV1a64(key)).ToEqual(c.hash)
-			ctx.Expect(got % provisionalSliceCount).ToEqual(c.slice)
-			ctx.Expect(sliceOfProvisional(c.scope(ctx), c.id)).ToEqual(c.slice)
+			ctx.Expect(got % sliceCount).ToEqual(c.slice)
+			ctx.Expect(sliceOf(c.scope(ctx), c.id)).ToEqual(c.slice)
 		})
 
 		s.It("exercises both uvarint widths the Scope validation allows", func(ctx *specs.Context) {
@@ -336,8 +337,13 @@ func TestSliceKeyEncodingIsUnambiguous(t *testing.T) {
 		})
 
 		s.It("rejects the control-rune tenants that would otherwise forge a separator", func(ctx *specs.Context) {
-			_, err := NewTenantScope(tenancy.TenantID("acme\x00"))
-			ctx.Expect(errors.Is(err, ErrInvalidScope)).To(specs.BeTrue())
+			// A NUL anywhere in the tenant, and other control runes, must be refused
+			// by the real Scope validation, so no valid Scope can imitate the
+			// separator or the length prefix of another (tenant, id) pair.
+			for _, tenant := range []string{"acme\x00", "ac\x00me", "\x00acme", "a\tb", "a\nb", "a\x01b", "a\x7fb"} {
+				_, err := NewTenantScope(tenancy.TenantID(tenant))
+				ctx.Expect(errors.Is(err, ErrInvalidScope)).To(specs.BeTrue())
+			}
 		})
 
 		s.It("hashes the Unscoped, tenant and invalid markers apart for the same id", func(ctx *specs.Context) {
@@ -362,12 +368,12 @@ func TestSliceCollisionsAreExpected(t *testing.T) {
 			a, b := sliceTenant(ctx, "acme"), sliceTenant(ctx, "globex")
 			bySlice := map[uint64]string{}
 			var found bool
-			for i := 0; i <= provisionalSliceCount && !found; i++ {
+			for i := 0; i <= sliceCount && !found; i++ {
 				id := fmt.Sprintf("id-%d", i)
-				bySlice[sliceOfProvisional(a, id)] = id
-				if other, ok := bySlice[sliceOfProvisional(b, id)]; ok {
+				bySlice[sliceOf(a, id)] = id
+				if other, ok := bySlice[sliceOf(b, id)]; ok {
 					found = true
-					ctx.Expect(sliceOfProvisional(a, other)).ToEqual(sliceOfProvisional(b, id))
+					ctx.Expect(sliceOf(a, other)).ToEqual(sliceOf(b, id))
 					ctx.Expect(a.Equal(b)).To(specs.BeFalse())
 				}
 			}
@@ -378,12 +384,12 @@ func TestSliceCollisionsAreExpected(t *testing.T) {
 			scope := sliceTenant(ctx, "acme")
 			bySlice := map[uint64]uint64{}
 			var sameSliceDifferentHash bool
-			for i := 0; i <= provisionalSliceCount && !sameSliceDifferentHash; i++ {
+			for i := 0; i <= sliceCount && !sameSliceDifferentHash; i++ {
 				h := sliceHash(scope, fmt.Sprintf("id-%d", i))
-				if prev, ok := bySlice[h%provisionalSliceCount]; ok && prev != h {
+				if prev, ok := bySlice[h%sliceCount]; ok && prev != h {
 					sameSliceDifferentHash = true
 				}
-				bySlice[h%provisionalSliceCount] = h
+				bySlice[h%sliceCount] = h
 			}
 			ctx.Expect(sameSliceDifferentHash).To(specs.BeTrue())
 		})

@@ -22,19 +22,19 @@
 
 package persistence
 
-// provisionalSliceCount is the number of logical slices (scope, entity id)
-// pairs are mapped onto. It is PROVISIONAL: the final N (256 or 1024) is an
-// open maintainer decision tracked with #350 and #351, see
-// docs/decisions/logical-slices.md. Until that decision is recorded, the
-// constant and the functions below are unexported on purpose, so no public API
-// commits to a value that may still change. They are not wired to any write
-// path yet.
+// sliceCount is the number of logical slices (scope, entity id) pairs are
+// mapped onto. The maintainer ratified N = 1024, FNV-1a 64 and the key encoding
+// below (recorded in #350 and #351, see docs/decisions/logical-slices.md). That
+// fixes the calculation. It does not approve the migration strategy (#359) and
+// does not enable it: the functions below are unexported on purpose and are
+// not wired to any write path. Event.Shard and DurableState.Shard still come
+// from ActorSystem().Partition until the #359 cutover gate allows replacing it.
 //
-// Whatever N is finally chosen, changing it later, changing the hash, or
-// changing the key encoding reassigns existing entities to other slices. Each
-// of those is a data migration of every persisted shard_number and of every
-// projection offset keyed by it (see the decision doc), not a code-only edit.
-const provisionalSliceCount = 1024
+// Changing N, the hash, or the key encoding reassigns existing entities to
+// other slices. Each of those is a data migration of every persisted
+// shard_number and of every projection offset keyed by it (see the decision
+// doc), not a code-only edit.
+const sliceCount = 1024
 
 // FNV-1a 64-bit parameters. The hash is specified (not seeded, not
 // runtime-dependent), so a slice is stable across processes, restarts,
@@ -52,7 +52,7 @@ const (
 	sliceKeyInvalid  byte = 0xFF
 )
 
-// sliceOfProvisional returns the logical slice, in [0, provisionalSliceCount),
+// sliceOf returns the logical slice, in [0, sliceCount),
 // that owns the entity identified by the pair (scope, entityID).
 //
 // It is a pure function: the result depends only on its arguments and never on
@@ -68,11 +68,11 @@ const (
 // marker and carries no tenant, so it cannot collide with a tenant whose id
 // happens to read "unscoped". An invalid (zero) Scope gets a third marker
 // rather than panicking; callers are expected to have rejected it already.
-func sliceOfProvisional(scope Scope, entityID string) uint64 {
-	return sliceOfN(scope, entityID, provisionalSliceCount)
+func sliceOf(scope Scope, entityID string) uint64 {
+	return sliceOfN(scope, entityID, sliceCount)
 }
 
-// sliceOfN is sliceOfProvisional with an explicit slice count n, which must be
+// sliceOfN is sliceOf with an explicit slice count n, which must be
 // > 0. It lets tests exercise other moduli and the 256 candidate.
 func sliceOfN(scope Scope, entityID string, n uint64) uint64 {
 	return sliceHash(scope, entityID) % n
@@ -84,7 +84,7 @@ func sliceOfN(scope Scope, entityID string, n uint64) uint64 {
 // (#349), the bytes hashed for a given persisted key must stay identical. The
 // contract is the full 64-bit hash in TestSliceHashFullVectors, compared with
 // the standard library's FNV-1a over the specified key; matching hash mod N is
-// not enough. The vectors pin the candidate algorithm and do not ratify it.
+// not enough. The vectors pin the ratified algorithm (N=1024, FNV-1a 64).
 func sliceHash(scope Scope, entityID string) uint64 {
 	h := fnvOffset64
 	mix := func(b byte) {
