@@ -1,12 +1,42 @@
 # I-00 — Baseline of `develop` and gaps (#346)
 
-Evidence collected on 2026-10-06. Epic: #345. This change adds this report and
-two characterization tests; it changes no production code.
+Evidence collected on 2026-10-06 (historical baseline) and updated on
+2026-10-07 (current `develop`). Epic: #345. This change adds this report and
+characterization tests; it changes no production code.
 
-**Status: root-module baseline validated; integration and publisher tests
-pending.** This is not a claim that the whole repository is green.
+**Status: baseline validated on both SHAs; two findings recorded (#427, #428);
+#346 stays open** (see "Status of the #346 criteria").
 
-## Baseline
+## Update on current `develop` (2026-10-07)
+
+#426 is merged: the ten modules declare `go 1.27.0`. The sections below the
+"Baseline" heading are the **historical** results, obtained on `4ebdc3d` with
+Go 1.26.0 / 1.26.2; they were not re-run on 1.27 and are not rewritten. The
+results of this update were obtained on the branch rebased onto `develop`
+`4c66286` (#426), with `go1.27.0 darwin/arm64` and PostgreSQL 17.6 in a real
+container (Testcontainers over Colima).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Build, vet, tests per module (10 modules) | `go build ./... && go vet ./... && go test -count=1 ./...` in each module | pass; root 40 packages `ok`; `example` has no test files |
+| PostgreSQL integration | `cd inttest && go test -count=1 ./...` with `DOCKER_HOST` set to the Colima socket | `flows/eventstore`, `flows/restart`, `flows/tenancy`, `infra/postgres` `ok` |
+| B2/B4 characterization | `go test -count=1 -race -run TestBaseline346 ./engine` | pass |
+| Adoption of legacy data on PostgreSQL | `TestAdoptionOfLegacyDataFailsOnPostgres` (`inttest/flows/tenancy`) | the adopter fails: see #428 |
+
+Without `DOCKER_HOST`, the `inttest` packages fail at start ("rootless Docker
+not found"): that is a local Docker socket issue, not a test result. These
+tests run in the `inttest` lane of CI, not in the feature/hotfix PR lane; this
+PR adds no job to it.
+
+Finding #428: `migration.TenantAdopter` cannot read legacy events from
+`postgres.EventStore`. It replays with `maxReplaySequence = math.MaxUint64`
+(`migration/tenant_adoption.go:58`) and the sequence column is `int8`, so the
+query fails to encode its argument. The in-memory adoption test passes, which
+is why it went unseen. Not fixed here. The characterization test asserts
+today's behaviour (nothing copied, legacy rows untouched and still
+recoverable) and becomes the single-tenant recovery check once #428 is fixed.
+
+## Baseline (historical: `4ebdc3d`, Go 1.26)
 
 | Item | Value |
 | --- | --- |
@@ -23,14 +53,8 @@ Modules and their `go` directive: root, `benchmark`, `example`, `inttest`,
 `publisher/pulsar` and `test/compat` declare `1.26.2`. There is no `go.work`.
 `Dockerfile.ci` uses `golang:1.27.0-alpine`; CI reads `.go-version`.
 
-**Not verified (pending):**
-
-- the PostgreSQL / container integration lane (`inttest`, `persistence/postgres` tests);
-- tests of the four publisher modules;
-- tests of `benchmark`, `example`, `test/compat` (builds only).
-
-Submodule builds and tests that use no real resources can be run independently
-of the container lane; that is follow-up work.
+Not verified at that time: the PostgreSQL integration lane and the tests of
+the submodules. Both were completed on current `develop`; see the update above.
 
 ## GoAkt dependency
 
@@ -43,6 +67,9 @@ for #419 (public API presence only; local/remote access not yet checked):
 `Metric`, `Actors`, `NumActors`, `ActorOf`, `Peers`, `Running`.
 
 ## B2 — `Partition` outside a cluster: not reproduced as a bug
+
+Scope of the evidence: standalone mode with shard 0 only. It does not show how
+a non-zero partition propagates.
 
 Call sites in Urd (the only two):
 
@@ -114,9 +141,10 @@ So the collision is silent for both later kinds: no error, and the name stays
 with the first actor. `resolveExistingSpawn` only verifies the binding of an
 existing actor in the tenant-aware path.
 
-The test asserts today's behaviour. The fix will flip its assertions.
+The test asserts today's behaviour. The fix is tracked in #427 and will flip
+its assertions.
 
-### Target solution (decided by the owner, implemented separately)
+### Target solution (decided by the owner, tracked in #427, not implemented here)
 
 - The actor name must distinguish scope, actor family and logical definition.
   When several engine instances share one `ActorSystem`, a stable, explicit
@@ -156,9 +184,18 @@ non-test Go code for the signature of each area:
 | Tenant context (#379) | `tenancy/` package and propagation exist | baseline exists; the audit is the task |
 | Sagas (#409–#413) | public API and persisted saga events exist | partial, see below |
 
-This is a code-signature check, not a review of each issue's acceptance
-criteria. Tasks marked "pending" show no implementation; tasks marked
-"exists" or "partial" need their own criteria checked when they start.
+This table is a code-signature check. A missing symbol is not proof that a
+capability is absent, and a present one does not prove a criterion. For four
+tasks the acceptance criteria were read against the code (2026-10-07):
+
+| Task | Criterion | Evidence | State |
+| --- | --- | --- | --- |
+| #381 rebuild per tenant | rebuild keeps other tenants' offsets | `Engine.RebuildProjection(ctx, name, from)` stops the projection by name and calls `offsetStore.ResetOffset(ctx, name, ...)` (`engine/projections.go:185`): no tenant parameter | not met |
+| #362 offsets keyed by full identity | `ResetOffset` receives the full identity | same call: only `name` | not met |
+| #379 tenant context | three modes validated | single-tenant, legacy and multi-tenant paths covered by `TestConformance_W7_*` over PostgreSQL (passing); remote propagation and the #305 comparison not checked | partially verified |
+| #371 wake after commit | conformance with notifications off; p50 before/after | `wake_stream.go` exists; no measurement or conformance run | not verified |
+
+The remaining tasks of the epic were not reviewed criterion by criterion.
 
 ## Inventory for #395–#398
 
@@ -260,7 +297,7 @@ API was found marked unsupported or deprecated.
 
 ## Single tenant (#424)
 
-Read from code and tests; nothing was run for this section. Three modes
+Read from code and tests; the tests named below were run on 2026-10-07. Three modes
 (`engine.WithTenantResolver`, first registration wins; a second non-nil one is
 `ErrAmbiguousTenantResolver`):
 
@@ -282,14 +319,15 @@ of `events_store` and `events_store_revisions`). A `WithSingleTenant` engine
 does not see legacy Unscoped rows; an existing aggregate restarts empty unless
 `migration.TenantAdopter` ran first.
 
-- Proven: `TestConformance_W7_LegacyDataIsNotSeenByATenant`
-  (`inttest/flows/tenancy/conformance_test.go:350`), and
+- Proven (passing): `TestConformance_W7_LegacyDataIsNotSeenByATenant`
+  (`inttest/flows/tenancy/conformance_test.go`, PostgreSQL), and
   `TestTenantAdopterEndToEndRecoveryThroughRealActor`
-  (`migration/tenant_adoption_test.go:512`, on `testkit.EventsStore`).
-- Not found: a test that starts `WithSingleTenant` directly over existing
-  Unscoped rows and expects recovery.
-- Not verified: the full PostgreSQL + adoption + single-tenant path; snapshot
-  and durable-state scope handling in a database; `MIGRATION.md` guidance.
+  (`migration/tenant_adoption_test.go`, `testkit.EventsStore` only).
+- Shown not to work: adoption over PostgreSQL (#428). Recovery after adoption
+  on PostgreSQL cannot be demonstrated yet; the characterization test records
+  the current failure.
+- Not verified: snapshot and durable-state adoption in a database;
+  `MIGRATION.md` guidance.
 - Gap: `offsets_store` has no tenant column (keyed by projection name and
   shard), and no offset migration was found for a switch of mode.
 
@@ -297,13 +335,15 @@ does not see legacy Unscoped rows; an existing aggregate restarts empty unless
 
 | Criterion | State |
 | --- | --- |
-| Record the SHA, build with Go 1.26, get the `go list` graph | done for the root module (see Baseline) |
-| Confirm or discard B2 and B4 | B2 not reproduced as a bug; B4 reproduced |
-| Review each task against code and tracker | done at the level of a code-signature check; not a per-criteria review |
-| Audit publishers, sagas, testkit and controls for #395–#398 | done from code; no tests run |
+| Record the SHA, build with Go 1.26, get the `go list` graph | done on `4ebdc3d`/Go 1.26 (historical); modules re-built and tested on current `develop`/Go 1.27.0 |
+| Confirm or discard B2 and B4 | B2 not reproduced as a bug (non-zero partition not tested); B4 reproduced, fix tracked in #427 |
+| Review each task against code and tracker | partial: four tasks checked per criterion, the rest by code signature only |
+| Audit publishers, sagas, testkit and controls for #395–#398 | done from code; not exercised by tests |
 | Fix the GoAkt version and fork for #419 | done |
-| Single-tenant inventory (#424) | done from code; PostgreSQL path not verified |
+| Single-tenant inventory (#424) | done; the PostgreSQL adoption path fails (#428) |
+| Module tests and PostgreSQL integration | done on current `develop` |
+| Recovery after adopting legacy data to single-tenant | not demonstrated: blocked by #428 |
 
-#346 should stay open until the owner accepts these limits: the integration
-and publisher test lanes were not run, the task review is not per-criteria,
-and the PostgreSQL single-tenant path is unverified.
+#346 stays open. Pending: per-criteria review of the remaining epic tasks,
+a non-zero partition test for B2, and recovery after adoption on PostgreSQL
+once #428 is fixed.
