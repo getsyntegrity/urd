@@ -195,10 +195,13 @@ tasks the acceptance criteria were read against the code (2026-10-07):
 | #379 tenant context | three modes validated | single-tenant, legacy and multi-tenant paths covered by `TestConformance_W7_*` over PostgreSQL (passing); remote propagation and the #305 comparison not checked | partially verified |
 | #371 wake after commit | conformance with notifications off; p50 before/after | `wake_stream.go` exists; no measurement or conformance run | not verified |
 
-The other 76 linked tasks are audited criterion by criterion in
-`i-00-epic-345-audit.md` (develop `4c66286`, 2026-10-07): 429 criteria, of
-which 15 cumplido (most of them negative criteria met because nothing was
-built), 89 parcial, 231 no implementado, 16 no verificado and 78 bloqueado.
+The other 76 linked tasks are audited criterion by criterion, in two passes,
+in `i-00-epic-345-audit.md` (develop `4c66286`, 2026-10-07): 431 criteria
+(one count, reproducible with the command in that file): 23 cumplido (17
+negative criteria met because nothing was built, 6 demonstrated), 88 parcial,
+240 no implementado, 6 no verificado, 74 bloqueado, each blocked row naming
+its dependency. By kind: 14 current defects, 394 new capabilities, 17
+negative, 6 met.
 
 ## Inventory for #395–#398
 
@@ -340,15 +343,25 @@ does not see legacy Unscoped rows; an existing aggregate restarts empty unless
 | --- | --- |
 | Record the SHA, build with Go 1.26, get the `go list` graph | done on `4ebdc3d`/Go 1.26 (historical); modules re-built and tested on current `develop`/Go 1.27.0 |
 | Confirm or discard B2 and B4 | B2 not reproduced as a bug (non-zero partition not tested); B4 reproduced, fix tracked in #427 |
-| Review each task against code and tracker | done: 81 linked tasks, all open; 5 here and 76 in `i-00-epic-345-audit.md`, per criterion; static reading, targeted tests only where a doubt could be settled |
+| Review each task against code and tracker | done: 81 linked tasks, all open; 5 here and 76 in `i-00-epic-345-audit.md`, 431 criteria, two passes; static reading, targeted tests only where a doubt could be settled |
 | Audit publishers, sagas, testkit and controls for #395–#398 | done from code; not exercised by tests |
 | Fix the GoAkt version and fork for #419 | done |
 | Single-tenant inventory (#424) | done; the PostgreSQL adoption path fails (#428) |
 | Module tests and PostgreSQL integration | done on current `develop` |
 | Recovery after adopting legacy data to single-tenant | not demonstrated: blocked by #428 |
 
-#346 stays open. Pending: recovery after adoption on PostgreSQL once #428 is
-fixed, and the B2 non-zero partition test, which #350 requires (slice stable
-across 1, 3 and 5 nodes). The criteria of the other tasks describe new
-guarantees; their `no implementado` state is the expected baseline, not a
-defect.
+#346 stays open. Pending:
+
+- recovery after adoption on PostgreSQL, blocked by #428;
+- a test that a non-zero partition reaches the stored `Shard` of events and
+  durable state. No acceptance criterion in #350 or elsewhere asks for it
+  (#350 asks for slice stability across 1, 3 and 5 nodes, a different
+  guarantee); it is a gap found by B2, and a stable-slice test would not cover
+  it;
+- the 14 current defects and the 74 blocked criteria of the epic audit, which
+  belong to their own issues, not to this PR;
+- limits of the audit: static reading plus targeted tests, so an equivalent
+  implementation under an unsearched name may exist.
+
+`no implementado` on criteria of new guarantees is the expected baseline, not
+a defect.
