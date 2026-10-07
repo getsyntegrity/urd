@@ -43,7 +43,7 @@ El inspector posterior mantiene un núcleo de observación genérico y enriqueci
 ## Punto de partida real
 
 - #427 está cerrado. #433 incorporó el test de claves persistidas y namespace a `develop`; demuestra el escenario de stores en memoria y scope Unscoped. No sustituye pruebas PostgreSQL ni otros modos de tenancy.
-- #428 sigue abierto. La corrección del journal y su recuperación PostgreSQL ya tiene evidencia; quedan los criterios de snapshots y durable state. Resolver el journal no completa automáticamente el issue.
+- #428 se cerró por decisión explícita tras verificar la corrección del journal en #429 y CI develop [37623637751](https://github.com/getsyntegrity/urd/actions/runs/37623637751). Su tercer criterio permanece sin marcar y se transfiere a [#435](https://github.com/getsyntegrity/urd/issues/435): adapters PostgreSQL de SnapshotStore/StateStore y adopción verificada. Esa recuperación sigue pendiente; el cierre no demuestra los tres criterios.
 - #346 sigue abierto. Además de la recuperación, hay que contrastar todos sus criterios e inventarios antes de cerrarlo. La brecha de propagación de una partición no nula en B2 no equivale al criterio de estabilidad con 1, 3 y 5 nodos de #350.
 - Ya se corrigieron offsets por tenant y se bloqueó la retención automática cuando falta la capacidad segura requerida. Eso no demuestra todavía la identidad completa de checkpoint, el registry durable de consumidores ni el cambio de versión de proyecciones.
 - `persistence/scope.go` todavía importa tenancy. El runner depende de servicios de Urd. El protocolo protobuf mezcla datos persistidos y mensajes de engine. Son fronteras pendientes concretas.
@@ -53,11 +53,11 @@ El inspector posterior mantiene un núcleo de observación genérico y enriqueci
 
 | Paso | Trabajo | Condición de salida |
 | --- | --- | --- |
-| 1 | Completar [#428](https://github.com/getsyntegrity/urd/issues/428): snapshots y durable state sobre PostgreSQL, respetando los contratos existentes. | Evidencia real de adopción y recuperación para los criterios restantes. Si faltan adapters, delimitar ese trabajo explícitamente. |
+| 1 | Registrar el cierre del bug del journal [#428](https://github.com/getsyntegrity/urd/issues/428) y el traslado del criterio restante a [#435](https://github.com/getsyntegrity/urd/issues/435). | Fix del journal verificado; snapshots/state PostgreSQL pendientes y asignados a un issue propio de fase 1. |
 | 2 | Terminar [#346](https://github.com/getsyntegrity/urd/issues/346), incluida la revisión del inventario y de cada criterio. | Baseline verificable, con brechas y resultados históricos diferenciados. |
 | 3 | Aprobar [#347](https://github.com/getsyntegrity/urd/issues/347), el ADR de fronteras y contratos. | Decisiones de scope, reader, slice, checkpoint, command y adapters; ocho fronteras reconciliadas con el HTML. |
 | 4 | Completar contratos, TCK y experimentos de fase 0: #348, #351, #352, #355 y las decisiones relacionadas. | [Gate A #387](https://github.com/getsyntegrity/urd/issues/387): mecanismo de reader elegido por evidencia antes de comprometer el nuevo esquema. `xid8` sigue siendo candidato. |
-| 5 | Implementar el core y la separación interna de fase 1. | Reader y migraciones correctos, dependencias controladas y recursos acotados; sin nuevos `go.mod`. |
+| 5 | Implementar el core y la separación interna de fase 1, incluido #435 para adapters y adopción de snapshots/state PostgreSQL. | Reader y migraciones correctos, dependencias controladas y recursos acotados; evidencia PostgreSQL de los stores habilitados, sin nuevos `go.mod`. |
 | 6 | Pasar [Gate B #388](https://github.com/getsyntegrity/urd/issues/388). | Conformance y fallos inyectados en memoria y PostgreSQL, con los modos de tenancy exigidos. |
 | 7 | Entregar fase 2: read-side, lifecycle/perfiles de tenancy, integration y testkit de producto. Workflow, management e inspector son posteriores. | Uso real de contratos y evidencia específica de cada capacidad. |
 | 8 | Pasar [Gate C #389](https://github.com/getsyntegrity/urd/issues/389). | SPI estable durante la ventana acordada y consumidores que justifiquen independencia. No exige terminar toda capacidad posterior. |
@@ -92,6 +92,6 @@ Los números de rendimiento del HTML son entradas provisionales de experimentos,
 
 ## Próximo resultado que buscamos
 
-Cerrar correctamente #428 y #346 deja un punto de partida fiable. El siguiente entregable arquitectónico es el ADR #347. Luego se ejecutan el trabajo de fase 0 y Gate A, y la separación interna de fase 1 conforme a sus dependencias.
+#428 está cerrado por el fix del journal; su garantía pendiente de snapshots/state PostgreSQL continúa en #435. Completar #346 requiere registrar esa brecha e inventariar lo existente, sin esperar a construir los adapters nuevos. Esto evita una dependencia circular entre el baseline y fase 1. El siguiente entregable arquitectónico es el ADR #347. Luego se ejecutan el trabajo de fase 0 y Gate A, y la separación interna de fase 1 conforme a sus dependencias.
 
 La publicación de persistence/projection como módulos independientes se decide recién tras Gate C. No necesita esperar a las 81 tareas completas, pero sí a las condiciones específicas de #372. Ese es el orden que mantienen juntos el PRD, la arquitectura y el tracker.
