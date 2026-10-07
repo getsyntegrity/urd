@@ -2,7 +2,7 @@
 
 Status: PROPOSAL. N, the hash and the key encoding are NOT decided. #350 stays open.
 
-Related: #350 (this work), #351 (I-05, reader contract, slice range, offset identity), #349 (opaque Scope), #347 (ADR), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers), #438 (propagation and coverage follow-up), #390 (workload model). PRD: `docs/prd/urd-platform-prd.md`, requirement P-03, and the "Remaining product decisions" paragraph, which lists the slice count as still to be recorded. ADR: `docs/decisions/module-topology-347.md`, pending decisions P1 (N, hash, encoding), P2 (offset migration, cutover, retention) and P3 (Scope shape).
+Related: #350 (this work), #351 (I-05, reader contract, slice range, offset identity), #349 (opaque Scope), #347 (ADR), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers), #438 (propagation and coverage follow-up), #355 (workload model, limits and SLO of a cell). #390 covers resource selection (pools per Scope, cell and role), not the workload model. PRD: `docs/prd/urd-platform-prd.md`, requirement P-03, and the "Remaining product decisions" paragraph, which lists the slice count as still to be recorded. ADR: `docs/decisions/module-topology-347.md`, pending decisions P1 (N, hash, encoding), P2 (offset migration, cutover, retention) and P3 (Scope shape).
 
 ## Three different things
 
@@ -63,7 +63,7 @@ Proposal: 1024, conditional. Rationale: finer assignment units and the cheaper l
 
 Limits of this proposal: it is a judgement, not a measurement. No tenants x projections count, offset write rate, polling cost or per-node slice load has been measured. If tenants x projections x 1024 makes the offset table or its write rate a problem, 256 is the answer.
 
-Missing data to decide (owners: #390, #362, #351/#352):
+Missing data to decide (owners: #355, #362, #351/#352):
 - Expected tenants and projections per tenant (offset row count at 256 and at 1024).
 - Checkpoint write rate and its cost on the destination backend.
 - Per-slice read cost under the chosen stable-prefix mechanism.
@@ -74,7 +74,7 @@ Missing data to decide (owners: #390, #362, #351/#352):
 
 Candidate FNV-1a 64: in the standard library (no new module, no go.mod change), specified, unseeded, stable across processes and architectures, trivial to reimplement in another adapter language.
 
-Limits: not cryptographic and not collision resistant against an adversary. A caller who controls entity ids can aim many ids at one slice and create a hot slice. Whether that matters depends on who assigns persistence ids, which is a threat-model input not yet recorded. Alternatives (for example a seeded or stronger hash) would add a dependency or a persisted secret, and need go.mod and compatibility decisions that are gated. A hash change is a full data migration whatever N is.
+Limits: not cryptographic and not collision resistant against an adversary. A caller who controls entity ids can aim many ids at one slice and create a hot slice. Whether that matters depends on who assigns persistence ids, which is a threat-model input not yet recorded. A stronger hash does not necessarily need a new dependency or a secret: SHA-256 is in the standard library (`crypto/sha256`) and can be used unkeyed, with the same stability across processes and architectures (the 64 bits used for the slice would be taken from its output by a specified rule, which is itself part of the encoding decision). Switching to it costs more CPU per write and does not by itself stop a caller from concentrating ids in one slice: with N slices an adversary needs on the order of N attempts to find an id that lands in a chosen slice, whatever the hash. Only a keyed hash (a secret that must be persisted and shared by every writer and adapter) makes targeting infeasible, and that adds operational and compatibility decisions that are gated. A hash change is a full data migration whatever N is.
 
 ### Encoding
 
@@ -167,7 +167,7 @@ This evidence is recorded as pending and does not block #436.
 
 ## Decisions the maintainer must make
 
-1. N (256 or 1024), with the offset-row measurement (#362/#390); record it in #350/#351.
+1. N (256 or 1024), with the offset-row measurement (#362/#355); record it in #350/#351.
 2. The hash (FNV-1a 64 or another) and the key encoding; changing either is a full migration.
 3. When to export `SliceOf` and `SliceCount` (with #351).
 4. The offset migration option and the online or offline policy (#359).
