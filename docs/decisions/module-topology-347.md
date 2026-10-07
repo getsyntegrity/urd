@@ -46,7 +46,7 @@ The names are logical. Package paths marked **proposed** are not decided here; t
 | Persistence (#342) | Journal, snapshots, durable state, opaque scopes, logical slices, reader contract, conformance (TCK), schema-migrator contract | `persistence` (`EventsStore`, `StateStore`, `SnapshotStore`, `Scope`, `WritePrecondition`, `SchemaMigrator`, `RetainedEventsDeleter`), journal messages in `egopb`, TCK in `persistence/conformance` | Adapters are constructed by the consumer or by Urd's composition and handed to `compose.Spec`; persistence builds nothing |
 | Projection (#343) | Reader execution, destination checkpoints, applied markers, fencing, parking, recovery | `projection` (`Handler`, `Options`, recovery policies, dead letters), `offsetstore` (`OffsetStore`, `ScopedOffsetStore`), runner in `internal/projectionrunner` | Urd injects decoder, metrics and clock into the runner (#364) and starts it as a GoAkt actor (`internal/engine/projection`) |
 | Tenancy (#344) | Optional identity and context, resolvers, profiles, cell routing, lifecycle policy | `tenancy` (`TenantID`, `TenantContext`, `TenantResolver`, `FixedTenantResolver`, `WithSingleTenant`, `MarshalMetadata`) | Optional input to `compose.Spec.TenantResolver`; absent in the default mode |
-| Urd (#345) | Domain programming model (`command`, `port/behavior`, `port/runtime`), write and read APIs, runtime, composition | `engine`, `compose`, `compose/goakt`, `command`, `port/*`, `eventstream`, `encryption`, `eventadapter` | Owns the composition root and every GoAkt import |
+| Urd (#345) | Domain programming model (`command`, `port/behavior`, `port/runtime`), write and read APIs, runtime, composition | `engine`, `compose`, `compose/goakt`, `command`, `port/*`, `eventstream`, `encryption`, `eventadapter` | Owns application composition and Urd runtime GoAkt imports; the read-only inspector collector is a separate explicit adapter |
 | Integration (#395) | Durable integration envelopes, outbox intents, relay | existing `port/publishing` and `publisher/*` modules; new package **proposed** `integration` | Urd injects codecs and publishers |
 | Testkit (#396) | Deterministic fakes, fault drivers, harness | `testkit`, `persistence/conformance`, `port/adapter/adaptertest`, `port/publishing/publishingtest`; real-resource harness in `inttest` | Used by tests only |
 | Workflow (#397) | Consolidated sagas and processes: inbox, state, intents, timers, compensation | today: `port/behavior` saga types and `internal/engine/saga`; new package **proposed** `workflow` | Defines `CommandDispatcher`; Urd implements and injects it |
@@ -137,7 +137,7 @@ These rules replace section 3 of ego-arch-001. Rules marked "carried" are ego-ar
 | R1 | **Persistence is a leaf of the product graph.** It MUST NOT import `tenancy`, `projection`, `offsetstore`, any Urd domain or runtime package, or GoAkt. Its dependency closure contains no engine message (section 6). |
 | R2 | **Projection depends downward only.** It MAY import public `persistence` contracts and `egopb`. Codec, metrics and clock arrive as interfaces. Its closure MUST NOT contain `tenancy`, `encryption`, `eventadapter` or `eventstream` once #364 lands. |
 | R3 | **Tenancy is optional and never required by R1 or R2.** The identity leaf stays free of `persistence` and `projection` so that `command` and `eventstream` can keep importing it. Where the TenantID-to-Scope conversion lives is decided in #349, under the constraints: no import cycle, and persistence closure without `tenancy`. |
-| R4 | **Urd owns GoAkt.** Only Urd runtime packages (`engine`, `compose/goakt`, `internal/engine/*`, `internal/extensions`, `internal/goaktlog`) import `github.com/tochemey/goakt/v4`. No contract, adapter, integration, workflow, management or inspector-core package does. |
+| R4 | **GoAkt remains the runtime owner.** GoAkt imports are allowed in Urd runtime packages (`engine`, `compose/goakt`, `internal/engine/*`, `internal/extensions`, `internal/goaktlog`) and in the explicit read-only GoAkt inspector collector adapter (section 8.5). Journal/destination/publisher adapters and contracts, integration, workflow, management and the generic inspector DTO/Source core MUST NOT import GoAkt. The collector does not implement another runtime. #353 enforces the collector as a named boundary, not a blanket inspector exception. |
 | R5 | **Contracts are runtime-free (carried).** A contract package MUST NOT import GoAkt, OpenTelemetry, broker clients, database drivers, `net/http`, `net/rpc` or `database/sql`, nor the root runtime, `internal/extensions`, `migration`, or test support outside `_test.go`. Third-party libraries in a contract are a closed list; today `github.com/google/uuid` and `go.uber.org/atomic` (ego-arch-001), unverified on this SHA. |
 | R6 | **No inverse imports.** No lower boundary imports a higher one: persistence, projection, tenancy, integration, workflow and management never import `engine`, `compose` or each other upward (Integration, Workflow and Management never import Urd; Management never imports Workflow or Integration). |
 | R7 | **Integration, Workflow and Management do not copy machinery.** They MUST NOT carry their own runner, ownership/fencing, transaction or tenant state machine; they use projection's. |
@@ -177,8 +177,8 @@ If persistence is later extracted as its own module (#372), `persistence/postgre
 | ID | Invariant |
 |---|---|
 | I1 | One pool owner per backend handle. Event, offset, state, snapshot, reader, destination and fence implementations **borrow** it. Whoever created a pool closes it; a borrowed pool is never closed by a consumer of it (PRD C-section "borrowed versus owned"). |
-| I2 | One schema migrator and one version table (`ego_schema_migrations`) for the whole module. Migration files stay numbered in `persistence/postgres/schema` (**Current:** version 6, `006_scoped_offsets.sql`). A shared database is migrated once, by whichever starts first, as today. |
-| I3 | One transaction provider on the shared handle. The destination effect, the applied marker and the checkpoint commit through it. This is what makes "common transaction" a declarable capability (section 7). |
+| I2 | One schema migrator and one version table (`ego_schema_migrations`) for the whole module. Migration files stay numbered in `persistence/postgres/schema` (**Current:** version 6, `006_scoped_offsets.sql`). A shared database uses coordinated, serialized/idempotent migration initialization under #440; one version table alone does not prove safe concurrent startup. |
+| I3 | One transaction provider on the shared handle. The destination effect, the applied marker and the checkpoint commit through it. A shared pool or provider is insufficient by itself: effect, marker and checkpoint must demonstrably use the same transaction, with the required fence validation. #440 owns provider/lifecycle work; #373 owns that guarantee (section 7). |
 | I4 | Backend types (`pgx.Tx`, `pgxpool.Pool`, driver errors, SQL) never appear in the signature of a contract package. They MAY appear in the adapter module's public API, because a handler that writes in the destination transaction has chosen PostgreSQL by importing it. The contract exposes an opaque or type-parameterized transaction handle (shape decided in #362 and #373). |
 | I5 | Each implementation declares a truthful `adapter.Descriptor` (ports and capabilities). One Go type may serve several ports (the `Descriptor` already allows it) or several types may share one handle. |
 | I6 | Journal/feed and destination resources are configured separately (PRD C-02) even though one module provides both. "Common transaction" is declared only when the destination effect and its offset store share the same handle. |
@@ -213,17 +213,19 @@ Because `persistence`, `offsetstore` and `port/publishing` import `egopb`, their
 | Proto package | New file keeps `package egopb;` | GoAkt remoting carries messages as `Any` with a type URL derived from the full name (`egopb.CommandReply`). Renaming the proto package breaks rolling upgrades. **Unverified** until the two-version test below runs |
 | Message and enum names, enum values | unchanged | same |
 | Field numbers, `reserved`, oneof layout | unchanged; no field added or removed in the move | binary compatibility; `Event` keeps `reserved 5` |
-| Journal file | `protos/ego/ego.proto` keeps its path and its journal messages byte-for-byte | descriptor and registry identity |
+| Journal file and descriptors | `protos/ego/ego.proto` keeps its path and journal message definitions, but removing engine declarations changes the file descriptor. The new engine file has its own descriptor | No claim of byte-identical file descriptors, Go source compatibility or reflection/source compatibility follows from unchanged wire fields |
 | Persisted keys and rows | none touched. **Current:** the PostgreSQL event row stores `proto.Marshal` of the inner `Any` (`event_store.go:172`) with the user event's type URL as manifest, keyed by `(tenant_id, persistence_id, sequence_number)`. No `egopb` name is part of that key or payload | the move cannot rewrite what it does not store |
 | Schema | no migration file | a package reorganization is not a schema change |
 | Snapshot and durable-state serialization in other adapters | **Unverified** (no PostgreSQL implementation exists; memory stores are not durable) | #435 records its own format decision |
 
-### 6.4 Compatible transition (executed by #363, not by this ADR)
+### 6.4 Transition and compatibility evidence (executed by #363, not by this ADR)
 
 1. Add `protos/engine/engine.proto` with `package egopb;`, the engine messages copied unchanged, and `go_package` `github.com/getsyntegrity/urd/internal/engine/enginepb;enginepb`. Remove those messages from `ego.proto` **in the same commit** and regenerate. Both files cannot declare the same full name, so the cut must be atomic.
-2. `buf.yaml` enables `PACKAGE_SAME_GO_PACKAGE`; one proto package with two `go_package` values violates it. #363 records a scoped lint exception, and runs `buf breaking` with a wire-level category for this change (the `FILE` rule flags a message moved between files even when the wire is identical). Both choices are P6.
+2. Validate the proposed split with the pinned protobuf generator and runtime before adopting it: generate both packages, build all consumers, and inspect cross-file dependencies, imports and global registry registration. `PACKAGE_SAME_GO_PACKAGE` needs a narrowly scoped, justified lint exception if this layout is selected. Run the existing `buf breaking` policy and separately assess wire compatibility; record each intentional source/file/descriptor break with scope and approval. Do not silently downgrade to a wire-only category to obtain green CI. P6 owns the final layout and compatibility policy; revise the proposal if generation, registry or import constraints fail.
 3. Change imports in `engine` and `internal/engine/*` only.
-4. Tests that must pass before merge: descriptor test over both files (the pattern in `egopb/descriptor_test.go`); golden marshaled bytes for every moved message; registry lookup of each full name `egopb.<Name>`; `go list -deps ./persistence ./offsetstore ./port/publishing` contains no engine message package; a mixed-version check between a node built before the move and one after (the #427 decision already states older nodes fail closed on newer queries; the test shows the rest of the protocol is unaffected).
+4. Tests that must pass before the implementation merges: descriptor test over both files (the pattern in `egopb/descriptor_test.go`); golden marshaled bytes for every moved message; registry lookup of each full name `egopb.<Name>`; `go list -deps ./persistence ./offsetstore ./port/publishing` contains no engine message package; a mixed-version check between a node built before the move and one after (the #427 decision already states older nodes fail closed on newer queries; the test shows the rest of the protocol is unaffected).
+Preserved protobuf full names and field numbers constrain binary/Any wire compatibility, not all compatibility dimensions. Moving exported Go engine types can break consumer imports; moving declarations changes file-descriptor contents and may affect reflection. Audit exported signatures (including multiline signatures and struct fields), regeneration consumers and known external users. Source compatibility strategy and mixed-version runtime behavior must be demonstrated separately; no rolling-upgrade claim is accepted from field-number preservation alone.
+
 5. Journal types are not moved in phases 0 to 2. If they ever change Go path, the old path keeps type aliases (identity-preserving) and the proto package, names and numbers do not change. Changing any of those is a data migration with its own decision, never a reorganization.
 6. If #362 introduces a new checkpoint identity (mode, scope or cell, processor, projection version, slice), it adds new messages or fields additively. It does not edit `Offset` or `ProjectionId` in place.
 
@@ -241,9 +243,20 @@ Capability names below are illustrative and follow the existing constant style; 
 |---|---|---|---|
 | **Journal** (`persistence`) | conditional append with expected revision; uniqueness; **contiguous batch starting at revision+1**; per-entity stream read; declared command dedupe | snapshots; durable state; `RetainedEventsDeleter`; schema migrator; start; ping | Append checks revision only: the audit records that a gap is accepted (#354). Stream read and uniqueness exist (primary key). No command dedupe (#357) |
 | **Feed** (reader for projections, integration, workflow) | declared **stable prefix** (after cursor `c`, nothing at or before `c` becomes visible); declared **eligibility** rule; durable, validated, versioned opaque cursor | per-slice range reads; wakeup notification (latency only, never the recovery source) | Not met. The runner reads with `GetShardEvents` and a timestamp cursor; `persistence/events_store.go` acknowledges the late-commit gap. Mechanism is Gate A (#387, #352); this ADR does not choose it |
-| **Projection destination** | **common transaction** for effect, applied marker and checkpoint **or** a declared idempotent-upsert strategy; ownership **fencing** validated at the destination; checkpoint identity (mode, scope or cell, processor, version, slice) stored in the destination backend | `ScopedOffsetStore`; parking storage | No common transaction; `OffsetStore` is its own store; no fencing (#373, #374, #362) |
+| **Projection destination** | For compatible projection features: **common transaction** for effect, applied marker and checkpoint **or** a declared idempotent-upsert strategy; ownership **fencing** validated at the destination; checkpoint identity (mode, scope or cell, processor, version, slice) stored in the destination backend. Integration/workflow require the stronger feature-specific transaction below | `ScopedOffsetStore`; parking storage | No common transaction; `OffsetStore` is its own store; no fencing (#373, #374, #362) |
 
 ### 7.3 Where a missing guarantee is rejected
+
+Role minimums do not replace feature requirements. Composition validates both the role and every enabled feature before accepting work:
+
+| Enabled feature | Additional mandatory guarantee | Rejection policy |
+|---|---|---|
+| Projection with idempotent upsert | Explicit idempotency/order strategy, fencing and recoverable checkpoint protocol; at-least-once effect only | Reject a missing/unsupported combination; never label it atomic effect+marker+checkpoint |
+| Integration (#400/#401) | Outbox intent, applied marker and checkpoint in the same destination transaction with fence validation | Reject an upsert-only destination; retrying idempotently does not substitute for durable intent/checkpoint atomicity |
+| Workflow (#410) | Workflow state, inbox dedupe, command intent and checkpoint in the compatible destination transaction with fence validation | Reject an upsert-only destination unless an explicit future contract decision changes this requirement |
+| SharedCell | One coherent destination for its shared checkpoint, satisfying C-05 | Reject independent destinations under one shared checkpoint |
+
+#384 validates these combinations; #373/#374 and the feature TCKs prove the declared semantics. Features not enabled do not force their extra capabilities on unrelated projections.
 
 An adapter that lacks a mandatory capability for a role in use is rejected **before it operates**, at one of three points:
 
@@ -291,7 +304,7 @@ Production packages do not import any of them (R11). **Current:** the only non-t
 ### 8.5 Inspector (#419 to #422, later)
 
 - A **generic core** (**proposed** package `inspect`) defines the observation DTO and a `Source` interface using only the standard library. It imports no Urd domain, no `tenancy`, no `command`.
-- A **GoAkt collector** may import GoAkt but not Urd.
+- A **GoAkt collector adapter** may import GoAkt but not Urd domain/runtime packages. This is the narrowly defined R4 exception; it is separate from the standard-library-only DTO/Source core. #419 fixes its package path and #353 checks its allowed imports.
 - An **Urd enrichment adapter** (**proposed** `inspect/urd`) may import `engine` and `tenancy`; it is optional and only reports metadata the operator authorized.
 - `cmd/urd-inspect` is the terminal **composition root** that wires them. It has no new `go.mod`. **Current:** `cmd/` does not exist.
 - The inspector never requires Urd tenancy to inspect a GoAkt deployment. Whether the pinned GoAkt fork exposes the needed hooks is #419's audit; this ADR assumes nothing about it.
@@ -359,7 +372,7 @@ All rows are **Current**, verified on `f5234a6` unless marked. Until its issue l
 | T3 | `internal/projectionrunner` imports `encryption`, `eventadapter`, `eventstream`, `internal/instrumentation` besides `egopb`, `offsetstore`, `persistence`, `projection`; through `eventstream` its closure contains `tenancy` | R2 | the four extra imports | #364 (needs #353) |
 | T4 | Projection concerns are spread over `offsetstore`, `projection` and `internal/projectionrunner` | R2, boundary shape | none (not a forbidden edge; a layout debt) | #365 (needs #362, #363, #364), with compatibility aliases |
 | T5 | `persistence/postgres` exists at a contract path as a nested module | archived ego-arch-001 adapter rule | none after this ADR: A1 supersedes the old rule | this ADR; enforced by #353 |
-| T6 | PostgreSQL adapter: two pools (`MaxConns` 20 each), per-store migrate, no `Describe()`, no shared transaction | I1, I3, I5 | duplicate pools | **No issue is assigned to pool unification.** Proposed: #373 (common transaction needs the shared handle); P8 asks the maintainers to confirm or open one. Descriptors: #384. Snapshot and state adapters: #435 |
+| T6 | PostgreSQL adapter: two pools (`MaxConns` 20 each), per-store migrate, no `Describe()`, no shared transaction | I1, I3, I5 | duplicate pools | #440 owns backend-handle/pool lifecycle and the shared provider; #373 owns transactional guarantees, coordinated with #362/#378/#390. Descriptors: #384. Snapshot and state adapters: #435 |
 | T7 | `compose.requiredCapabilities` is empty; undeclared adapters are not inspected | section 7 | no mandatory minimum enforced | #384 (needs #351) |
 | T8 | No test states R1, R2, R4, R6 to R11. Only per-package `TestArchitecture*` closure tests exist (`docs/testing/architecture-tests.md`) | R14 | boundaries rest on review | #353 |
 | T9 | `example/{eventssourced,saga,durablestate}/main.go` import `testkit` | R11 | the `example` module is a consumer, exempt by rule, permanent | none; #353 scopes R11 to library modules |
@@ -381,7 +394,7 @@ Ordering follows the plan: this ADR, then phase-0 contracts and Gate A (#387), t
 | Topic | Alternative | Why not chosen |
 |---|---|---|
 | Adapter location | Move PostgreSQL to a new top-level path (for example `adapter/postgres`) | Breaks the import path used by `inttest`, `example` and consumers; contradicts "keep the nested adapter" (#372); gains nothing a rule on `go.mod` boundaries does not |
-| | One module per contract (`persistence/postgres`, `projection/postgres`) | Duplicates pools, migrators and transactions, and cannot offer a common destination transaction |
+| | One module per contract (`persistence/postgres`, `projection/postgres`) | Not chosen because the existing module already serves several contracts and extra modules add publication/lifecycle coordination. Separate implementations can share a pool and transaction provider; module placement neither prevents nor proves a common destination transaction. |
 | | Adapter packages inside the root module | Puts pgx in the root module's requirements |
 | `egopb` | Keep one package | Fails #363: persistence closure keeps engine messages |
 | | Move journal types to `persistence/journalpb`, leave engine messages in `egopb` | Breaks publishers, `port/publishing`, testkit and user imports for the sake of the larger group |
@@ -421,7 +434,7 @@ None of these is silently chosen. The draft states the working assumption and do
 | P5 | Final tenancy mode API names; whether to probe for unscoped rows when starting fixed or multitenant | #424 | #424 design | Names in 9.1 are proposals |
 | P6 | Engine message path; lint exception for `PACKAGE_SAME_GO_PACKAGE`; `buf breaking` category; alias in `engine` if an external consumer exists | #363, maintainers | #363 design plus its wire tests | `internal/engine/enginepb`, no aliases |
 | P7 | Legacy undeclared adapters: reject or grandfather, and until when | #384, maintainers | #384 design | Reject once mandatory minimums are enforced |
-| P8 | PostgreSQL shared-handle API; which issue owns pool unification | #373, #362, #435; owner `persistence/postgres` maintainers | Confirmed or new issue; #373 design | Invariants I1 to I6 only |
+| P8 | PostgreSQL shared-handle API (ownership is assigned) | #440; coordinated with #373, #362, #378, #390, #435; owner `persistence/postgres` maintainers | #440 design and lifecycle tests; #373 validates transactional guarantees | Invariants I1 to I6; no forced merger of independent journal/destination resources |
 | P9 | Package paths for `integration`, `workflow`, `management`, `inspect`, `inspect/urd` | #395, #397, #398, #419 | The first PR of each issue | Paths in 3.1 are proposed |
 | P10 | The #364 text says the runner imports only `persistence`, `offsetstore` and `egopb`, but the runner also imports `projection` for `Handler` and `Options` (**Current**). After #365 `projection` is its own boundary | #364, #365 | Clarified in #364's design | The runner is part of the projection boundary, so importing sibling `projection` is internal |
 | P11 | Classification of `encryption`, `eventadapter`, `eventstream`, `migration` | #353 | #353's package list | Urd-owned: they are never imported by persistence or projection (target) |
@@ -473,9 +486,9 @@ Criteria are the live body of #347 (original acceptance, the amendment on additi
 ### 16.2 Not verified in this draft
 
 - External consumers of engine messages in `egopb`, and any other adapter's serialization of snapshots or durable state.
-- That moving the engine messages keeps rolling upgrades working (needs the two-version test in 6.4).
+- Source/API, file-descriptor/reflection and rolling-upgrade compatibility after moving engine messages are not demonstrated. Section 6.4 requires generation, registry and two-version evidence; unchanged wire fields alone do not prove them.
 - That a nested `persistence/postgres` inside an extracted `persistence` module resolves as described in 5.2.
-- That protobuf registration and `buf lint` accept two files sharing a proto package with different `go_package` values, beyond reading `buf.yaml`.
+- Protobuf generation, registry registration and `buf` compatibility policy for the proposed split have not been executed. They are prerequisites of #363, not guarantees approved by this draft.
 - The current contents of the ego-arch-001 third-party allowlist (`uuid`, `atomic`) on this SHA.
 - Whether every path that needs `ScopedOffsetStore` or `RetainedEventsDeleter` rejects before the first operation.
 - CI behavior of the proposed architecture tests: none exist yet. This PR changes documentation only; its checks are the repository's existing ones.
