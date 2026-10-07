@@ -2239,7 +2239,7 @@ func TestEngineEntityWithRetentionPolicy(t *testing.T) {
 					DeleteSnapshotsOnSnapshot: true,
 					EventsRetentionCount:      3,
 				}),
-			)).To(specs.BeNil())
+			)).To(specs.MatchError(persistence.ErrUnsafeEventRetention))
 		})
 	})
 }
@@ -2453,8 +2453,8 @@ func TestEngineProjectionLagStoreErrors(t *testing.T) {
 		s.It("GetCurrentOffset failure", func(ctx *specs.Context) {
 			ctrl := mock.NewController(ctx)
 			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64{1: 100}, nil)
-			ctrl.Method("GetCurrentOffset").
-				Expect(mock.Any(), mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
+			ctrl.Method("GetScopedOffset").
+				Expect(mock.Any(), lagTestScope, mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
 				Return(nil, errors.New("offset down"))
 
 			engine := synthEngineWithStores(enginetest.NewEventsStoreMock(ctrl), nil, enginetest.NewOffsetStoreMock(ctrl))
@@ -2474,8 +2474,8 @@ func TestEngineProjectionLagComputation(t *testing.T) {
 		s.It("reports 1500 - 500 as a lag of 1000 for the shard", func(ctx *specs.Context) {
 			ctrl := mock.NewController(ctx)
 			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64{7: 1500}, nil)
-			ctrl.Method("GetCurrentOffset").
-				Expect(mock.Any(), mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
+			ctrl.Method("GetScopedOffset").
+				Expect(mock.Any(), lagTestScope, mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
 				Return(&egopb.Offset{Value: 500}, nil)
 
 			engine := synthEngineWithStores(enginetest.NewEventsStoreMock(ctrl), nil, enginetest.NewOffsetStoreMock(ctrl))
@@ -2541,7 +2541,7 @@ func TestEngineRebuildProjectionRemoveError(t *testing.T) {
 
 			err := engine.RebuildProjection(ctx, "never-registered-"+uuid.NewString(), ZeroTime)
 			sc.Expect(err).To(specs.Not(specs.BeNil()))
-			sc.Expect(err.Error()).To(specs.Contain("failed to stop projection"))
+			sc.Expect(err).To(specs.MatchError(ErrProjectionNotRegistered))
 		})
 	})
 }
@@ -2775,8 +2775,8 @@ func TestEngineProjectionLagIsScoped(t *testing.T) {
 		s.It("reads the shards of the projection's own scope", func(ctx *specs.Context) {
 			ctrl := mock.NewController(ctx)
 			ctrl.Method("ShardOffsets").Expect(mock.Any(), lagTestScope).Return(map[uint64]int64{3: 900}, nil)
-			ctrl.Method("GetCurrentOffset").
-				Expect(mock.Any(), mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
+			ctrl.Method("GetScopedOffset").
+				Expect(mock.Any(), lagTestScope, mock.MatchT("a projection id", func(id *egopb.ProjectionId) bool { return id != nil })).
 				Return(&egopb.Offset{Value: 400}, nil)
 
 			engine := synthEngineWithStores(enginetest.NewEventsStoreMock(ctrl), nil, enginetest.NewOffsetStoreMock(ctrl))

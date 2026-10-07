@@ -187,7 +187,7 @@ func spawnSequenceRig(ctx *specs.Context, tenant string, writeErr error) *sequen
 	stream := newEventsStream(ctx)
 
 	exts := []extension.Extension{
-		extensions.NewEventsStore(&loggingEventsStore{EventsStore: baseEvents, calls: calls, writeErr: writeErr}),
+		extensions.NewEventsStore(retentionFixture{&loggingEventsStore{EventsStore: baseEvents, calls: calls, writeErr: writeErr}}),
 		extensions.NewEventsStream(stream),
 		extensions.NewSnapshotStore(&loggingSnapshotStore{SnapshotStore: baseSnapshots, calls: calls}),
 	}

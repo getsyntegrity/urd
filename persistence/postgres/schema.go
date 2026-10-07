@@ -154,6 +154,7 @@ var baselineMarkers = []string{
 	"events_store_revisions",       // 003_events_store_revisions
 	"events_store.tenant_metadata", // 004_events_store_tenant_metadata
 	"offsets_store",                // 005_offsets_store
+	"offsets_store.tenant_id",      // 006_scoped_offsets
 }
 
 // inferSchemaVersion tells which version a database that holds no version

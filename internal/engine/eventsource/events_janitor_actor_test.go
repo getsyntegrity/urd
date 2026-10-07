@@ -146,7 +146,7 @@ func TestEventsJanitorActor(t *testing.T) {
 
 			eventStream := newClosingEventStream(ctx)
 			exts := []extension.Extension{
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEventsStream(eventStream),
 			}
 			var snapshotCtrl *mock.Controller
@@ -191,7 +191,7 @@ func TestEventsJanitorActor(t *testing.T) {
 			pingAnyTimes(ctrl)
 			eventStream := newClosingEventStream(ctx)
 			system := startEventsSystem(ctx, "TestJanitorMistypedSnapshotSystem", 1,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEventsStream(eventStream),
 				&enginetest.MistypedExtension{Name: extensions.SnapshotStoreExtensionID})
 
@@ -206,7 +206,7 @@ func TestEventsJanitorActor(t *testing.T) {
 			pingAnyTimes(ctrl)
 			eventStream := newClosingEventStream(ctx)
 			system := startEventsSystem(ctx, "TestRetentionSystem", 1,
-				extensions.NewEventsStore(eventStore), extensions.NewEventsStream(eventStream))
+				extensions.NewEventsStore(retentionFixture{eventStore}), extensions.NewEventsStream(eventStream))
 
 			pid, err := system.Spawn(context.Background(), "retention-test", newEventsJanitorActor())
 			ctx.Expect(err).To(specs.BeNil())

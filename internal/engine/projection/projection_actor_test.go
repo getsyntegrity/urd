@@ -293,7 +293,7 @@ func TestProjectionActorPreStartFailure(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AnyTimes()
 			offsetCtrl.Method("ResetOffset").
-				Expect(mock.Any(), projectionName, resetAt.UnixMilli()).
+				Expect(mock.Any(), projectionName, resetAt.UnixNano()).
 				Return(errResetFailed).AtLeast(1)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 

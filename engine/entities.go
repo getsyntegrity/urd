@@ -98,6 +98,11 @@ func (engine *Engine) spawnEventSourced(ctx context.Context, behavior behaviorpo
 	}
 
 	config := newSpawnConfig(opts...)
+	if config.retentionPolicy != nil && config.retentionPolicy.DeleteEventsOnSnapshot {
+		if _, safe := engine.eventsStore.(persistence.RetainedEventsDeleter); !safe {
+			return persistence.ErrUnsafeEventRetention
+		}
+	}
 
 	// Tenant-aware mode: determine which tenant this entity belongs to and
 	// inject it as a per-spawn dependency the entity's PreStart binds into

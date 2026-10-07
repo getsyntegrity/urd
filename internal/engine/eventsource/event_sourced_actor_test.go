@@ -65,7 +65,7 @@ func TestEventSourcedActor(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior)
 
 			state := stateReplyOf(ctx, ask(ctx, pid, &testpb.CreateAccount{AccountBalance: 500.00}))
@@ -80,7 +80,7 @@ func TestEventSourcedActor(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior)
 
 			state := stateReplyOf(ctx, ask(ctx, pid, &testpb.CreateAccount{AccountBalance: 500.00}))
@@ -95,7 +95,7 @@ func TestEventSourcedActor(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior)
 
 			reply := ask(ctx, pid, &testpb.TestSend{})
@@ -106,7 +106,7 @@ func TestEventSourcedActor(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			idle := rig.system.NumActors()
 			pid := rig.spawn(ctx, behavior)
 
@@ -129,7 +129,7 @@ func TestEventSourcedActor(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior)
 
 			state := stateReplyOf(ctx, ask(ctx, pid, &testpb.CreateAccount{AccountBalance: 500.00}))
@@ -147,7 +147,7 @@ func TestEventSourcedActor(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior)
 
 			state := stateReplyOf(ctx, ask(ctx, pid, &testpb.CreateAccount{AccountBalance: 500.00}))
@@ -187,7 +187,7 @@ func TestEventSourcedActor(t *testing.T) {
 			}}, persistence.Unconditional())).To(specs.BeNil())
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewSnapshotStore(snapshotStore))
 			pid := rig.spawn(ctx, behavior)
 
@@ -205,7 +205,7 @@ func TestEventSourcedActor(t *testing.T) {
 			noopMeter := noop.NewMeterProvider().Meter("test")
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior)
 
@@ -223,7 +223,7 @@ func TestEventSourcedActor(t *testing.T) {
 			encryptor := encryption.NewAESEncryptor(testkit.NewKeyStore())
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewEncryptor(encryptor))
 			pid := rig.spawn(ctx, behavior)
 
@@ -238,7 +238,7 @@ func TestEventSourcedActor(t *testing.T) {
 			snapshotStore := connectedSnapshotStore(ctx)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewSnapshotStore(snapshotStore))
 			// snapshot interval of 1
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{SnapshotInterval: 1})
@@ -259,7 +259,7 @@ func TestEventSourcedActor(t *testing.T) {
 			snapshotStore := connectedSnapshotStore(ctx)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewSnapshotStore(snapshotStore))
 			// snapshot interval of 2 and retention policy
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
@@ -303,7 +303,7 @@ func TestEventSourcedActor(t *testing.T) {
 
 			// a no-op event adapter that passes events through unchanged
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEventAdapters([]eventadapter.EventAdapter{&noopEventAdapter{}}))
 			pid := rig.spawn(ctx, behavior)
 
@@ -325,7 +325,7 @@ func TestEventSourcedActor(t *testing.T) {
 
 			// first actor system, with encryption and snapshot store
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewSnapshotStore(snapshotStore),
 				extensions.NewEncryptor(encryptor))
 			pid := rig.spawn(ctx, behavior, entityCfg)
@@ -349,7 +349,7 @@ func TestEventSourcedActor(t *testing.T) {
 
 			// start a NEW actor system with the same stores and encryption
 			rig2 := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewSnapshotStore(snapshotStore),
 				extensions.NewEncryptor(encryptor))
 
@@ -371,7 +371,7 @@ func TestEventSourcedActor(t *testing.T) {
 
 			// first actor system: send commands with encryption (no snapshot store)
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEncryptor(encryptor))
 			pid := rig.spawn(ctx, behavior)
 
@@ -382,7 +382,7 @@ func TestEventSourcedActor(t *testing.T) {
 
 			// second actor system: recover from encrypted events (no snapshot)
 			rig2 := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEncryptor(encryptor))
 			behavior2 := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 			pid2 := rig2.spawnWithoutStash(ctx, behavior2)
@@ -398,7 +398,7 @@ func TestEventSourcedActor(t *testing.T) {
 			snapshotStore := connectedSnapshotStore(ctx)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewSnapshotStore(snapshotStore))
 			// snapshot interval of 2 and delete snapshots retention policy
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
@@ -498,7 +498,7 @@ func TestEventSourcedActorTenancyGate(t *testing.T) {
 			eventStore := connectedEventsStore(ctx)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, extensions.NewEntityTenantScope("acme"))
 
@@ -532,7 +532,7 @@ func TestEventSourcedActorTenancyGate(t *testing.T) {
 			}
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
@@ -629,7 +629,7 @@ func TestEventSourcedActorBatchTenantHomogeneity(t *testing.T) {
 			}
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
@@ -693,7 +693,7 @@ func TestEventSourcedActorResetBatchDoesNotClearActorTenant(t *testing.T) {
 			}
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
@@ -755,7 +755,7 @@ func TestEventSourcedActorBatchTenantHomogeneity_ZeroEventCrossTenant(t *testing
 			}
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
@@ -825,7 +825,7 @@ func TestEventSourcedActorBatchTenantHomogeneity_ZeroEventSameTenant(t *testing.
 			}
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTenancyMarker(false))
 			pid := rig.spawn(ctx, behavior, entityCfg, extensions.NewEntityTenantScope("acme"))
 
@@ -907,7 +907,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 				Return(nil, "", errStoreFailure)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEncryptor(enginetest.NewEncryptorMock(ctrl)))
 			pid := rig.spawn(ctx, behavior)
 
@@ -938,7 +938,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			encrypt.Expect(specmock.Any(), persistenceID, specmock.Any()).Return(nil, "", errStoreFailure)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewSnapshotStore(snapshotStore),
 				extensions.NewEncryptor(enginetest.NewEncryptorMock(ctrl)))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{SnapshotInterval: 1})
@@ -962,7 +962,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
 			// The janitor retries a failed delete with backoff, and stopping the actor
-			// system cancels the retries, so DeleteEvents runs at least once.
+			// spec waits for the entire retry budget before releasing the mock.
 			eventsCtrl := specmock.NewController(ctx)
 			eventsCtrl.Method("Ping").Expect(specmock.Any()).Return(nil)
 			eventsCtrl.Method("GetLatestEvent").
@@ -974,7 +974,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			deleteEvents := eventsCtrl.Method("DeleteEvents")
 			deleteEvents.
 				Expect(specmock.Any(), persistence.Unscoped(), persistenceID, uint64(2)).
-				Return(errStoreFailure).AtLeast(1)
+				Return(errStoreFailure).Times(defaultMaxRetries + 1)
 
 			snapshotCtrl := specmock.NewController(ctx)
 			snapshotCtrl.Method("Ping").Expect(specmock.Any()).Return(nil)
@@ -986,7 +986,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 				Return(nil)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(enginetest.NewEventsStoreMock(eventsCtrl)),
+				extensions.NewEventsStore(retentionFixture{enginetest.NewEventsStoreMock(eventsCtrl)}),
 				extensions.NewSnapshotStore(enginetest.NewSnapshotStoreMock(snapshotCtrl)))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				SnapshotInterval:       2,
@@ -1005,8 +1005,8 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			// actor must still be alive: error is only logged
 			stateReplyOf(ctx, reply)
 
-			// the janitor child deletes asynchronously: wait for the failing call
-			ctx.Eventually(callCount(deleteEvents), specs.BeGreaterThanOrEqual(1),
+			// Wait for every retry before the spec releases the mock context.
+			ctx.Eventually(callCount(deleteEvents), specs.Equal(defaultMaxRetries+1),
 				specs.WithTimeout(pollTimeout), specs.WithInterval(pollInterval))
 			ctx.Expect(pid.IsRunning()).To(specs.BeTrue())
 		})
@@ -1024,8 +1024,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 				Expect(specmock.Any(), persistence.Unscoped(), specmock.Any(), specmock.Any()).
 				Return(nil).Times(4)
 
-			// As for DeleteEvents, the janitor retries the failed delete, so it runs
-			// at least once.
+			// The janitor exhausts the retry budget before this spec ends.
 			snapshotCtrl := specmock.NewController(ctx)
 			snapshotCtrl.Method("Ping").Expect(specmock.Any()).Return(nil)
 			snapshotCtrl.Method("GetLatestSnapshot").
@@ -1037,10 +1036,10 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			deleteSnapshots := snapshotCtrl.Method("DeleteSnapshots")
 			deleteSnapshots.
 				Expect(specmock.Any(), persistence.Unscoped(), persistenceID, uint64(2)).
-				Return(errStoreFailure).AtLeast(1)
+				Return(errStoreFailure).Times(defaultMaxRetries + 1)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(enginetest.NewEventsStoreMock(eventsCtrl)),
+				extensions.NewEventsStore(retentionFixture{enginetest.NewEventsStoreMock(eventsCtrl)}),
 				extensions.NewSnapshotStore(enginetest.NewSnapshotStoreMock(snapshotCtrl)))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				SnapshotInterval:          2,
@@ -1060,8 +1059,8 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			state := stateReplyOf(ctx, reply)
 			ctx.Expect(state.GetSequenceNumber()).ToEqual(uint64(4))
 
-			// the janitor child deletes asynchronously: wait for the failing call
-			ctx.Eventually(callCount(deleteSnapshots), specs.BeGreaterThanOrEqual(1),
+			// Wait for every retry before the spec releases the mock context.
+			ctx.Eventually(callCount(deleteSnapshots), specs.Equal(defaultMaxRetries+1),
 				specs.WithTimeout(pollTimeout), specs.WithInterval(pollInterval))
 			ctx.Expect(pid.IsRunning()).To(specs.BeTrue())
 		})
@@ -1071,7 +1070,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 3,
-				extensions.NewEventsStore(connectedEventsStore(ctx)))
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior)
 
 			ctx.Expect(goakt.Tell(context.Background(), pid, new(egopb.NoReply))).To(specs.BeNil())
@@ -1494,7 +1493,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
 				BatchFlushWindow: 100 * time.Millisecond,
@@ -1512,7 +1511,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   2,
 				BatchFlushWindow: 10 * time.Second,
@@ -1535,7 +1534,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
 				BatchFlushWindow: 100 * time.Millisecond,
@@ -1549,7 +1548,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
 				BatchFlushWindow: 100 * time.Millisecond,
@@ -1566,7 +1565,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			snapshotStore := connectedSnapshotStore(ctx)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewSnapshotStore(snapshotStore))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				SnapshotInterval: 2,
@@ -1588,7 +1587,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   1,
 				BatchFlushWindow: time.Second,
@@ -1667,7 +1666,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 				Return(nil, "", errStoreFailure)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEncryptor(enginetest.NewEncryptorMock(ctrl)))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
@@ -1685,7 +1684,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			noopMeter := noop.NewMeterProvider().Meter("test")
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
@@ -1704,7 +1703,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			noopMeter := noop.NewMeterProvider().Meter("test")
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
@@ -1722,7 +1721,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			noopMeter := noop.NewMeterProvider().Meter("test")
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
@@ -1736,7 +1735,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{BatchThreshold: 100})
 
 			// one command never reaches the threshold: the default flush window flushes it
@@ -1748,7 +1747,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
 				BatchFlushWindow: 100 * time.Millisecond,
@@ -1765,7 +1764,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			persistenceID := uuid.NewString()
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
-			rig := startActorRig(ctx, extensions.NewEventsStore(connectedEventsStore(ctx)))
+			rig := startActorRig(ctx, extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}))
 			entity := New()
 			pid, err := rig.system.Spawn(context.Background(), behavior.ID(), entity,
 				goakt.WithDependencies(behavior, &extensions.EntityConfig{
@@ -1810,7 +1809,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 				Return(nil, "", errStoreFailure)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEncryptor(enginetest.NewEncryptorMock(ctrl)),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
@@ -1829,7 +1828,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			noopMeter := noop.NewMeterProvider().Meter("test")
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   3,
@@ -1858,7 +1857,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			snapshotStore := connectedSnapshotStore(ctx)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewSnapshotStore(snapshotStore),
 				extensions.NewTelemetryExtension(noopTracer, noopMeter))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
@@ -1912,7 +1911,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(recorder.tracer, noop.NewMeterProvider().Meter("test")))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   3,
@@ -1992,7 +1991,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(recorder.tracer, noop.NewMeterProvider().Meter("test")))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
@@ -2037,7 +2036,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
 			rig := startActorRig(ctx,
-				extensions.NewEventsStore(connectedEventsStore(ctx)),
+				extensions.NewEventsStore(retentionFixture{connectedEventsStore(ctx)}),
 				extensions.NewTelemetryExtension(recorder.tracer, noop.NewMeterProvider().Meter("test")))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{
 				BatchThreshold:   100,
@@ -2088,7 +2087,7 @@ func TestEventSourcedActorBatch(t *testing.T) {
 				Return(nil, "", errStoreFailure)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
-				extensions.NewEventsStore(eventStore),
+				extensions.NewEventsStore(retentionFixture{eventStore}),
 				extensions.NewEncryptor(enginetest.NewEncryptorMock(ctrl)),
 				extensions.NewTelemetryExtension(recorder.tracer, noop.NewMeterProvider().Meter("test")))
 			pid := rig.spawn(ctx, behavior, &extensions.EntityConfig{

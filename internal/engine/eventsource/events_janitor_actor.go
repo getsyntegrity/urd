@@ -121,8 +121,13 @@ func (a *eventsJanitorActor) handleApplyRetention(ctx *goakt.ReceiveContext, req
 		}
 
 		if deleteUpTo > 0 {
+			guarded, ok := a.eventsStore.(persistence.RetainedEventsDeleter)
+			if !ok {
+				a.logger.ErrorContext(ctx.Context(), "automatic retention refused", "error", persistence.ErrUnsafeEventRetention)
+				return
+			}
 			if err := retryWithBackoff(ctx.Context(), defaultBackoff(), defaultMaxRetries, func() error {
-				return a.eventsStore.DeleteEvents(ctx.Context(), req.scope, req.persistenceID, deleteUpTo)
+				return guarded.DeleteRetainedEvents(ctx.Context(), req.scope, req.persistenceID, deleteUpTo)
 			}); err != nil {
 				a.logger.ErrorContext(ctx.Context(), "failed to delete events for retention policy",
 					"persistence_id", req.persistenceID,

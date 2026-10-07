@@ -86,7 +86,7 @@ func newSnapshotWriterRig(ctx *specs.Context, snapshotErr error, encryptor *exte
 		hold = gate.open
 	}
 	exts := []extension.Extension{
-		extensions.NewEventsStore(&loggingEventsStore{EventsStore: baseEvents, calls: calls}),
+		extensions.NewEventsStore(retentionFixture{&loggingEventsStore{EventsStore: baseEvents, calls: calls}}),
 		extensions.NewSnapshotStore(&loggingSnapshotStore{SnapshotStore: baseSnapshots, calls: calls, writeErr: snapshotErr, hold: hold}),
 	}
 	if encryptor != nil {

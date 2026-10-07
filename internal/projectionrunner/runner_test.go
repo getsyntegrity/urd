@@ -206,8 +206,8 @@ func TestProjectionRunnerErrorPaths(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("ResetOffset").Expect(mock.Any(), projectionName, resetOffsetTo.UnixMilli()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("GetCurrentOffset").Expect(mock.Any(), projectionID).Return(offset, nil).AtLeast(1)
+			offsetCtrl.Method("ResetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionName, resetOffsetTo.UnixNano()).Return(nil).AtLeast(1)
+			offsetCtrl.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionID).Return(offset, nil).AtLeast(1)
 
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
@@ -331,7 +331,7 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("GetCurrentOffset").Expect(mock.Any(), projectionID).Return(offset, nil).AtLeast(1)
+			offsetCtrl.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionID).Return(offset, nil).AtLeast(1)
 
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
@@ -391,7 +391,7 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("GetCurrentOffset").Expect(mock.Any(), mock.Any()).Return(&egopb.Offset{Value: offsetValue}, nil).AtLeast(1)
+			offsetCtrl.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, mock.Any()).Return(&egopb.Offset{Value: offsetValue}, nil).AtLeast(1)
 
 			// one shard fails its store round trip while the other returns an
 			// event the handler cannot process
@@ -464,14 +464,14 @@ func TestProjectionRunnerFatalPaths(t *testing.T) {
 
 // offsetReader is the part of an offset store a test reads committed offsets from.
 type offsetReader interface {
-	GetCurrentOffset(ctx context.Context, projectionID *egopb.ProjectionId) (*egopb.Offset, error)
+	GetScopedOffset(ctx context.Context, scope persistence.Scope, projectionID *egopb.ProjectionId) (*egopb.Offset, error)
 }
 
 // offsetOf observes the committed offset of projectionID. A store failure is
 // observed as the error itself, so the poll reports it instead of hiding it.
 func offsetOf(store offsetReader, projectionID *egopb.ProjectionId) func() any {
 	return func() any {
-		offset, err := store.GetCurrentOffset(context.TODO(), projectionID)
+		offset, err := store.GetScopedOffset(context.TODO(), runnerTestScope, projectionID)
 		if err != nil {
 			return err
 		}
@@ -789,9 +789,9 @@ func TestRunner(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("GetCurrentOffset").Expect(mock.Any(), projectionID).Return(offset, nil).AtLeast(1)
+			offsetCtrl.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionID).Return(offset, nil).AtLeast(1)
 			// the panicking handler must never get its offset committed
-			offsetCtrl.Method("WriteOffset").Expect(mock.Any(), mock.Any()).Never()
+			offsetCtrl.Method("WriteScopedOffset").Expect(mock.Any(), runnerTestScope, mock.Any()).Never()
 
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
@@ -937,7 +937,7 @@ func TestRunner(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("ResetOffset").Expect(bg, projectionName, resetOffsetTo.UnixMilli()).Return(errors.New("fail to reset offset")).AtLeast(1)
+			offsetCtrl.Method("ResetScopedOffset").Expect(bg, runnerTestScope, projectionName, resetOffsetTo.UnixNano()).Return(errors.New("fail to reset offset")).AtLeast(1)
 
 			// create an instance of the projection
 			runner := New(projectionName, handler, eventsStore, offsetStore, WithScope(runnerTestScope), WithPullInterval(time.Millisecond))
@@ -953,8 +953,8 @@ func TestRunner(t *testing.T) {
 			{
 				name: "when fail to write the offset the Runner retries and keeps running",
 				arrange: func(fx retryFixture, offsets, events *mock.Controller, calls *atomic.Int32) {
-					offsets.Method("GetCurrentOffset").Expect(mock.Any(), fx.projectionID).Return(fx.offset, nil).AtLeast(1)
-					offsets.Method("WriteOffset").Expect(mock.Any(), mock.Any()).AtLeast(1).
+					offsets.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, fx.projectionID).Return(fx.offset, nil).AtLeast(1)
+					offsets.Method("WriteScopedOffset").Expect(mock.Any(), runnerTestScope, mock.Any()).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{errFailed} })
 					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{fx.shardNumber: fx.nextOffset}, nil).AtLeast(1)
 					events.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, fx.shardNumber, fx.offset.GetValue(), uint64(fx.maxBufferSize)).
@@ -971,7 +971,7 @@ func TestRunner(t *testing.T) {
 			{
 				name: "when fail to get current offset the Runner retries and keeps running",
 				arrange: func(fx retryFixture, offsets, events *mock.Controller, calls *atomic.Int32) {
-					offsets.Method("GetCurrentOffset").Expect(mock.Any(), fx.projectionID).AtLeast(1).
+					offsets.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, fx.projectionID).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{nil, errFailed} })
 					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{fx.shardNumber: time.Now().UnixMilli()}, nil).AtLeast(1)
 				},
@@ -979,7 +979,7 @@ func TestRunner(t *testing.T) {
 			{
 				name: "when fail to get shard events the Runner retries and keeps running",
 				arrange: func(fx retryFixture, offsets, events *mock.Controller, calls *atomic.Int32) {
-					offsets.Method("GetCurrentOffset").Expect(mock.Any(), fx.projectionID).Return(fx.offset, nil).AtLeast(1)
+					offsets.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, fx.projectionID).Return(fx.offset, nil).AtLeast(1)
 					events.Method("ShardOffsets").Expect(mock.Any(), runnerTestScope).Return(map[uint64]int64{fx.shardNumber: time.Now().UnixMilli()}, nil).AtLeast(1)
 					events.Method("GetShardEvents").Expect(mock.Any(), runnerTestScope, fx.shardNumber, fx.offset.GetValue(), uint64(fx.maxBufferSize)).AtLeast(1).
 						Do(func([]any) []any { calls.Inc(); return []any{nil, int64(0), errFailed} })
@@ -1027,7 +1027,7 @@ func TestRunner(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("ResetOffset").Expect(mock.Any(), projectionName, resetOffsetTo.UnixMilli()).Return(nil).AtLeast(1)
+			offsetCtrl.Method("ResetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionName, resetOffsetTo.UnixNano()).Return(nil).AtLeast(1)
 
 			eventsCtrl := mock.NewController(ctx)
 			eventsStore := enginetest.NewEventsStoreMock(eventsCtrl)
@@ -1394,9 +1394,9 @@ func TestRunner(t *testing.T) {
 			offsetCtrl := mock.NewController(ctx)
 			offsetStore := enginetest.NewOffsetStoreMock(offsetCtrl)
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("ResetOffset").Expect(mock.Any(), projectionName, resetOffsetTo.UnixMilli()).Return(nil).AtLeast(1)
-			offsetCtrl.Method("GetCurrentOffset").Expect(mock.Any(), projectionID).Return(offset, nil).AtLeast(1)
-			offsetCtrl.Method("WriteOffset").Expect(mock.Any(), mock.Any()).AtLeast(1).
+			offsetCtrl.Method("ResetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionName, resetOffsetTo.UnixNano()).Return(nil).AtLeast(1)
+			offsetCtrl.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionID).Return(offset, nil).AtLeast(1)
+			offsetCtrl.Method("WriteScopedOffset").Expect(mock.Any(), runnerTestScope, mock.Any()).AtLeast(1).
 				Do(func([]any) []any { writes.Inc(); return []any{nil} })
 
 			eventsCtrl := mock.NewController(ctx)
@@ -1599,14 +1599,14 @@ func TestRunnerPullEfficiency(t *testing.T) {
 			offsetCtrl.Method("Ping").Expect(mock.Any()).Return(nil).AtLeast(1)
 			// the committed offset must be resolved from the store exactly once:
 			// afterwards the runner serves it from its in-memory cache.
-			offsetCtrl.Method("GetCurrentOffset").Expect(mock.Any(), projectionID).Return(&egopb.Offset{
+			offsetCtrl.Method("GetScopedOffset").Expect(mock.Any(), runnerTestScope, projectionID).Return(&egopb.Offset{
 				ShardNumber:    shardNumber,
 				ProjectionName: projectionName,
 				Value:          committedOffset,
 			}, nil).Times(1)
 			// the whole batch of three events must commit exactly once, with the
 			// batch next offset.
-			offsetCtrl.Method("WriteOffset").Expect(mock.Any(), mock.MatchT("the batch offset of the shard", func(offset *egopb.Offset) bool {
+			offsetCtrl.Method("WriteScopedOffset").Expect(mock.Any(), runnerTestScope, mock.MatchT("the batch offset of the shard", func(offset *egopb.Offset) bool {
 				return offset.GetShardNumber() == shardNumber && offset.GetValue() == latestOffset
 			})).Times(1).Do(func([]any) []any { writes.Inc(); return []any{nil} })
 
@@ -1839,7 +1839,7 @@ func TestRunnerPagesThroughTimestampTies(t *testing.T) {
 			// the first run delivered one page of size one and committed its offset
 			first, committed, err := eventsStore.GetShardEvents(bg, runnerTestScope, shard, 0, 1)
 			ctx.Expect(err).To(specs.BeNil())
-			ctx.Expect(offsetStore.WriteOffset(bg, &egopb.Offset{ShardNumber: shard, ProjectionName: "tie-writer", Value: committed})).To(specs.BeNil())
+			ctx.Expect(offsetStore.WriteScopedOffset(bg, runnerTestScope, &egopb.Offset{ShardNumber: shard, ProjectionName: "tie-writer", Value: committed})).To(specs.BeNil())
 
 			// a new runner on the same offset store starts from that offset alone
 			handler := &recordingHandler{}

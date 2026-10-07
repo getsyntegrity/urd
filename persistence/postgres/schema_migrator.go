@@ -55,7 +55,7 @@ const catalogSQL = `
 SELECT table_name::text FROM information_schema.tables WHERE table_schema = current_schema()
 UNION ALL
 SELECT table_name::text || '.' || column_name::text FROM information_schema.columns
- WHERE table_schema = current_schema() AND table_name = 'events_store'
+ WHERE table_schema = current_schema() AND table_name IN ('events_store', 'offsets_store')
 UNION ALL
 SELECT 'index.' || indexname::text FROM pg_indexes WHERE schemaname = current_schema()`
 
