@@ -55,7 +55,7 @@ When `Scope` becomes opaque, `sliceHash` must keep consuming the same bytes: for
 
 Environment: go1.27.0, darwin/arm64, GOMAXPROCS=16, a developer laptop. Scripts were run outside the repository and are not part of this PR.
 
-- Hash cost per key (microbenchmark): FNV-1a 64: 4.9 ns on a 14-byte key, 113.7 ns on a 171-byte key. SHA-256 with the first 8 bytes taken: 42.3 ns and 59.4 ns. FNV-1a is a byte-serial loop, so it loses on long keys here; SHA-256 profits from hardware support on this CPU. The slice is computed once per actor start, not per event, so both costs are negligible against a database write. Other CPUs may rank them differently.
+- Hash cost per key (microbenchmark): FNV-1a 64: 4.9 ns on a 14-byte key, 113.7 ns on a 168-byte key (a 128-byte tenant and a 36-byte id). SHA-256 with the first 8 bytes taken: 42.3 ns and 59.4 ns. FNV-1a is a byte-serial loop, so it loses on long keys here; SHA-256 profits from hardware support on this CPU. The slice is computed once per actor start, not per event, so both costs are negligible against a database write. Other CPUs may rank them differently.
 - Distribution over 1,000,000 synthetic ids under one tenant (chi-square, expected about N-1 with standard deviation sqrt(2(N-1))): with ids `entity-<n>` and decimal ids, FNV-1a is more even than random (N=256: 53.5 and 34.8 against about 255 +/- 23), which means sequential ids are spread regularly rather than randomly; with UUID-like ids it is random-like (249.9 and 1003.0). SHA-256 is random-like in all cases. No bucket skew was found for either hash. Real ids may differ from these three synthetic patterns.
 
 ### Calculated (arithmetic on stated, hypothetical inputs)
