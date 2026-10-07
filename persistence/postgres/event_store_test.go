@@ -174,3 +174,20 @@ func TestEventStore_PersistenceIDs_ZeroPageSize(t *testing.T) {
 func TestEventStore_ImplementsEventsStore(t *testing.T) {
 	var _ persistence.EventsStore = (*EventStore)(nil)
 }
+
+func TestEventStore_ReplayEvents_EmptyRange(t *testing.T) {
+	specs.Describe(t, "replay bounds outside PostgreSQL's int8 domain", func(s *specs.Spec) {
+		s.It("returns no events without querying for an unrepresentable lower bound", func(ctx *specs.Context) {
+			events, err := unvalidatedStore().ReplayEvents(context.Background(), persistence.Unscoped(), "a", uint64(1)<<63, ^uint64(0), ^uint64(0))
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(events).To(specs.BeEmpty())
+		})
+		s.It("returns no events for a reversed range or a zero limit", func(ctx *specs.Context) {
+			for _, bounds := range [][3]uint64{{2, 1, 10}, {1, 10, 0}} {
+				events, err := unvalidatedStore().ReplayEvents(context.Background(), persistence.Unscoped(), "a", bounds[0], bounds[1], bounds[2])
+				ctx.Expect(err).To(specs.BeNil())
+				ctx.Expect(events).To(specs.BeEmpty())
+			}
+		})
+	})
+}
