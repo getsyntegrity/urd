@@ -2,7 +2,10 @@
 
 Companion of `i-00-baseline-develop.md`. Audited on 2026-10-07 against code at
 `develop` `4c66286` (#426, Go 1.27.0). The historical baseline (`4ebdc3d`,
-Go 1.26) is not mixed in. This is a baseline with documented problems, not a
+Go 1.26) is not mixed in. Rows touched by #429-#433 (actor identity, adoption
+on PostgreSQL, scoped offsets, schema version six) were re-read against
+`develop` `01da644` and are marked `01da644` in their last column; all other
+rows still reflect `4c66286`, and their `confirmed` marks were not repeated. This is a baseline with documented problems, not a
 claim that the epic is satisfied.
 
 ## Method, in two passes
@@ -55,20 +58,22 @@ awk -F'|' 'NF==9 && $3 !~ /State|---/ {gsub(/^ +| +$/,"",$3); c[$3]++} END {for 
 
 | Kind | Criteria |
 |---|---|
-| `current-defect` | 14 |
-| `new-capability` | 394 |
+| `current-defect` | 13 |
+| `new-capability` | 395 |
 | `negative-ok` | 17 |
 | `met` | 6 |
 
 6 criteria are positively demonstrated and 17 are negative
-criteria met because nothing was built. 394 describe new
+criteria met because nothing was built. 395 describe new
 guarantees: their `no implementado` or `parcial` state is the expected
 baseline, not a defect.
 
-## Current defects (14)
+## Current defects (13)
 
 Behavior that exists today and is wrong or unsafe, as opposed to a capability
-that is not built yet.
+that is not built yet. (The #416 raw-reset row left this list on `01da644`,
+after #431; the count of 14 recorded on `4c66286` is now 13. The kind total
+was re-derived with the awk command above, adapted to column 4.)
 
 | Task | Criterion | State | Evidence | Related |
 |---|---|---|---|---|
@@ -84,7 +89,6 @@ that is not built yet.
 | #410 | Replay tras caída/reinicio recupera pendientes y no genera intenciones nuevas para evento  | no implementado | `recover()` (:363) replays only own events; events during downtime lost; repeated event is handled twice (no dedupe, `handleStreamEvent` :543) | #361 #360 #373 |
 | #411 | Límites de concurrencia/espera/retry; no bloquear mailbox indiscriminadamente | parcial | Per-command timeout, default 5s (`effectiveCommandTimeout` :826; test 'default timeout when zero' saga_test.go:741) | #378 (related bounds) |
 | #412 | Reinicio recupera timers vencidos con política explícita | no implementado | PostStart reschedules the full timeout on each start (:275-277); `recover()` sets status Running (:365) so a terminal saga is reactivated | #410 #301 (closed NOT_PLANNED) |
-| #416 | Nunca reset bruto de offsets compartidos ni copiar state machines de tenancy/projection | parcial | `RebuildProjection` calls `offsetStore.ResetOffset(name, from)` across all shards (`projections.go:185-230`; `offsetstore/offset_store.go:45`) | #381 (per-scope rebuild), #362 |
 | #417 | [single tenant] Identidad de operador separada del tenant ID; fail-closed sin tenant ficti | no implementado | Legacy mode (no resolver) erases `Unscoped()` with no authorization (`entities.go:322-326`) | #424 #379 |
 
 ## Blocked criteria and their dependencies (74 rows)
@@ -141,7 +145,7 @@ without a concrete dependency: 0.
 | #399 | 1 | #395 |
 | #400 | 1 | #401 |
 | #402 | 1 | #403 |
-| #428 | 1 | #403 |
+| #435 | 1 | #403 |
 | #409 | 1 | #397 |
 | #371 | 1 | #409 |
 | #376 | 1 | #410 |
@@ -155,8 +159,9 @@ without a concrete dependency: 0.
 | #407 | 1 | #422 |
 | #405 | 1 | #422 |
 
-#427 (B4) and #428 (TenantAdopter on PostgreSQL) are cited where they apply;
-neither is fixed here.
+#427 (B4, fixed by #430) and #428 (TenantAdopter on PostgreSQL, fixed by #429)
+are cited only where a row still reads them as history. The blocked row that
+named #428 now names #435.
 
 ## #350: slice stability and non-zero partition propagation
 
@@ -166,7 +171,7 @@ one test does not stand in for the other.
 
 Guarantee split (the issue lists only guarantee 1 as a test criterion):
 - (1) Stability across 1/3/5 nodes: criteria "N decidido" (prerequisite) and "test 1, 3, 5 nodos". Evidence today: none; the only stored-shard code reads GoAkt Partition, so stability is not provided by design. Test needed: unit test of the pure function independent of any ActorSystem, plus (optional, integration) a cluster of 1/3/5 nodes asserting the same persistenceID yields the same stored Shard.
-- (2) Propagation of a non-zero partition value into stored Shard fields: NOT a criterion in the issue body (gap in issue text). Evidence today: B2 only shows shard 0; its own comment states 0 is the zero value so it cannot prove the shard came from Partition. Code writes `entity.shardNumber` at event_sourced_actor.go:353 and durable_state_actor.go:167. Test needed: with a slice function returning a non-zero value (injected stub or real), spawn an event-sourced and a durable-state entity and assert stored Event.Shard and DurableState.Shard equal it; zero-value tests cannot substitute.
+- (2) Propagation of a non-zero partition value into stored Shard fields: NOT a criterion in the issue body (gap in issue text). Evidence today (`01da644`): `TestBaseline346` B2 only shows shard 0 (zero value, cannot prove propagation); `TestClusterEventPublisherHighPartitionCount` (engine/publisher_test.go:409, assertions at 526-535) does show `GetShard() >= 271` on events published in a cluster, so propagation is covered for published events in a cluster only. Still uncovered: durable-state non-zero Shard, persisted rows, and which identity feeds `Partition` after #430 (it hashes `behavior.ID()` by code reading, unverified by a test). Code writes `entity.shardNumber` at event_sourced_actor.go:355 and durable_state_actor.go:169. Test needed: with a slice function returning a non-zero value (injected stub or real), spawn an event-sourced and a durable-state entity and assert stored Event.Shard and DurableState.Shard equal it; zero-value tests cannot substitute.
 - Neither test substitutes for the other: a stable pure function can still never reach storage, and a propagated value can still vary with topology.
 
 ## Corrections made by the second pass
@@ -347,9 +352,9 @@ Dependencies: #361, #353, #365, #376, #384, #385, #424 (open)
 | Memory/testkit and Postgres pass reader, append, idempotency, isolation, cursor, crash, dedupe, parking/replay, stale executor | parcial | new-capability | persistence/conformance covers events/snapshots/state (append, CAS, scope isolation) and runs on testkit and Postgres. No reader, cursor, parking, stale-executor cases. | Missing TCK cases; B2 non-zero partition untested. | Related #348, #374, #375, #357 | confirmed |
 | Boundaries verified | parcial | new-capability | Pre-existing architecture lane only; new rules absent. | New rules absent. | Blocked by #353 | confirmed |
 | Overload/recovery documented | no implementado | new-capability | None. | Not done. | Blocked by #385 | confirmed |
-| Zero exceptions invalidating guarantees | no verificado | new-capability | No exception list exists; open defects #427 (B4 actor identity collisions) and #428 (TenantAdopter fails on Postgres) may qualify. | Cannot be claimed. | Related #427, #428, #353 | confirmed |
+| Zero exceptions invalidating guarantees | no verificado | new-capability | No exception list exists; #427 (B4 actor identity collisions, fixed by #430) and #428 (TenantAdopter on Postgres, fixed by #429) no longer qualify; no list exists, so the criterion still cannot be claimed. | Cannot be claimed. | Related #353 | 01da644: #427/#428 fixed |
 | Single tenant unscoped/fixed + multitenant accepted in memory and Postgres | parcial | new-capability | Unscoped tests: testkit/scope_test.go, persistence/postgres/event_store_test.go, conformance events.go:59-74; engine_fixed_tenant_resolver_test.go. No unified matrix. | No matrix; adoption on Postgres broken. | Blocked by #424; related #428 | confirmed |
-Issue verdict: not met; blocked by many open dependencies; known findings #427, #428.
+Issue verdict: not met; blocked by many open dependencies. Findings #427 and #428 were fixed (#430, #429).
 
 ### #389 [G-C] Gate C: SPI stability in real use before extraction
 Dependencies: #366, #367, #379, #380, #381, #386 (open)
@@ -400,11 +405,11 @@ Dependencies: #346 (done), #347, #349, #383, #384, #390 (open)
 |---|---|---|---|---|---|---|
 | Default config works with no tenant ID/resolver/catalog/tenancy extension | parcial | new-capability | Engine without resolver registers no tenancy marker (engine/option.go:185) and uses Unscoped (readme.md:521); persistence.Unscoped() exists. | No explicit SingleTenantUnscoped mode/default cell/profile; persistence still imports tenancy. | Related #349, #347 | confirmed |
 | Fixed identity validated; rejects other identity; multitenant validations kept | parcial | new-capability | tenancy.WithSingleTenant (tenancy/resolver.go:77) and FixedTenantResolver; engine_fixed_tenant_resolver_test.go; compose CapFixedTenant. | Not a configurable mode with scope binding; names pending ADR. | Blocked by #347 | confirmed |
-| Unscoped preserves keys/data; identified scope needs explicit adoption | parcial | new-capability | migration/tenant_adoption.go TenantAdopter exists with tests. | #428 TenantAdopter fails on Postgres; no explicit no-silent-reinterpretation test. | Related #428 | confirmed |
+| Unscoped preserves keys/data; identified scope needs explicit adoption | parcial | new-capability | migration/tenant_adoption.go TenantAdopter exists with tests; `TestAdoptionOfLegacyDataRecoversOnPostgres` (inttest/flows/tenancy/adoption_test.go:50) passes in CI run 37635241381. | Event journal only (snapshots and durable state: #435); no explicit no-silent-reinterpretation test. | Related #435 | 01da644: #428 fixed by #429 |
 | Selection, cursor, idempotent commands, snapshots, offsets, markers keep explicit scope in all modes | parcial | new-capability | Journal/snapshot/state stores take Scope; offsetstore.WriteOffset (offset_store.go:42) has no scope; no cursor/command-ID/marker model. | Offsets/cursor/commands not scoped. | Related #357, #361 | confirmed |
 | Trivial router/default cell, global bounded resource profile per role | no implementado | new-capability | No ScopeRouter or resource profile code (grep router, profile). | Not built. | Blocked by #368, #390 | confirmed |
 | Absence of tenancy not confused with missing required extension | parcial | new-capability | extensions.Require applies only to required extensions; tenancy marker is optional. | requiredCapabilities empty; no capability-driven requirement map. | Blocked by #384 | confirmed |
-| Matrix memory/testkit + Postgres: unscoped, fixed, multi, replay/crash, incompatible cursor, compatible persistence | parcial | new-capability | testkit/scope_test.go, persistence/conformance scope tests, postgres event_store_test.go. | No cursor test, no fixed matrix; B2 non-zero partition untested; #428. | Related #428, #388 | confirmed |
+| Matrix memory/testkit + Postgres: unscoped, fixed, multi, replay/crash, incompatible cursor, compatible persistence | parcial | new-capability | testkit/scope_test.go, persistence/conformance scope tests, postgres event_store_test.go. | No cursor test, no fixed matrix; B2 non-zero partition untested for durable state and persisted rows (events published in a cluster are covered by `TestClusterEventPublisherHighPartitionCount`). | Related #388 | 01da644 |
 | Authorization remains: omitting tenant ID gives no global privilege | parcial | new-capability | engine_tenant_administrative_scope_test.go (e.g. TestNoTenantIdentityGrantsAdministrativePrivilege:212). | Not verified against the new modes. | Related #347 | confirmed |
 | Product/integration/workflow scenarios incorporate modes later | no verificado | new-capability | Deferred by design to those issues. | Out of core scope. | Related #395-#398 | confirmed |
 Issue verdict: partial legacy capability (Unscoped, FixedTenantResolver); explicit mode and new guarantees not implemented.
@@ -419,7 +424,7 @@ Dependencies: #346, children #348-#363, #377, #378, #390, #392; coordination #34
 | Issues del alcance completados o diferidos mediante decisión explícita | no implementado | new-capability | All children listed in the body are OPEN; no deferral decision recorded. | Children not delivered. | Children #348-#363, #377, #378, #390, #392; #346 | confirmed |
 | Garantías demostradas por pruebas y condiciones operativas documentadas | no implementado | new-capability | persistence/conformance/events.go:57-74 has no reader, contiguity or idempotency checks; postgres README has no operational conditions. | No proof, no docs. | #348, #352, #354, #357, #360 | confirmed |
 | Imports y capacidades respetan la arquitectura | parcial | current-defect | `go list -deps ./persistence` includes urd/tenancy (persistence/scope.go:28) and urd/egopb; rest of persistence imports are clean. | tenancy and egopb coupling remain. | #349, #363, #347 | confirmed |
-| Migraciones/compatibilidad y guía de uso actualizadas donde aplique | no implementado | new-capability | Schema dir has 001-005 only; no new migration or guide; TenantAdopter fails on Postgres. | Nothing delivered. | #358, #359; #428 | confirmed |
+| Migraciones/compatibilidad y guía de uso actualizadas donde aplique | no implementado | new-capability | Schema dir has 001-006 (006 = scoped offsets, #431); no migration for the target schema, no guide; TenantAdopter works on Postgres for the event journal (#429). | Nothing delivered for this criterion. | #358, #359; #435 | 01da644 |
 Issue verdict: epic correctly open; all four closure criteria unmet (one partial).
 
 ### #348 [I-02] TCK del lector: omisiones, elegibilidad y progreso
@@ -436,9 +441,9 @@ Dependencies: #347 (I-01, ADR); #346.
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
 | persistence no importa tenancy | no implementado | current-defect | persistence/scope.go:28 imports urd/tenancy; Scope holds `tenant tenancy.TenantID`; `go list -deps ./persistence` lists tenancy. | Scope must become opaque prefix. | #347, #344 | confirmed |
-| Clave persistida sigue igual ('' Unscoped, ID del tenant), sin migración | parcial | new-capability | Current mapping holds (postgres/event_store.go scopeKey -> string(scope.TenantID())); guarantee after the refactor cannot be tested yet. | Regression test of the key through the opaque Scope. | #424, #428 | confirmed |
+| Clave persistida sigue igual ('' Unscoped, ID del tenant), sin migración | parcial | new-capability | Current mapping holds (postgres/event_store.go scopeKey -> string(scope.TenantID())); guarantee after the refactor cannot be tested yet. | Regression test of the key through the opaque Scope. | #424 | 01da644: #428 fixed |
 | La conformance actual pasa | cumplido | met | testkit and inttest/flows/eventstore pass today (audit run). | Re-run after refactor. | none | confirmed |
-| (single tenant) Preservar clave Unscoped sin migración; sin tenant ID ficticio; adopción requiere migración explícita | parcial | new-capability | Unscoped '' preserved (scope.go); adoption not automatic per docs/prd/i-00-baseline-develop.md; adoption path fails on Postgres. | Explicit-migration guide; adopter broken. | #428, #424 | confirmed |
+| (single tenant) Preservar clave Unscoped sin migración; sin tenant ID ficticio; adopción requiere migración explícita | parcial | new-capability | Unscoped '' preserved (scope.go); adoption not automatic per docs/prd/i-00-baseline-develop.md; adoption path recovers on Postgres for the event journal (#429). | Explicit-migration guide; snapshot and durable-state adoption (#435). | #435, #424 | 01da644 |
 Issue verdict: preservation behavior exists, structural goal (no tenancy import) unmet.
 
 ### #350 [I-04] Slices fijos independientes de GoAkt
@@ -446,11 +451,11 @@ Dependencies: #351 (I-05).
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
 | N decidido y documentado (256 o 1024) | no implementado | new-capability | No N constant or slice function in persistence; searched "slice", "hash(scope", "mod N"; only B2 notes mention it. Prerequisite for guarantee (1) only. | Decision absent. | #351; #387 | confirmed |
-| Test de que el slice no cambia con 1, 3 y 5 nodos (guarantee 1: STABILITY across cluster size) | no implementado | new-capability | Shard still `ActorSystem().Partition(id)` at internal/engine/eventsource/event_sourced_actor.go:353 and durablestate/durable_state_actor.go:167; no pure function exists, so nothing to test. B2 in engine/baseline_346_test.go is standalone only. | Pure slice(scope,id,N) function plus table test over topologies (1, 3, 5) showing identical slice. | #427 (actor names feed persistenceID); #351 | confirmed |
-| Plan de migración de shard_number y offsets existentes, alimenta I-09b | no implementado | new-capability | schema/005_offsets_store.sql keyed (projection_name, shard_number); no plan doc. Belongs to neither guarantee below; it is a migration concern. | Plan document. | #359, #362, #370 | confirmed |
+| Test de que el slice no cambia con 1, 3 y 5 nodos (guarantee 1: STABILITY across cluster size) | no implementado | new-capability | Shard still `ActorSystem().Partition(entity.persistenceID)` at internal/engine/eventsource/event_sourced_actor.go:355 and durablestate/durable_state_actor.go:169 (01da644); no pure function exists, so nothing to test. B2 in engine/baseline_346_test.go is standalone only. | Pure slice(scope,id,N) function plus table test over topologies (1, 3, 5) showing identical slice. | #351; (#427 fixed: persistenceID is now `behavior.ID()`, so the hash input is the behavior ID, see baseline B2) | 01da644 |
+| Plan de migración de shard_number y offsets existentes, alimenta I-09b | no implementado | new-capability | schema 005 keyed `(projection_name, shard_number)`; 006 (#431) adds `tenant_id` to the key (existing rows stay under `''`); no plan doc for shard_number or the offset cut-over. Belongs to neither guarantee below; it is a migration concern. | Plan document. | #359, #362, #370 | confirmed |
 Guarantee split (the issue lists only guarantee 1 as a test criterion):
 - (1) Stability across 1/3/5 nodes: criteria "N decidido" (prerequisite) and "test 1, 3, 5 nodos". Evidence today: none; the only stored-shard code reads GoAkt Partition, so stability is not provided by design. Test needed: unit test of the pure function independent of any ActorSystem, plus (optional, integration) a cluster of 1/3/5 nodes asserting the same persistenceID yields the same stored Shard.
-- (2) Propagation of a non-zero partition value into stored Shard fields: NOT a criterion in the issue body (gap in issue text). Evidence today: B2 only shows shard 0; its own comment states 0 is the zero value so it cannot prove the shard came from Partition. Code writes `entity.shardNumber` at event_sourced_actor.go:353 and durable_state_actor.go:167. Test needed: with a slice function returning a non-zero value (injected stub or real), spawn an event-sourced and a durable-state entity and assert stored Event.Shard and DurableState.Shard equal it; zero-value tests cannot substitute.
+- (2) Propagation of a non-zero partition value into stored Shard fields: NOT a criterion in the issue body (gap in issue text). Evidence today (`01da644`): `TestBaseline346` B2 only shows shard 0 (zero value, cannot prove propagation); `TestClusterEventPublisherHighPartitionCount` (engine/publisher_test.go:409, assertions at 526-535) does show `GetShard() >= 271` on events published in a cluster, so propagation is covered for published events in a cluster only. Still uncovered: durable-state non-zero Shard, persisted rows, and which identity feeds `Partition` after #430 (it hashes `behavior.ID()` by code reading, unverified by a test). Code writes `entity.shardNumber` at event_sourced_actor.go:355 and durable_state_actor.go:169. Test needed: with a slice function returning a non-zero value (injected stub or real), spawn an event-sourced and a durable-state entity and assert stored Event.Shard and DurableState.Shard equal it; zero-value tests cannot substitute.
 - Neither test substitutes for the other: a stable pure function can still never reach storage, and a propagated value can still vary with topology.
 Issue verdict: not started; B2 consequence present (shard depends on GoAkt); propagation guarantee should be added to the issue.
 
@@ -463,7 +468,7 @@ Dependencies: #348 (I-02); related #352, #387.
 | Casos de rechazo del cursor definidos | parcial | new-capability | PRD:114 names ErrCursorMismatch and slice-range validation; no enumerated cases. | Enumerate format, cell, fingerprint, range cases. | #360 | confirmed |
 | Condiciones de la cota ≤ T declaradas y qué pasa si se rompen | parcial | new-capability | PRD:219 lists dedicated cluster, transaction_timeout, max_prepared_transactions=0, oldest-XID alert; says bound not claimed if violated. | Not in an approved contract; xid8 undecided. | #352, #387 | confirmed |
 | Reglas de portabilidad (offset en backend del destino, Tx del destino, slices en particiones, capacidades por adapter) | parcial | new-capability | PRD:130-135 (C-05, capabilities per role, common destination Tx) cover destination Tx and capabilities; slice-grouping in partitions not found. | Spec text and slice grouping rule. | #343, #362, #390 | corrected: was no verificado; PRD lines 130-135 partially cover it |
-| Identidad del offset y de la marca de aplicados | parcial | new-capability | PRD:114 and R-01 (PRD:106) define PerScope/SharedCell identity; code keys offsets by (projection_name, shard) only. | Spec not approved; code gap. | #362, #343 | confirmed |
+| Identidad del offset y de la marca de aplicados | parcial | new-capability | PRD:114 and R-01 (PRD:106) define PerScope/SharedCell identity; code keys offsets by `(tenant_id, projection_name, shard_number)` since #431 (migration 006); no processor, version or marks identity. | Spec not approved; code gap narrowed to processor/version/marks. | #362, #343 | 01da644: partly closed by #431 |
 | GetShardEvents deprecado con plan de retiro | no implementado | new-capability | persistence/events_store.go:140-175 has no Deprecated marker; doc says the commit-order gap is "a separate change". Searched "Deprecated", "retire", "GetShardEvents" in PRD (none). | Add deprecation and plan. | #370, #360 | confirmed |
 | (single tenant) OneScope(Unscoped()) válida; AllScopesInCell privilegiado y distinto | parcial | new-capability | PRD:36 states reads use OneScope(Unscoped()); no OneScope/AllScopesInCell symbol in code. | Spec text only in PRD. | #424 | confirmed |
 Issue verdict: requirements drafted in PRD only; no approved contract or deprecation.
@@ -503,7 +508,7 @@ Issue verdict: not started; envelope has operation identity but intentionally no
 Dependencies: #351, #352, #387 (G-A).
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
-| DDL revisado | bloqueado | new-capability | schema/ has 001-005; no xid8 column, no applied-marks table; mechanism not chosen. | Mechanism undecided. | #387, #352, #351 (all open) | confirmed |
+| DDL revisado | bloqueado | new-capability | schema/ has 001-006; no xid8 column, no applied-marks table; mechanism not chosen. | Mechanism undecided. | #387, #352, #351 (all open) | confirmed |
 | Plan de consulta sin escaneo secuencial con 1M filas | bloqueado | new-capability | No 1M-row plan test; 002 indexes are single-column. Needs the new schema. | Needs DDL first. | #387, #352, #351 | confirmed |
 Issue verdict: blocked by Gate A; no schema work.
 
@@ -512,7 +517,7 @@ Dependencies: #358, #350.
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
 | Migración idempotente en persistence/postgres/schema | bloqueado | new-capability | Migrator exists (schema_migrator.go) but target schema (#358) and slice function (#350) do not. | Target undefined. | #358, #350 (open) | confirmed |
-| Prueba de actualización desde esquema actual con datos | bloqueado | new-capability | inttest/flows/eventstore/schema_test.go covers 001-005 upgrade only. | Needs new schema. | #358, #350 | confirmed |
+| Prueba de actualización desde esquema actual con datos | bloqueado | new-capability | inttest/flows/eventstore/schema_test.go tracks the latest schema version (6, `postgresLatestSchemaVersion`); no upgrade to a target schema exists. | Needs new schema. | #358, #350 | confirmed |
 | Plan de corte para offsets existentes | bloqueado | new-capability | No plan. | Needs new offset identity and slices. | #350, #362 | confirmed |
 Issue verdict: infrastructure reusable; deliverables blocked.
 
@@ -600,7 +605,7 @@ Dependencies: children #356 #361 #362 #364 #365 #367 #370 #371 #373 #374 #375 #3
 | Issues del alcance completados o diferidos | no implementado | new-capability | All listed children are OPEN and unchecked in the body; #362/#371 audited elsewhere. | No deferral decision recorded either. | children above | confirmed |
 | Garantías demostradas por pruebas y condiciones operativas documentadas | no implementado | new-capability | Only at-least-once tested (runner_test.go, TestRunnerPagesThroughTimestampTies); no atomicity, fencing, parking, crash tests exist. | Guarantees and operating conditions undocumented. | #373 #374 #375 | confirmed |
 | Imports y capacidades respetan la arquitectura | parcial | new-capability | TestArchitectureProjectionRunnerStaysRuntimeNeutral (runner_test.go:1736) forbids only GoAkt, engine, internal/extensions; passes. | Runner still imports encryption, eventadapter, eventstream, internal/instrumentation, projection. | #364 #365 #353 | confirmed |
-| Migraciones/compatibilidad y guía de uso actualizadas | no implementado | new-capability | Offsets schema unchanged (005); no migration, no read-side guide. | Nothing to migrate until identity/marks exist. | #362 #373 #386 #359 | confirmed |
+| Migraciones/compatibilidad y guía de uso actualizadas | no implementado | new-capability | Offsets schema gained `tenant_id` in 006 (#431) but nothing for identity/marks; no read-side guide. | Nothing to migrate until identity/marks exist. | #362 #373 #386 #359 | confirmed |
 
 Issue verdict: epic not closable; all four criteria open or partial.
 
@@ -735,7 +740,7 @@ Dependencies: children #368 #369 #379 #380 #381 #382; coordination #342 #343 #34
 | Issues del alcance completados o diferidos | no implementado | new-capability | All six children open; #379/#381 audited elsewhere. | None deferred. | children above | confirmed |
 | Garantías demostradas por pruebas y condiciones operativas documentadas | parcial | new-capability | Isolation conformance exists (persistence/conformance/events.go, inttest/flows/tenancy/conformance_test.go). | Cells, quotas, deletion, rebuild untested. | #368 #380 #382 #381 | confirmed |
 | Imports y capacidades respetan la arquitectura | parcial | new-capability | engine/tenancy_architecture_test.go TestArchitectureTenancy (go list -deps ./tenancy/..., stdlib only) exists and passes. | No guard for future router/quota capabilities, which do not exist. | #368 #380 | corrected: was no verificado; an import guard exists and passes |
-| Migraciones/compatibilidad y guía de uso actualizadas | parcial | new-capability | migration/tenant_adoption.go exists; inttest/flows/tenancy/adoption_test.go characterizes the Postgres failure. | Adoption unusable on Postgres; no guide. | #428 #424 #386 | confirmed |
+| Migraciones/compatibilidad y guía de uso actualizadas | parcial | new-capability | migration/tenant_adoption.go exists; inttest/flows/tenancy/adoption_test.go:50 `TestAdoptionOfLegacyDataRecoversOnPostgres` proves recovery after adoption (event journal). | No guide; snapshots and durable state (#435). | #435 #424 #386 | 01da644: #428 fixed by #429 |
 
 Issue verdict: epic partly grounded (isolation, adoption) but phase 2 scope absent.
 
@@ -757,7 +762,7 @@ Issue verdict: not started.
 Dependencies: #367, #368.
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
-| prueba de punta a punta: corte de escrituras, copia preservando (scope, entidad, seqNr), transferencia de ownership con fencing nuevo, invalidación de cursores xid8, retoma, reapertura | no implementado | new-capability | No such e2e test. Precursor tenant_adoption.go copies/verifies within one store; its tests pass (in-memory only). | No write cut-off, ownership transfer, cursor invalidation, cells; adopter fails on Postgres. | #367 #368 #428 #374 #352 | corrected: was parcial; the criterion is an e2e protocol test none of whose cut-off/ownership/cursor steps exist |
+| prueba de punta a punta: corte de escrituras, copia preservando (scope, entidad, seqNr), transferencia de ownership con fencing nuevo, invalidación de cursores xid8, retoma, reapertura | no implementado | new-capability | No such e2e test. Precursor tenant_adoption.go copies/verifies within one store; its tests pass, including over Postgres since #429. | No write cut-off, ownership transfer, cursor invalidation, cells. | #367 #368 #374 #352 | corrected: was parcial; the criterion is an e2e protocol test none of whose cut-off/ownership/cursor steps exist |
 | cero omisiones según el oráculo | no implementado | new-capability | No oracle code in repo (grep oracle/oráculo in *.go: none). | Oracle absent, not merely unverified. | #406 #348 #428 | corrected: was no verificado; there is nothing to verify, no oracle exists |
 
 Issue verdict: only an in-store adoption precursor exists; protocol not implemented.
@@ -870,7 +875,7 @@ Dependencies: #395, #399, #384.
 Issue verdict: partial groundwork; durable-ACK declaration and conformance missing.
 
 ### #403 [integration][IN-LIFECYCLE] Recuperacion, retencion y lifecycle multitenant
-Dependencies: #395, #401, #402, #370, #369, #382, #380. Related: #424, #428.
+Dependencies: #395, #401, #402, #370, #369, #382, #380. Related: #424, #435.
 
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
@@ -879,7 +884,7 @@ Dependencies: #395, #401, #402, #370, #369, #382, #380. Related: #424, #428.
 | Migracion/borrado inventarian intents/checkpoints/IDs; delegar #369/#382 | bloqueado | new-capability | Neither procedure exists; only `EraseEntity` (`engine/entities.go:308`). | Procedures to delegate to do not exist. | #369, #382 | confirmed |
 | Metrics de backlog/edad/errores y admision con cardinalidad limitada | no implementado | new-capability | Only `urd.projection.lag_ms` (`instrumentation.go:92`) and `PublicationRejected` (tenant-check drops, :148); no outbox backlog/age/error or admission metrics. | Outbox metrics absent; cardinality/secrets unassessable. | #380, #401 | corrected: was parcial; existing metrics are projection lag and tenant-check drops, not outbox backlog/age/errors/admission |
 | Ejemplo reproducible enlaza guia; sin exactly-once | no implementado | new-capability | No example or guide for durable publication. | Pending. | #386, #401 | confirmed |
-| Single tenant: "recuperacion/retencion/drenaje cubren unscoped/fixed; adopcion explicita" | bloqueado | new-capability | No intents exist; adoption on PostgreSQL fails (`TestAdoptionOfLegacyDataFailsOnPostgres`). | Needs relay and a working adopter. | #401, #428 | confirmed |
+| Single tenant: "recuperacion/retencion/drenaje cubren unscoped/fixed; adopcion explicita" | bloqueado | new-capability | No intents exist; adoption on PostgreSQL recovers for the event journal since #429 (`TestAdoptionOfLegacyDataRecoversOnPostgres`). | Needs the relay (#401); snapshot/durable-state adoption is #435. | #401, #435 | 01da644: #428 fixed |
 
 Issue verdict: not started; blocked by #401/#402, #370, #369/#382.
 
@@ -947,7 +952,7 @@ Dependencies: #396, #404, #405, #358, #359, #360, #378.
 | Teardown cancela drivers y libera pool/containers ante errores, timeout o fallo | parcial | new-capability | DB drop in `Cleanup`; `Terminate` after `m.Run` (`postgres.go:107`). No drivers exist to cancel; abort/timeout path not verified. | Driver cancellation. | #406 | confirmed |
 | Versiones/capacidades PostgreSQL y limites registrados; reproducible local/CI | parcial | new-capability | Image pinned `postgres:17.6-alpine` (`postgres.go:59`), `max_connections=1000`, `fsync=off` (:84). Server version not recorded in test output. | Recording missing. | #378 | confirmed |
 | Permitir fault drivers y pruebas de concurrencia/fencing/pools sin suponer shutdown graceful = crash | no implementado | new-capability | No kill/crash facility in `inttest` (grep kill/crash: none); restart flow does graceful `stop`; `fsync=off`. | Crash support absent. | #406, #374, #378 | confirmed |
-| Single tenant: "cubre unscoped sin migracion, fixed y multitenant; adopcion explicita vs startup compatible" | parcial | new-capability | `TestConformance_W7_SingleTenantAndLegacyModes` and `..._LegacyDataIsNotSeenByATenant` pass on PG; adoption over PG fails (`TestAdoptionOfLegacyDataFailsOnPostgres`). | Adoption fixture blocked by defect. | #428, #424 | confirmed |
+| Single tenant: "cubre unscoped sin migracion, fixed y multitenant; adopcion explicita vs startup compatible" | parcial | new-capability | `TestConformance_W7_SingleTenantAndLegacyModes` and `..._LegacyDataIsNotSeenByATenant` pass on PG; adoption over PG recovers (`TestAdoptionOfLegacyDataRecoversOnPostgres`, #429). | Event journal only; snapshot and durable-state adoption is #435. | #435, #424 | 01da644: was parcial because of #428; stays parcial because of #435 |
 
 Issue verdict: partial; PostgreSQL harness and lane exist, crash/fault support and version recording do not.
 
@@ -983,7 +988,7 @@ Dependencies: #397, #346, #347, #357, #361, #388.
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
 | Inventario de sagas, formato persistido y suscripciones; migración/compatibilidad explícita | parcial | new-capability | Baseline `docs/prd/i-00-baseline-develop.md:241` inventory; saga persists `egopb.Event` + tenant marker (`saga_actor.go:729,766`); in-process subscribe (:251) | Persisted format not stated as contract; no migration/compat rules | #346 #347 #301 (closed) | confirmed |
-| Identidad (scope,workflowID,version), state-machine, causation/correlation, eventos de resultado definidos | parcial | new-capability | Scope + `behavior.ID()` (:216); root metadata causation (:223-229, :798-815); status enum | No version, no explicit state machine or result events; actor-name collision across families via #427 | #427 (name only), #357 | confirmed |
+| Identidad (scope,workflowID,version), state-machine, causation/correlation, eventos de resultado definidos | parcial | new-capability | Scope + `behavior.ID()` (:216); root metadata causation (:223-229, :798-815); status enum | No version, no explicit state machine or result events; actor-name collision across families was #427, fixed by #430 (`ErrSpawnIdentityMismatch`) | #357 | 01da644 |
 | CommandDispatcher es interfaz local de workflow implementada/inyectada por Urd; workflow jamás importa root | no implementado | new-capability | No `CommandDispatcher`/`Dispatcher` in any .go; saga calls `SendSync` directly (:862) | SPI and workflow package absent; searched Dispatcher, command port, injected | #347 #414 (related SPI style) | confirmed |
 | Consumo durable usa EventReader/runner projection; pub/sub solo wakeup | bloqueado | current-defect | `consumeEvents` (:443-477) reads live in-memory subscriber only; events during downtime are lost; no `EventReader` type exists | Needs new read path from persistence | #360 (I-08a read in adapters), #361 (runner read path), #371 (wakeup after commit) | confirmed (blockers widened to #360 and #371) |
 | No presentar workflow como equivalente exacto de módulo Akka/Lagom; distinguir propuesta Urd | cumplido | met | `docs/prd/urd-platform-prd.md:72` states it is a Urd proposal, not an Akka/Lagom equivalent | None; docs only | #423 | confirmed |
@@ -995,7 +1000,7 @@ Dependencies: #397, #409, #361, #373, #374, #375.
 | Criterion | State | Kind | Evidence | Gap | Blocked by / related issues | Check |
 |---|---|---|---|---|---|---|
 | Transición+inbox dedupe+intent+checkpoint en una Tx destino coherente con #373 | bloqueado | new-capability | `saga_actor.go:729` plain `WriteEvents(..., Unconditional())`; no inbox, intent or checkpoint | New guarantee; Tx destination contract missing | #373 (P-TX), #376 (P-PREP) | confirmed |
-| Scope/ID/version aíslan workflow y datos de otros tenants | parcial | new-capability | Scoped store access, `bindOrVerify`, `VerifyActorIdentity` (:218, :511); tenant tests present | No version dimension. #427 is NOT relevant to data isolation (only actor-name family collision) | #427 (narrow), #344 | confirmed |
+| Scope/ID/version aíslan workflow y datos de otros tenants | parcial | new-capability | Scoped store access, `bindOrVerify`, `VerifyActorIdentity` (:218, :511); tenant tests present | No version dimension. #427 (actor-name family collision) is fixed by #430 and was never about data isolation | #344 | 01da644 |
 | Replay tras caída/reinicio recupera pendientes y no genera intenciones nuevas para evento repetido | no implementado | current-defect | `recover()` (:363) replays only own events; events during downtime lost; repeated event is handled twice (no dedupe, `handleStreamEvent` :543) | Needs catch-up reader and inbox; behavior search (dedupe, inbox, idempotent) finds none | #361 #360 #373 | confirmed |
 | CAS/revisión/fence impiden writers obsoletos; errores/parking delegan #375 | bloqueado | new-capability | Writes use `Unconditional()`; `persistence.ExpectRevision` exists (`persistence/precondition.go`) but saga does not use it; no fence | Fence missing in destination; parking missing | #374 (fence), #375 (parking) | confirmed |
 | No incorporar runner propio ni declarar Tx atómica entre bases independientes | cumplido | negative-ok | No workflow code adds a runner or claims cross-DB Tx; legacy saga own loop (`consumeEvents` :443) predates and is #409/#361 scope | Vacuous: nothing built under this issue; legacy loop must still migrate to runner | #361 #409 | corrected: was no implementado; criterion is a prohibition on new work, vacuously met (legacy loop noted in Gap) |
@@ -1077,9 +1082,9 @@ Dependencies: #398, #414, #374, #375, #417.
 | Pausa define límite de trabajo en vuelo y ACK operativo; no cerrar pools compartidos ni perder offsets | no implementado | new-capability | None | New guarantee | #378 | confirmed |
 | Retry/replay delegan #375; change-version #370; rebuild #381; migración #369; borrado #382 | bloqueado | new-capability | All five delegated issues OPEN; no delegation facade | Targets missing | #375 #370 #381 #369 #382 | confirmed |
 | Operación concreta solo se habilita al existir capacidad; no depender de todas para cerrar control básico | no implementado | new-capability | No capability gating | Design only | #414 | confirmed |
-| Nunca reset bruto de offsets compartidos ni copiar state machines de tenancy/projection | parcial | current-defect | `RebuildProjection` calls `offsetStore.ResetOffset(name, from)` across all shards (`projections.go:185-230`; `offsetstore/offset_store.go:45`) | Existing rebuild is a raw reset; target rule violated by existing path | #381 (per-scope rebuild), #362 | confirmed |
+| Nunca reset bruto de offsets compartidos ni copiar state machines de tenancy/projection | parcial | new-capability | After #431 `RebuildProjection` resets through `offsetstore.ForScope` for the scope registered for that projection (`projections.go:199-220`); it is no longer a raw reset of the shared name. Store-level isolation: `TestScopedOffsetsPreserveLegacyAndIsolateResetOnPostgres`. | No engine-level two-scope rebuild test; no per-call scope choice | #381 (per-scope rebuild), #362 | 01da644: was current-defect (raw reset); reclassified after #431 |
 | Usar fence/guardas de MG-GUARDS cuando habilitado, sin dependencia cíclica | bloqueado | new-capability | No fence, no guards; issue body section 'Guarda obligatoria' (non-checkbox) also demands authz/dedupe/audit/fencing for every mutation | Needs fence and guard layer | #374, #417 | confirmed |
-Issue verdict: no control primitive exists; existing rebuild contradicts the target rule. Criterion 1 text in audit dropped 'scope/processor/version/rango' detail (restored above).
+Issue verdict: no control primitive exists; the rebuild is scope-bound since #431 but not yet proven at engine level. Criterion 1 text in audit dropped 'scope/processor/version/rango' detail (restored above).
 
 ### #417 [management][MG-GUARDS] Autorizar, deduplicar y auditar
 Dependencies: #398, #414, #379, #374, #380.
@@ -1159,4 +1164,4 @@ Dependencies: #398, #421, #405, #407, #418.
 | [single tenant] Pruebas GoAkt puro/unscoped/fixed/multi; autorización fallida bloquea attach | bloqueado | new-capability | None | Needs attach channel | #421, #424 | confirmed |
 Issue verdict: not started; fully dependent on #421 (and #419/#420 upstream).
 
-Duplicate search (related issues found for real gaps; none is an open duplicate of a gap): saga durable timer/deadline/restart -> #301 (closed NOT_PLANNED), #30 (closed), #18 (closed); saga durable consumption -> #360 #361 #371; saga command identity -> #357; pause/resume -> #36 #14 (closed); inspector/attach/TUI -> only #419-#422 and #398; saga name collision -> #427; EraseEntity unauthenticated legacy mode -> no existing issue (candidate gap, relates #417 #379 #424); RebuildProjection raw reset -> #381 #362; saga SendSync mailbox blocking, saga audit/guide, redaction/DSN status, ring buffer, GoAkt upstream proposal: no existing issue beyond the module issues above.
+Duplicate search (related issues found for real gaps; none is an open duplicate of a gap): saga durable timer/deadline/restart -> #301 (closed NOT_PLANNED), #30 (closed), #18 (closed); saga durable consumption -> #360 #361 #371; saga command identity -> #357; pause/resume -> #36 #14 (closed); inspector/attach/TUI -> only #419-#422 and #398; saga name collision -> #427 (closed, fixed by #430); EraseEntity unauthenticated legacy mode -> no existing issue (candidate gap, relates #417 #379 #424); RebuildProjection raw reset -> #381 #362; saga SendSync mailbox blocking, saga audit/guide, redaction/DSN status, ring buffer, GoAkt upstream proposal: no existing issue beyond the module issues above.
