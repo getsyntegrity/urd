@@ -187,7 +187,7 @@ Concurrent writes during the migration:
 Keeping the old layout and allowing rollback:
 
 - Overwriting `shard_number` in place destroys the old value, so it is not a rollback plan. The old per-row value and the old offset rows must be preserved by an explicit mechanism, to be chosen in #359: for example an additive column or a shadow copy kept until verification, or backup and restore as the only rollback.
-- Rows written after the switch carry only the new slice. The old GoAkt value for them is not reproducible without the original partition count and an actor system, so after the first new-layout write a rollback cannot be assumed unless the new writers also record the old value, which has to be decided. State explicitly which rows a rollback covers and from when it stops being possible.
+- Rows written after the switch carry only the new slice. The old GoAkt value for them is not reproducible without the original partition count and an actor system, so after the first real new-layout write a rollback cannot be assumed unless the new writers also record the old value, which has to be decided. The single definition of the rollback limit, including the synthetic smoke write that does not end it, is section 3.1 of `slice-cutover-359.md`; this document does not restate it.
 
 Preconditions, cutover, writers, interruption, verification (shape to decide, not decided):
 

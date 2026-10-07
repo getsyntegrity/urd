@@ -1,161 +1,169 @@
-# Slice cutover proposal for #359 (I-09b), coordinated with #351
+# Slice cutover procedure for #359 (I-09b), coordinated with #351
 
-Status: PROPOSAL. Nothing here is an approved decision, and no schema, migration or write-path code is added by it. P1 (N = 1024, FNV-1a 64, the key encoding) is ratified and fixes only the calculation; it does not approve this strategy (ADR P2). The schema shape belongs to I-09a (#358) and the position mechanism to Gate A (#352/#387), so those parts are stated as requirements, not as SQL.
+Status: PROPOSAL, pending approval. Nothing here is an approved decision, and no schema, migration or write-path code is added by it. P1 (N = 1024, FNV-1a 64, the key encoding) is ratified and fixes only the calculation; it does not approve this procedure (ADR P2). The schema belongs to I-09a (#358), the position mechanism to Gate A (#352/#387) and the reader contract to #351 (draft: `openspec/specs/slice-reader/spec.md`, not approved), so those parts are stated as requirements, not as SQL.
 
-Related: `logical-slices.md` (the calculation and the replacement contract), `scoped-offsets-retention.md` (offset identity today, migration 006), #350, #351 (reader contract, cursor, offset identity), #352/#387 (position mechanism), #358 (I-09a schema), #359 (this migration), #362 (checkpoint model), #373/#374 (idempotent consumers, fencing).
+Related: `logical-slices.md` (the calculation and the replacement contract), `scoped-offsets-retention.md` (offset identity today, migration 006), #350, #351, #352/#387, #358, #359, #362, #373/#374.
 
-## 1. Facts this proposal rests on
+## 1. Facts this procedure rests on
 
 Verified in the repository and in GoAkt `v4.5.7-actorof.1` (the version resolved by this module):
 
-- `events_store.shard_number` is `BIGINT NOT NULL` with an index (`001`, `002`). `offsets_store` is keyed by `(tenant_id, projection_name, shard_number)` and stores `current_offset`, a Unix-nanosecond timestamp (`005`, `006`).
-- The feed reads `timestamp > offset` per `(scope, shard)` (`persistence/postgres/event_store.go`, `GetShardEvents`). So "handled by the old projection" means `timestamp <= offset` for the event's legacy shard.
-- The legacy value is not a function of persisted data. `ActorSystem().Partition` returns 0 when the system is not in a cluster, returns the partition of the actor's key in the distributed map when it is, and returns 0 on any lookup error (`actor/actor_system.go:2075`, `internal/cluster/cluster.go:1157`). One table can therefore hold 0 for many unrelated entities, and the same entity can have had different values in different deployments. Durable state computes it in `PreStart`; whether the actor is already registered in the map at that point is unverified (this is the #438 question).
-- Consequence: the legacy `shard_number` of an existing row cannot be recomputed later. If it is overwritten, it is gone. This is the reason for the additive design below.
-- Single-node and non-cluster deployments have every row in legacy shard 0 and therefore one offset row per projection and scope. This is the simplest and safest case.
-- `persistence/postgres` has only `events_store` and `offsets_store`. There is no durable state table in this module (#435), so the cutover below covers the journal and offsets. Other state stores carry `DurableState.Shard` in their own format and need their own step.
-- The migrator serializes with an advisory lock and rejects a schema newer than the binary, but only for processes that run it. An old binary that does not run the migrator is not stopped by that check, which is why migration 006's "upgrade all writers together" is an operational rule only.
-- Late commits can make an event visible after a later timestamp was already read (`persistence/events_store.go`). That is an existing omission of the old reader, not something the cutover creates or can repair.
+- `events_store.shard_number` is `BIGINT NOT NULL` with an index. `offsets_store` is keyed by `(tenant_id, projection_name, shard_number)` and stores `current_offset`, a Unix-nanosecond timestamp (migrations 001, 002, 005, 006).
+- The old feed delivers an event of `(scope, shard)` when `timestamp > offset` (`persistence/postgres/event_store.go`, `GetShardEvents`). So "handled by the old projection" means `timestamp <= offset` for the event's legacy shard (assumption A1 below).
+- The legacy value is not a function of persisted data. `ActorSystem().Partition` returns 0 outside a cluster, the partition of the actor's key in the distributed map inside one, and 0 on any lookup error (`actor/actor_system.go:2075`, `internal/cluster/cluster.go:1157`). One table can hold 0 for many unrelated entities, and the same entity can have had different values in different deployments. Consequence: the legacy `shard_number` of an existing row cannot be recomputed later, so it must never be overwritten.
+- A deployment outside a cluster has every row in legacy shard 0, hence one offset row per projection and scope. Simplest case.
+- `persistence/postgres` has only `events_store` and `offsets_store`. There is no durable state table in this module (#435): this procedure covers the journal and offsets. Other state stores carry `DurableState.Shard` in their own format and need their own step.
+- The migrator serializes with an advisory lock and rejects a schema newer than the binary, but only for processes that run it. An old binary that does not run the migrator is not stopped by that check; "upgrade all writers together" (migration 006) is an operational rule only.
+- Late commits can make an event visible after a later timestamp was already read (`persistence/events_store.go`). That is a pre-existing omission of the old reader. The procedure neither creates nor repairs it, except where quiescing makes it impossible for the pre-barrier data (step b).
+- The legacy shard is not an entity key: an entity can have rows under more than one legacy shard (previous point). The old feed never ordered events of one entity across shards, so the transitional catch-up below inherits that and does not claim more.
 
-## 2. What the cutover must satisfy from #351
+## 2. What the procedure needs from #351 and Gate A
 
-- Offset identity becomes (mode, scope or cell, processor, version, slice) (#362, R-01). New offset rows are keyed by slice; legacy rows are never edited in place (ADR).
-- Cursors are opaque, versioned and carry a header (format, cell, selection fingerprint). A cursor produced by the shard reader is rejected by the slice reader (`ErrCursorMismatch` or its final equivalent). No old cursor is silently reused.
-- `GetShardEvents` is deprecated with a retirement plan. The legacy column and the legacy offset rows are kept until that plan completes.
-- The new reader serves a stable prefix per selection and slice range. Its position type is chosen in #352/#387 and may not be a timestamp (xid8, a counter per slice, or batched publication). Seeds below are therefore defined on legacy timestamps and must be translated into the new position by that mechanism's backfill. That translation cannot be specified before Gate A selects the mechanism. This is a hard dependency.
+- Offset identity (mode, scope or cell, processor, version, slice) (#362, R-01); new rows keyed by slice, legacy rows never edited in place.
+- Cursors are opaque and versioned; a legacy offset presented to the slice reader is rejected, never reused.
+- `GetShardEvents` is deprecated with a retirement plan; the legacy column and legacy offset rows stay until it completes.
+- A reader with a stable prefix per selection and slice range. Its position type is chosen by Gate A and may not be a timestamp. Gate A has no recorded result (#387's criteria are unchecked, `benchmark/` holds no result, the omission checks of #348 are not in `persistence/conformance`). This procedure therefore must not depend on a function that maps a legacy timestamp to a new position unless Gate A provides it. The recommended strategy (3.5, S2) does not need it.
 
-## 3. Proposal
+## 3. Procedure
 
-### 3.1 Principle: additive, then switch once
+### 3.1 Definitions and the single rollback rule
 
-- Never modify an existing journal column. The slice goes into a new place; the legacy `shard_number` stays untouched until the retirement plan. This keeps the set of `(scope, persistence id, sequence number)` identical by construction and keeps rollback possible.
-- Keep a single, atomic switch. Mixed old and new writers are not supported.
-- Offline for writers during a short window; backfill and verification run online before it. An online cutover with concurrent writers is not proposed: without dual writes, a concurrent insert cannot be proven to land in the new layout, and designing dual writes would require a protocol change.
+- **Layout epoch**: a durable value with the states `LEGACY`, `PREPARED`, `FENCED`, `ACTIVE_NEW`. Every transition is a transaction. Rollback sets it back to `LEGACY`.
+- **Barrier**: the point recorded at step (b), after quiescing, that separates pre-barrier rows from post-barrier rows. The two sets MUST be distinguishable by a persisted value written with each row (not by the writer-stamped timestamp alone). Which value (a per-row epoch or a monotone position) is a #358 requirement.
+- **R-point**: the commit of the first REAL write (not the synthetic smoke row) by a new-layout binary. This is the one rollback rule, and every place below refers to it:
+  - Before the R-point, rollback is EXACT with no data loss (3.8).
+  - From the R-point on, rollback is not exact: restore from backup, which loses the writes made since the barrier, or roll forward.
+  - Starting the new binaries (step f) does NOT end exact rollback, and neither does the single synthetic smoke row (step g), which the rollback procedure discards. Only a real write does.
 
 ### 3.2 Phases
 
-| Phase | Writers | What happens | Reversible |
+| Phase | Writers | What happens | Exit check |
 | --- | --- | --- | --- |
-| P0 Preconditions | old | Gates below pass | n/a |
-| P1 Prepare | old | Additive schema (per #358), backfill of the slice for existing rows | Yes: drop the additions |
-| P2 Verify and plan | old | Independent verification, seed computation into a staging area, replay-volume report | Yes |
-| P3 Window | stopped | Fence, quiesce, final backfill, final verification, atomic switch | Exact until step (f) starts the new binaries; see 3.7 |
-| P4 Run | new | New binaries write the slice; legacy kept | No exact rollback from the first new-layout write (see 3.7) |
-| P5 Retire | new | After the `GetShardEvents` retirement plan, drop legacy | No |
+| P0 Preconditions | old | Section 4 checklist | All items evidenced |
+| P1 Prepare | old | Additive schema (#358), backfill of the slice | V1, V2 on the data so far |
+| P2 Plan | old | Per-projection plan, thresholds and replay report into staging | V3 |
+| P3 Window | stopped | Steps (a) to (g) | V1 to V8 as listed per step |
+| P4 Run | new | New binaries write the slice; legacy kept | Before the R-point rollback is exact |
+| P5 Retire | new | After the `GetShardEvents` retirement plan, drop legacy | Irreversible |
 
-P0 preconditions:
-- #358 (additive schema, layout epoch, writer guard) is approved and implemented.
-- #351 is approved, including the cursor header and offset identity, and Gate A has chosen the position mechanism so the seed translation is defined.
-- A backup exists and its restore was exercised.
-- Per scope, the first available position is recorded (see 3.6).
-- Each projection declares whether its consumer is idempotent (#373) and which of the paths in 3.5 it uses.
-- The deployment state the plan assumes is confirmed: no prepared transactions, a bounded transaction timeout for every role that writes, writers inventoried.
+Abort in P1 or P2 drops the additions and nothing else: the old layout is untouched and live.
 
 ### 3.3 Backfill (P1)
 
-For each `(tenant, persistence id)` the slice is `sliceOf(scope, persistence id)`, a pure function. The migrator:
-- Pages with keyset pagination over a stable key and writes only the target column, only where it is NULL. Re-running a batch yields the same result.
-- Records durable progress (last key and batch count) in its own row.
-- Is killed and restarted at any point without a different outcome: the worst case repeats a batch.
-- Runs while old writers insert. Those rows have a NULL slice and are the set closed in P3(c).
-- Uses the same code that new writers will use (the exported `SliceOf`), plus the independent check in 3.8, so migrator and writers cannot disagree.
+For each `(scope, persistence id)` the slice is `sliceOf(scope, persistence id)`, a pure function. The migrator pages by keyset over a stable key and writes only the new slice column, only where it is NULL; it records durable progress (last key, batch count); a batch repeated after a crash gives the same result. It runs while old writers insert, and the rows they add have a NULL slice, closed at step (c). It uses the same code new writers use (the exported `SliceOf`), and V2 recomputes it with an independent implementation, so migrator and writers cannot silently agree on a wrong value.
 
-### 3.4 Window (P3), as a state machine
+### 3.4 Window (P3) as a checked state machine
 
-States are recorded durably, transitions are idempotent, and each step has a stated outcome if the process dies there.
+Each step records its state durably, is idempotent, and has a stated outcome if the process dies there.
 
-| Step | Action | If interrupted |
-| --- | --- | --- |
-| (a) Fence | Announce, stop old writers and projection runners, record `FENCED` | Resume at (a); nothing changed visibly |
-| (b) Quiesce | Wait until no open or prepared transaction on the journal and no in-flight batch exists; record the barrier (a snapshot taken after quiesce) | Resume at (b); if it cannot quiesce within a bound, abort and unfence |
-| (c) Final backfill | Fill every row whose slice is still NULL | Idempotent; resume at (c) |
-| (d) Final verification | Section 3.8, exhaustive, on quiesced data. Any mismatch aborts | Resume at (d) or abort |
-| (e) Switch | In ONE transaction: set the layout epoch, activate the seeded offsets under the new identity, mark the legacy offset rows superseded, record the barrier | Atomic: either the whole switch happened or none of it |
-| (f) Start | Start new binaries; they refuse to start unless the epoch says the new layout is active. From the first write they make, exact rollback is no longer available (3.7) | Operational |
-| (g) Smoke | Read back the first new-layout writes from the persisted rows and check scope, slice and revision | Past the exact-rollback point: a failure here means restore from backup (losing the writes since the barrier) or roll forward (3.7). To keep rollback exact, make the smoke write a single synthetic row that the rollback procedure discards, and admit no other writer until the check passes. Any real write before that point ends exact rollback |
+| Step | Precondition | Action | Verification | If interrupted or failed |
+| --- | --- | --- | --- | --- |
+| (a) Fence | Epoch `PREPARED` | Stop old writers and projection runners; record `FENCED` | V4a: no old writer connection | Resume at (a); nothing visible changed |
+| (b) Quiesce | `FENCED` | Wait until no open or prepared transaction on the journal and no in-flight batch; record the barrier | V4: none older than the barrier, none prepared | Resume; if it cannot quiesce within the bound, abort and unfence |
+| (c) Final backfill | Barrier recorded | Fill every NULL slice | V2 (exhaustive) | Idempotent; resume |
+| (d) Verify | (c) done | Run V1, V2, V3, V5, V6 on quiesced data | All pass | Any mismatch aborts; unfence |
+| (e) Switch | (d) passed | In ONE transaction: set `ACTIVE_NEW`, activate the offsets per 3.5, mark the legacy offset rows superseded, record the barrier | V7: the transaction's effects are all present or none | Atomic; either `FENCED` with nothing switched, or `ACTIVE_NEW` complete |
+| (f) Start | `ACTIVE_NEW` | Start new binaries (they refuse to start unless the epoch is `ACTIVE_NEW`) | V8 startup refusal checked once with a binary in the wrong epoch | Operational; exact rollback still available |
+| (g) Smoke | New binaries up, no other writer admitted | One synthetic write; read it back from the persisted row and check scope, slice, revision | V5 | A failure keeps rollback exact: discard the synthetic row and roll back |
 
-Abort before (e) leaves the old layout fully intact and live; only the additive columns and the staging area remain and can be dropped.
+Only after (g) passes are other writers admitted. Their first commit is the R-point.
 
-### 3.5 Offsets
+### 3.5 Offsets: two strategies
 
-Seed computation, per tenant (scope), projection P and new slice `s`:
-- `C(s)` is the set of legacy shards that hold at least one event of slice `s` for that tenant. It is computed from the data in P2 and written to staging.
-- `seed(P, s) = min over x in C(s) of offset(P, x)`, where a shard with no offset row counts as 0 (never processed). If `C(s)` is empty there is nothing to read.
-- The new slice offset starts at `seed(P, s)`, translated into the new position by the Gate A mechanism.
+Notation: scope `a`, projection `P`, new slice `s`, legacy shard `x`; `C(s)` is the set of legacy shards that hold at least one pre-barrier event of slice `s` in scope `a`; `offset(P, x)` is the legacy offset (0 if no row).
 
-Claim and argument. Let `E` be an event of slice `s` in legacy shard `x` with timestamp `t`.
-- Assumption A1: for the old feed, `E` counts as handled exactly when `t <= offset(P, x)`; this is the read predicate in the code, and the late-commit omissions it can contain are pre-existing.
-- Assumption A2: after the barrier in (b), no event can commit with a timestamp at or below any seed. The quiesce step and the empty-transaction check exist to make this true.
-- Assumption A3: the translation of a seed into the new position preserves "every event with a timestamp greater than the seed is read".
-- If `E` was not handled, then `t > offset(P, x) >= seed(P, s)`, so by A3 the new reader returns it. If `E` was handled, it may be returned again only when `seed < t <= offset(P, x)`.
+Assumptions, each with how it is enforced:
+- **A1**: for the old feed, a pre-barrier event `E` in shard `x` with timestamp `t` counts as handled exactly when `t <= offset(P, x)`. Source: the read predicate in the code. The late-commit omissions of the old reader are pre-existing and out of this procedure.
+- **A2**: after the barrier no event can commit with a pre-barrier identity. Enforced operationally by step (b) and V4, and structurally by the writer block until (g).
+- **A3** (S1 only): the Gate A mechanism provides `PositionAtOrBefore(T)`, a position `P` such that every event with timestamp greater than `T` is after `P`.
 
-So, under A1 to A3, no event that the old projection had not handled is skipped. The argument does not claim safety against omissions that already existed, nor if A2 is violated. It is a demonstration under stated assumptions, not yet an executable test: A1 and A3 need tests (in #362/#381 and in the Gate A mechanism), and A2 is verified operationally in (b) and (d).
+**S2, recommended: barrier plus legacy catch-up.**
+1. For each projection and slice, pre-barrier events are delivered by a transitional reader that is the old read with one added predicate: scope `a`, `slice = s`, legacy `shard = x`, `timestamp > offset(P, x)`, for each `x` in `C(s)`, in the old order. The cursor of this phase is the legacy offset itself, per shard.
+2. When every shard of `C(s)` has no more pre-barrier events, the slice cursor is created at the barrier and the new reader (Gate A positions) takes over. Post-barrier events have positions after the barrier by construction.
+3. The new reader MUST NOT deliver a slice's post-barrier events before that slice's catch-up is complete, so one entity's pre-barrier events precede its post-barrier ones.
+- Why it is exact: the set delivered in phase 1 is, by A1, exactly the set the old projection had not handled, with the old reader's own guarantees; nothing is skipped and nothing handled is repeated, apart from the at-least-once redelivery of a crash between delivery and commit. A2 makes the pre-barrier set closed. Post-barrier is the new reader's contract.
+- It needs no `PositionAtOrBefore`, so it does not depend on what Gate A chooses. It needs a bounded transitional code path (the old query with a slice predicate) that is deleted at P5.
+- Limits: ordering between shards inside phase 1 is the old reader's (none); it does not repair omissions that already existed; a transitional reader must exist in the adapter (a capability the adapter declares).
 
-Cost, which is the part that is not free:
-- Events with `seed < t <= offset(P, x)` are presented again. The exact count per projection and slice is computed in P2 and reported before the window, so the cost is known, not guessed.
-- In non-cluster deployments `C(s) = {0}`, the seed equals the existing offset and nothing is replayed.
-- Where a shard that is far behind or never processed contributes to `C(s)`, the seed is far back and the replay is large. That is the reason for the report.
+**S1, fallback: minimum seed.**
+- `seed(P, s) = min over x in C(s) of offset(P, x)`, translated into a new-reader position with `PositionAtOrBefore`. The slice cursor starts there.
+- Conditions under which it is safe: A1, A2 and A3. Under them, an unhandled event `E` has `t > offset(P, x) >= seed`, so by A3 the new reader returns it: nothing unhandled is skipped. The proof stops there: if A3 does not hold for the chosen mechanism, S1 MUST NOT be used.
+- Cost: a handled event with `seed < t <= offset(P, x)` is presented again. The exact count per projection and slice is computed in P2 and reported before the window.
+- Use only for a projection whose consumer is idempotent by event identity and has no external effect (3.7).
 
-Which path each projection uses:
-- S (seed): the consumer is declared idempotent (#373, #374). Duplicates are acceptable; omissions are not, and the argument above covers omissions.
-- R (rebuild): the consumer is not idempotent, and the history is complete (3.6). Use a new projection version with fresh cursors and the pointer switch of the ADR; the old version is kept until verified. No duplicates reach the old destination.
-- Blocked: not idempotent and the history is incomplete. The cutover for that projection does not proceed without an explicit, audited acceptance recorded in #359.
+**Required evidence before either strategy is enabled** (to be implemented with the migration, with fakes, no real database):
+- A model-based property test over generated histories (shards with timestamps, offsets per projection, several entities, slices computed by `sliceOf`): for S2, the delivered set equals exactly the unhandled set; for S1, it is a superset of the unhandled set and the extra events satisfy `seed < t <= offset`. The test fails if a mutation (for example `max` instead of `min` for S1, or a skipped shard of `C(s)`) is introduced.
+- A conformance check of A2 for the adapter: after quiesce, an insert stamped before the barrier is impossible.
 
 ### 3.6 Retention
 
-Replay and rebuild only cover events that still exist.
-- Before the window, record per scope the first available position and, per persistence id, whether the sequence starts at 1 and whether any row is deleted. A gap means events were removed by retention or erasure.
-- A gap rules out path R for that scope and forbids calling any replay a full recovery. Aggregate snapshots restore aggregate state; they cannot rebuild a projection, which is derived from events.
-- Path S is unaffected by removed events, because it does not need them: it starts from the existing offsets.
-- The guarded deletion contract (`RetainedEventsDeleter`) must see the new offset identity before automatic retention is enabled again after cutover.
+- Before the window record, per scope, the first available position and, per persistence id, whether the sequence starts at 1 and whether any row is deleted. A gap means events were removed by retention or erasure.
+- S2 and S1 do not need removed events: they start from existing offsets. The rebuild path (new projection version, fresh cursors, the ADR's pointer switch) needs the complete history, so a gap rules it out for that scope and a replay is never called a full recovery. Aggregate snapshots restore aggregate state; they cannot rebuild a projection.
+- Automatic retention (`RetainedEventsDeleter`) stays disabled until it validates the new offset identity, and is enabled again only after the cutover is verified.
 
-### 3.7 Writes, `shard_number` and rollback
+### 3.7 Duplicate effects
 
-- New writers write the slice to the new place. The legacy `shard_number` is required by the current `NOT NULL` constraint; I-09a must decide whether it is relaxed for new rows. Until retirement, pre-cutover rows keep their legacy value and post-cutover rows have none that is meaningful.
-- Legacy values cannot be recomputed (section 1), so there is no reverse translation for rows written after the switch.
-- Rollback guarantee proposed:
-  - Exact, with no data loss, until the first new-layout write. Procedure: stop new binaries, set the epoch back, reactivate the superseded offsets, drop the additions. Nothing the old layout depends on was changed.
-  - After the first new-layout write, the rows written since the barrier carry no legacy value, so a return to old binaries would see them under wrong or no shard. Rollback after that point is restore from backup, which loses the writes made since the barrier, or roll forward. This limit is stated explicitly instead of promised away.
-  - The barrier recorded in (e) is what defines which rows are post-cutover, so the limit can be measured.
-- Retirement (P5) is irreversible and happens only after the `GetShardEvents` retirement plan completes.
+- S2 repeats nothing except the at-least-once window of a crash, which already exists. Consumers keep handling by event identity `(scope, persistence id, sequence number)`.
+- S1 repeats events in `(seed, offset]`. Old projections have no applied marks (the table is new, #358), so a repeat cannot be detected by a mark: the destination must be idempotent by upsert, and there must be no external effect (publisher, integration, workflow command) for that projection, or the effect must be de-duplicated by event identity. Without both, S1 is blocked for that projection and S2 or a rebuild is used.
+- Whatever the strategy, a projection declares its effect class before the cutover (3.9 V3 reports it).
 
-### 3.8 Writer blocking and independent verification
+### 3.8 Rollback
 
-Blocking incompatible writers has three layers: the operational fence in (a); the epoch check at startup of new binaries; and a database-level guard that rejects journal and offset writes that do not match the active layout, so an old binary that is accidentally started fails loudly instead of corrupting the feed. The guard is a requirement on #358, not a design here.
+- Before the R-point (exact): stop new binaries, discard the synthetic smoke row if any, set the epoch back to `LEGACY`, reactivate the superseded legacy offset rows, drop the additions. The legacy columns and offsets were never changed, so the old layout resumes with no data loss.
+- From the R-point: the rows written since the barrier carry no meaningful legacy shard; an old binary would see them under a wrong or no shard. The options are restore from backup (losing the writes since the barrier, identified by the persisted barrier value) or roll forward. This is stated, not promised away.
+- P5 is irreversible and happens only after the `GetShardEvents` retirement plan completes.
 
-Verification does not rely on the migrator's own counters:
-- V1: for every scope, the set of `(persistence id, sequence number)` and the row count equal the snapshot taken before P1; with additive columns this is also true by construction and is checked anyway.
-- V2: every row's slice equals the function applied to its `(scope, persistence id)`, recomputed by a separate tool built on a different implementation of FNV-1a over the specified key (the reference vectors are the contract).
-- V3: every seed is recomputed from raw events and offsets by a separate query and compared with staging; the replay-volume report is reproduced.
-- V4: no open or prepared transaction older than the barrier, and no writer connected, at (b) and at (d).
-- V5: after (f), the first new writes are read back from persisted rows (scope, slice, revision), for event-sourced and, in its own store, durable state.
+### 3.9 Verification checks
 
-## 4. What is missing to replace `Partition` safely
+None relies on the migrator's own counters.
+- **V1** For every scope, the set of `(persistence id, sequence number)` and the row count equal the snapshot taken before P1.
+- **V2** Every row's slice equals the ratified function applied to its `(scope, persistence id)`, recomputed by a separate tool with its own FNV-1a over the specified key (the reference vectors are the contract).
+- **V3** Every plan item (thresholds for S2, seeds for S1, per-projection effect class and path) is recomputed from raw events and offsets by a separate query and compared with staging; the replay report is reproduced.
+- **V4** No open or prepared transaction older than the barrier and no writer connected, checked at (b) and again at (d).
+- **V5** The smoke row, read back from the persisted record, has the expected scope, slice and revision, for event-sourced and, in its own store, durable state.
+- **V6** Every projection has a declared path (S2, S1 or rebuild) or an audited exception; none is "unknown".
+- **V7** After (e), the epoch, the activated offsets, the superseded legacy rows and the barrier are all present, or none of them.
+- **V8** A new binary refuses to start under epoch `LEGACY`, `PREPARED` or `FENCED`, and an old binary is rejected by the database-level guard under `ACTIVE_NEW` (a requirement on #358).
 
-Nothing below is implemented by this PR.
+### 3.10 Interruption and resumption
 
-| Missing | Owner |
-| --- | --- |
-| Additive schema: slice stored apart from the legacy column, layout epoch, writer guard, relaxed legacy constraint | #358 (I-09a) |
-| Migrator: backfill, staging, state machine, seed computation, rollback | #359 (this proposal, once approved) |
-| Upgrade test from the current schema with data, including interrupted and resumed runs | #359, integration lane |
-| Slice-range reader, cursor header and rejection of legacy cursors, offset identity | #351, #362 |
-| Position mechanism and the translation of seeds into it | #352/#387 (Gate A) |
-| Declaration of idempotent consumers per projection | #373/#374 |
-| Opaque Scope keeping the hashed bytes | #349 |
-| Export of `SliceOf` and `SliceCount` | after #351 |
-| The two actor call sites call the slice computation with `(entity.scope, entity.persistenceID)` after identity binding, gated by the layout epoch so old and new never both write | change that lands with the cutover |
-| Unit tests for both write paths receiving the slice from scope and id, independently of actor name, namespace and physical partition, with fakes and no real database or cluster | same change |
-| Few end-to-end flows in the `inttest` harness: write, persist, read for both paths; restart and continue; migration with an interrupted run | after the persistence core exists |
-| Runbook and preflight checks | #359 |
+| Where it dies | State left | Resume or abort |
+| --- | --- | --- |
+| P1 backfill batch | Some rows have a slice, others NULL | Resume from the recorded key; same result |
+| P2 plan | Staging partly written | Rebuild staging from raw data (V3 recomputes it) |
+| (a) | Some writers stopped | Resume (a); unfence to abort |
+| (b) | `FENCED`, barrier not recorded | Resume (b) or unfence |
+| (c) | Barrier recorded, some NULL slices | Resume (c) |
+| (d) | Nothing changed | Resume or abort |
+| (e) | Atomic | Either `FENCED` unchanged or `ACTIVE_NEW` complete |
+| S2 phase 1, per projection and shard | Legacy cursor advanced up to the last committed batch | Resume from the legacy cursor; a crash repeats at most one batch |
+| (f), (g) | New binaries partly up | Exact rollback still available until the R-point |
 
-Decisions needed (owners in parentheses):
-1. Writer window offline, with online backfill (recommended) versus a design for online cutover (#359).
-2. Seed with the minimum for idempotent consumers and rebuild for the others, as in 3.5 (#359, #373).
-3. The rollback guarantee in 3.7, exact until the first new write (#359).
-4. The policy for a retention gap: block or audited acceptance (#359).
-5. The guard and epoch mechanism, and when the legacy column is dropped (#358, #351).
+## 4. Preconditions for integrating the writer, and what is still missing
 
-## 5. What this does not do
+The writer integration (export `SliceOf` and `SliceCount`, replace the two `ActorSystem().Partition` calls, gated by the epoch) MUST NOT land, and writes MUST NOT use the new calculation, until ALL of these hold:
 
-It does not change a write path, a schema, `go.mod` or GoAkt. It does not declare the minimum-offset seed safe beyond the stated assumptions, and it does not describe replay as full recovery when events were removed.
+| Precondition | Owner | State today |
+| --- | --- | --- |
+| This procedure approved (decisions in section 5) | maintainer, #359 | Not approved |
+| Slice reader contract approved | #351 | Draft, human gate pending |
+| Gate A recorded: position mechanism, eligibility bound, results | #352, #387 | No result; #348's checks absent |
+| Additive schema: slice column apart from the legacy one, per-row barrier value, layout epoch, applied-marks table, database-level writer guard, relaxed legacy `NOT NULL` for new rows | #358 | Not started; depends on #351, #352, #387 |
+| Migrator implemented and tested (backfill, state machine, S2 transitional reader, rollback), with an upgrade test from the current schema with data including an interrupted and resumed run | #359 | Not started |
+| Per-projection effect class and path declared | #373, #374 | Not started |
+| Opaque Scope keeps the hashed bytes | #349 | Not started |
+
+When they hold, the integration change calls the slice computation with `(entity.scope, entity.persistenceID)` taken after identity binding in both actors (durable state in `PreStart`, event-sourced in its start handler), never with the actor name, namespace or physical partition, and starts only under epoch `ACTIVE_NEW`. Its evidence: unit tests (go-specs, fakes, no real resources) that both write paths receive the slice computed from scope and persisted id regardless of actor name and partition; and a few `inttest` flows reusing the harness: write, persist, read for both paths (scope, slice, revision from the persisted record); restart, recovery and continuation; migration with an interrupted and resumed run.
+
+## 5. Decisions that need approval before the cutover can be enabled
+
+1. Offline writer window with online backfill (recommended), versus designing an online cutover with dual writes (a protocol change).
+2. Offset strategy: S2 (recommended, no dependency on Gate A) versus S1 (needs A3 and idempotent consumers), or S2 with S1 as an audited exception.
+3. The single rollback rule in 3.1: exact until the first real new-layout write.
+4. The policy for a retention gap: block the rebuild path or accept it with an audit record.
+5. The writer guard, the per-row barrier value and the layout epoch (with #358), and when the legacy column is dropped.
+6. Whether the transitional reader of S2 is an adapter capability and who owns it.
+
+## 6. What this does not do
+
+It does not change a write path, a schema, `go.mod` or GoAkt, and it does not enable or approve the cutover. It does not claim S1 safe without A3, it does not describe a replay as full recovery when events were removed, and it does not promise exact rollback after the first real new-layout write.
