@@ -4,7 +4,7 @@
 |---|---|
 | Status | **Draft specification and provisional harness.** Not an approved contract. |
 | Tracker | #348 (I-02), epic #342, phase 0. The contract that this oracle will test is #351 (I-05); the mechanism comparison is #352 / Gate A. |
-| Code | `persistence/conformance/readertck` (provisional, no compatibility promise; outside `internal` only so that the separate `inttest` module can import it, see D1). The PostgreSQL run is `inttest/flows/reader`. |
+| Code | `persistence/conformance/readertck` (location approved in D1: outside `internal` so that the separate `inttest` module can import it, minimal API for tests, no dependency from production code; no compatibility promise until the reader SPI is approved). The PostgreSQL run is `inttest/flows/reader`. |
 | Not decided here | The read mechanism, the number of slices N, the hash, the key or cursor encoding, the public reader API. PR #436 (provisional `SliceOf`) is untouched. |
 
 Three words are used with a fixed meaning: **specified** (this document says what must hold), **executed** (a unit test in this change runs it today, with fakes, no database), **pending** (cannot run until a real adapter or an approved SPI exists).
@@ -147,11 +147,11 @@ Cross-checks against #351 (so its author can reuse the oracle): `OneScope(Unscop
 
 | # | Decision | Chosen here (provisional) | Alternatives |
 |---|---|---|---|
-| D1 | Where the harness lives and what is exported | `persistence/conformance/readertck`, exported but provisional (no compatibility promise). It left `internal` because `inttest` is a separate module and Go forbids importing another module's internal package; the alternative to a second copy of the scenarios is this export | Move it back under `internal` and keep the PostgreSQL run in a package rooted there; export a minimal `Run...ReaderConformance` in `persistence/conformance` once the SPI is approved; keep it in a `testkit` sub-package |
+| D1 | Where the harness lives and what is exported | **Approved by the maintainer** (recorded on PR #445): a shared harness in `persistence/conformance/readertck`, outside `internal`, with a minimal API for tests and no dependency from production code. It left `internal` because `inttest` is a separate module and Go forbids importing another module's internal package; the alternative to a second copy of the scenarios is this export. The API itself stays without a compatibility promise until the reader SPI is approved | Rejected: move it back under `internal` and keep the PostgreSQL run in a package rooted there; export a minimal `Run...ReaderConformance` in `persistence/conformance` once the SPI is approved; keep it in a `testkit` sub-package |
 | D2 | Duplicate policy | Any redelivery is allowed if the token is stable and unique | Only inside the unpersisted window; forbid duplicates (needs exactly-once, not offered) |
 | D3 | Meaning of `limit` | Not constrained (a poll with `limit` >= 1 must be able to progress) | Hard cap on batch size; keep today's minimum-batch target |
 | D4 | Progress numbers | `EmptyPollBudget` 2, `Settle` 0, final catch-up budget generous | Stricter or looser budgets per mechanism, once #352 has data |
-| D5 | How the PostgreSQL known failure is marked | An assertion that the check fails, in `inttest/flows/reader` (provisional, awaiting confirmation) | An assertion that the check fails (flips red when fixed, preferred) versus a skip with a reason (the `inttest` lane forbids skips) |
+| D5 | How the PostgreSQL known failure is marked | An assertion that the check fails (it flips red when the reader is fixed), in `inttest/flows/reader`. Provisional, awaiting confirmation | A skip with a reason: not possible, because the `inttest` lane forbids skips |
 | D6 | Is a bounded-eligibility claim mandatory or an optional adapter capability | Optional, only judged under declared conditions | Mandatory capability with the conditions as a startup check (links to ADR #347 D5) |
 | D7 | Ordering guarantee | Per persistence id only | Also a causal order across aggregates of the same transaction |
 | D8 | Scope enumeration | The harness gives the reader the cell's scopes; `EventsStore` cannot list scopes | A capability in the SPI for `AllScopesInCell`; decided in #351 |

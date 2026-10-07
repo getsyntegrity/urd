@@ -33,16 +33,14 @@
 // merged). Everything here is written against the small interfaces Backend
 // and Subject. They are NOT a proposal for the public API: names, shapes and
 // the opaque []byte cursor are placeholders, and this package carries NO
-// compatibility promise until the maintainers approve a contract (decision D1
-// of docs/testing/reader-conformance.md).
+// compatibility promise until the maintainers approve a reader contract. Its
+// location was approved (decision D1 of docs/testing/reader-conformance.md).
 //
 // The package lives outside "internal" for one reason: the integration module
 // (inttest) is a separate Go module, and Go does not let it import an
 // internal package of another module. The integration lane needs to run the
 // same scenarios and the same oracle against a real PostgreSQL, not a copy of
-// them. Exporting it is therefore a consequence of D1, and moving it back
-// under "internal" is the alternative if the maintainers prefer another
-// location.
+// them. Production code must not import it: it is test support only.
 //
 // The package does not choose, favour or implement a read mechanism (commit
 // position, transaction-id horizon, set of delivered keys, ...). Choosing is

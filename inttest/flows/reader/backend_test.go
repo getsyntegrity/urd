@@ -25,7 +25,9 @@ package reader_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -100,7 +102,13 @@ func pgFactory(t *testing.T, mk func(*pgBackend) readertck.Subject, made *[]*pgB
 			b.err = fmt.Errorf("open the writer pool: %w", err)
 			return b
 		}
-		t.Cleanup(pool.Close)
+		// pgxpool.Close waits until every acquired connection is released, so a writer
+		// transaction still open would hang the binary here instead of failing fast.
+		// Resolve what is left first; backendError also reports it.
+		t.Cleanup(func() {
+			b.rollbackOpen()
+			pool.Close()
+		})
 		b.pool = pool
 		return b
 	}
@@ -164,6 +172,29 @@ func (b *pgBackend) Abort(tx string) {
 	delete(b.txs, tx)
 	if err := t.Rollback(b.ctx); err != nil {
 		b.fail("abort "+tx, err)
+	}
+}
+
+// openTxs returns the names of the writer transactions that were begun and never
+// committed or aborted, in a stable order.
+func (b *pgBackend) openTxs() []string {
+	names := make([]string, 0, len(b.txs))
+	for name := range b.txs {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// rollbackOpen rolls back every writer transaction still open, with a bounded
+// context so a lost connection cannot stall the cleanup either. Rollback errors
+// are ignored: this only releases the connections.
+func (b *pgBackend) rollbackOpen() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, name := range b.openTxs() {
+		_ = b.txs[name].Rollback(ctx)
+		delete(b.txs, name)
 	}
 }
 

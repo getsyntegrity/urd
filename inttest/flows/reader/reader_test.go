@@ -24,6 +24,7 @@ package reader_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/specs"
@@ -51,6 +52,9 @@ func backendError(made []*pgBackend) error {
 	var errs []error
 	for _, b := range made {
 		errs = append(errs, b.err)
+		if open := b.openTxs(); len(open) > 0 {
+			errs = append(errs, fmt.Errorf("writer transactions left open at the end of the run: %v", open))
+		}
 	}
 	return errors.Join(errs...)
 }
