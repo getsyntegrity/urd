@@ -81,14 +81,21 @@ Reproduction: `TestBaseline346`, case "B4". One engine,
 one ID:
 
 - `SpawnEventSourced(id)` returns nil;
-- `SpawnDurableState(id)` returns nil (no error, no durable-state actor);
-- `SpawnSaga(id)` returns nil;
-- `SendCommand(id, CreateAccount)` succeeds with revision 1, and the durable
-  store holds no state for `id`: the event-sourced actor answered.
+- `SpawnDurableState(id)` returns nil (no error);
+- `SpawnSaga(id)` returns nil (no error);
+- `SendCommand(id, CreateAccount)` succeeds with revision 1, the event store
+  holds an event for `id`, and the durable store holds no state for `id`.
 
-So a cross-kind collision is silent, and the second and third spawns do not
-create what the caller asked for. `resolveExistingSpawn` only verifies the
-binding of an existing actor in the tenant-aware path.
+What the test proves: neither later spawn returns an error, and a command to
+the shared ID is handled as an event-sourced entity. The empty durable store
+is indirect evidence that the durable-state spawn did not create its own
+actor. What it does not prove: whether the saga spawn created an actor, or
+was absorbed by the existing one. The test only checks that `SpawnSaga`
+returns nil. That part is unverified.
+
+So the collision is silent for the durable-state case, and for the saga case
+the only observed fact is the absence of an error. `resolveExistingSpawn` only
+verifies the binding of an existing actor in the tenant-aware path.
 
 The test asserts today's behaviour. The fix will flip its assertions.
 
