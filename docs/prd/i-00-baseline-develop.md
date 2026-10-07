@@ -463,7 +463,7 @@ State on `develop` `01da644` (go1.27.0):
 | Module tests and PostgreSQL integration | done: CI run 37635241381 on `01da644`, all listed jobs green |
 | Recovery after adopting legacy data to single-tenant | demonstrated for the event journal on PostgreSQL (`TestAdoptionOfLegacyDataRecoversOnPostgres`); snapshots and durable state are #435 |
 
-Open items after this refresh (none is a regression introduced by it):
+Open items after this refresh (none is a regression introduced by it). The maintainer accepted closure of #346 as an evidence gate with these gaps tracked separately: B2/B4 coverage in #438, PostgreSQL snapshot/state adoption in #435, and per-scope rebuild evidence in #381/#362. This does not mark those capabilities or tests as delivered:
 
 - B2 propagation gap: a test that a non-zero partition reaches the stored
   `Shard` of durable state and of persisted events, and a decision on which
