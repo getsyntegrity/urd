@@ -58,13 +58,13 @@ func qualifiesActorNames(resolver tenancy.TenantResolver) bool {
 // qualify names.
 func (engine *Engine) actorName(tenantID, id string) (string, error) {
 	if !qualifiesActorNames(engine.tenantResolver) {
-		return id, nil
+		return actoridentity.InNamespace(engine.actorNamespace, id)
 	}
 	name, err := actoridentity.Qualify(tenantID, id)
 	if err != nil {
 		return "", fmt.Errorf("cannot address entity %q of tenant %q: %w", id, tenantID, err)
 	}
-	return name, nil
+	return actoridentity.InNamespace(engine.actorNamespace, name)
 }
 
 // actorNameFor resolves the actor name of entity id for the already-resolved
@@ -73,7 +73,7 @@ func (engine *Engine) actorName(tenantID, id string) (string, error) {
 // here, before anything is sent; no administrative bypass is supported (openspec/changes/ego-tenant-008).
 func (engine *Engine) actorNameFor(tc tenancy.TenantContext, id string) (string, error) {
 	if !qualifiesActorNames(engine.tenantResolver) {
-		return id, nil
+		return actoridentity.InNamespace(engine.actorNamespace, id)
 	}
 	tenantID, ok := tc.Tenant()
 	if !ok {
@@ -87,7 +87,7 @@ func (engine *Engine) actorNameFor(tc tenancy.TenantContext, id string) (string,
 // the bare id.
 func (engine *Engine) spawnActorName(scope *extensions.EntityTenantScope, id string) (string, error) {
 	if scope == nil {
-		return id, nil
+		return actoridentity.InNamespace(engine.actorNamespace, id)
 	}
 	return engine.actorName(scope.TenantID, id)
 }
@@ -98,7 +98,7 @@ func (engine *Engine) spawnActorName(scope *extensions.EntityTenantScope, id str
 // only ever sees the entities of its own tenant.
 func (engine *Engine) lookupActorName(ctx context.Context, id string) (string, error) {
 	if !qualifiesActorNames(engine.tenantResolver) {
-		return id, nil
+		return actoridentity.InNamespace(engine.actorNamespace, id)
 	}
 	tenantContext, err := engine.tenantResolver.Resolve(ctx)
 	if err != nil {

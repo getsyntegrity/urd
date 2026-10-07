@@ -136,3 +136,16 @@ func Verify(actorName, tenantID, id string) error {
 	}
 	return nil
 }
+
+// InNamespace adds an explicit engine address namespace without changing the
+// entity ID used in persistence. Empty keeps existing actor addresses intact.
+func InNamespace(namespace, name string) (string, error) {
+	if namespace == "" {
+		return name, nil
+	}
+	result := "u." + encoding.EncodeToString([]byte(namespace)) + "." + name
+	if len(result) > maxNameLen {
+		return "", ErrNameTooLong
+	}
+	return result, nil
+}

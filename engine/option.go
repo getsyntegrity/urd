@@ -51,16 +51,17 @@ import (
 // not construct Config zero-values; use NewConfig and Option functions to
 // populate it.
 type Config struct {
-	eventsStore   persistence.EventsStore
-	stateStore    persistence.StateStore
-	offsetStore   offsetstore.OffsetStore
-	snapshotStore persistence.SnapshotStore
-	logger        kitlog.Logger
-	projections   []projectionRegistration
-	eventAdapters []eventadapter.EventAdapter
-	telemetry     *Telemetry
-	encryptor     encryption.Encryptor
-	behaviorKinds []BehaviorKind
+	actorNamespace string
+	eventsStore    persistence.EventsStore
+	stateStore     persistence.StateStore
+	offsetStore    offsetstore.OffsetStore
+	snapshotStore  persistence.SnapshotStore
+	logger         kitlog.Logger
+	projections    []projectionRegistration
+	eventAdapters  []eventadapter.EventAdapter
+	telemetry      *Telemetry
+	encryptor      encryption.Encryptor
+	behaviorKinds  []BehaviorKind
 
 	// schemaMigration is set by WithSchemaMigration: Engine.Start then runs
 	// Migrate on every configured store that implements
@@ -580,4 +581,12 @@ func WithTenantResolver(resolver tenancy.TenantResolver) Option {
 			c.tenantResolver = resolver
 		}
 	})
+}
+
+// WithActorNamespace separates entity addresses of engines sharing an
+// ActorSystem. Use the same stable value on all nodes of one engine. It does
+// not partition persisted data: stores and scopes remain the data boundary.
+// The empty default preserves the addresses of existing applications.
+func WithActorNamespace(namespace string) Option {
+	return OptionFunc(func(c *Config) { c.actorNamespace = namespace })
 }

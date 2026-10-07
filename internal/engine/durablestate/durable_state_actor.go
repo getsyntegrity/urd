@@ -51,6 +51,7 @@ import (
 
 // Actor is a durable state based actor
 type Actor struct {
+	actorNamespace  string
 	behavior        behaviorport.DurableState
 	stateStore      persistence.StateStore
 	currentState    State
@@ -132,6 +133,7 @@ func (entity *Actor) PreStart(ctx *goakt.Context) error {
 	if err != nil {
 		return err
 	}
+	entity.actorNamespace = extensions.NamespaceOf(ctx)
 	entity.stateStore = stateStoreExt.Underlying()
 	entity.eventsStream = eventsStreamExt.Underlying()
 	entity.logger = goaktlog.Backend(ctx.Logger())
@@ -218,6 +220,8 @@ func (entity *Actor) Receive(ctx *goakt.ReceiveContext) {
 		entity.actorSystem = ctx.ActorSystem()
 	case *egopb.GetStateCommand:
 		entity.getStateAndReply(ctx)
+	case *egopb.ActorBindingQuery:
+		ctx.Response(protocol.AnswerActorBinding(entity.tenantAware, entity.scope, "durable-state", entity.behavior, entity.actorNamespace, message))
 	case *egopb.TenantBindingQuery:
 		ctx.Response(protocol.AnswerTenantBinding(entity.tenantAware, entity.scope, message))
 	default:
