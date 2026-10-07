@@ -56,7 +56,7 @@ In the effective fork, `actorSystem.Partition` returns
 `cluster.GetPartition(name)` when `InCluster()` and `uint64(0)` otherwise. It
 does not panic or error in standalone mode.
 
-Reproduction: `TestBaseline346PartitionStandalone` (`engine`). A standalone
+Reproduction: `TestBaseline346`, case "B2" (`engine`). A standalone
 engine with in-memory event and state stores: `InCluster()` is false,
 `Partition("any-name")` is 0, and an event-sourced and a durable-state entity
 each spawn and answer `CreateAccount` with revision 1 and the expected state.
@@ -77,7 +77,7 @@ resolver, or with a fixed single-tenant resolver, the name is the bare entity
 ID; only multi-tenant engines qualify it. Event-sourced, durable-state and saga
 actors are spawned into the same GoAkt actor system.
 
-Reproduction: `TestBaseline346CrossKindSpawnSharesOneActorName`. One engine,
+Reproduction: `TestBaseline346`, case "B4". One engine,
 one ID:
 
 - `SpawnEventSourced(id)` returns nil;
