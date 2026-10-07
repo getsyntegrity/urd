@@ -1,6 +1,6 @@
 module github.com/getsyntegrity/urd/inttest
 
-go 1.26.0
+go 1.27.0
 
 // Build against the local sources so the integration tests always exercise the current code.
 replace github.com/getsyntegrity/urd => ../

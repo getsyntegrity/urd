@@ -61,7 +61,7 @@ Urd deliberately does not hide the actor runtime. Your application creates and o
 
 ## Requirements
 
-- Go 1.26 or later
+- Go 1.27 or later
 - Basic familiarity with [Go-Akt](https://github.com/Tochemey/goakt#readme)
 - Protobuf messages for commands, events, and state
 

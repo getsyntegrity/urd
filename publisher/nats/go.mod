@@ -1,6 +1,6 @@
 module github.com/getsyntegrity/urd/publisher/nats
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/getsyntegrity/urd v0.1.0

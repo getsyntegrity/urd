@@ -1,6 +1,6 @@
 module github.com/getsyntegrity/urd/publisher/pulsar
 
-go 1.26.2
+go 1.27.0
 
 require (
 	github.com/apache/pulsar-client-go v0.21.0

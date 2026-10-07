@@ -1,6 +1,6 @@
 module github.com/getsyntegrity/urd/publisher/kafka
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/IBM/sarama v1.61.1
