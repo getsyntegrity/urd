@@ -962,7 +962,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			behavior := enginetest.NewAccountEventSourcedBehavior(persistenceID)
 
 			// The janitor retries a failed delete with backoff, and stopping the actor
-			// system cancels the retries, so DeleteEvents runs at least once.
+			// spec waits for the entire retry budget before releasing the mock.
 			eventsCtrl := specmock.NewController(ctx)
 			eventsCtrl.Method("Ping").Expect(specmock.Any()).Return(nil)
 			eventsCtrl.Method("GetLatestEvent").
@@ -974,7 +974,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			deleteEvents := eventsCtrl.Method("DeleteEvents")
 			deleteEvents.
 				Expect(specmock.Any(), persistence.Unscoped(), persistenceID, uint64(2)).
-				Return(errStoreFailure).AtLeast(1)
+				Return(errStoreFailure).Times(defaultMaxRetries + 1)
 
 			snapshotCtrl := specmock.NewController(ctx)
 			snapshotCtrl.Method("Ping").Expect(specmock.Any()).Return(nil)
@@ -1005,8 +1005,8 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			// actor must still be alive: error is only logged
 			stateReplyOf(ctx, reply)
 
-			// the janitor child deletes asynchronously: wait for the failing call
-			ctx.Eventually(callCount(deleteEvents), specs.BeGreaterThanOrEqual(1),
+			// Wait for every retry before the spec releases the mock context.
+			ctx.Eventually(callCount(deleteEvents), specs.Equal(defaultMaxRetries+1),
 				specs.WithTimeout(pollTimeout), specs.WithInterval(pollInterval))
 			ctx.Expect(pid.IsRunning()).To(specs.BeTrue())
 		})
@@ -1024,8 +1024,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 				Expect(specmock.Any(), persistence.Unscoped(), specmock.Any(), specmock.Any()).
 				Return(nil).Times(4)
 
-			// As for DeleteEvents, the janitor retries the failed delete, so it runs
-			// at least once.
+			// The janitor exhausts the retry budget before this spec ends.
 			snapshotCtrl := specmock.NewController(ctx)
 			snapshotCtrl.Method("Ping").Expect(specmock.Any()).Return(nil)
 			snapshotCtrl.Method("GetLatestSnapshot").
@@ -1037,7 +1036,7 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			deleteSnapshots := snapshotCtrl.Method("DeleteSnapshots")
 			deleteSnapshots.
 				Expect(specmock.Any(), persistence.Unscoped(), persistenceID, uint64(2)).
-				Return(errStoreFailure).AtLeast(1)
+				Return(errStoreFailure).Times(defaultMaxRetries + 1)
 
 			rig := startActorRigWith(ctx, "TestActorSystem", 1,
 				extensions.NewEventsStore(retentionFixture{enginetest.NewEventsStoreMock(eventsCtrl)}),
@@ -1060,8 +1059,8 @@ func TestEventSourcedActorErrorPaths(t *testing.T) {
 			state := stateReplyOf(ctx, reply)
 			ctx.Expect(state.GetSequenceNumber()).ToEqual(uint64(4))
 
-			// the janitor child deletes asynchronously: wait for the failing call
-			ctx.Eventually(callCount(deleteSnapshots), specs.BeGreaterThanOrEqual(1),
+			// Wait for every retry before the spec releases the mock context.
+			ctx.Eventually(callCount(deleteSnapshots), specs.Equal(defaultMaxRetries+1),
 				specs.WithTimeout(pollTimeout), specs.WithInterval(pollInterval))
 			ctx.Expect(pid.IsRunning()).To(specs.BeTrue())
 		})
