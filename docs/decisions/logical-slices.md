@@ -2,7 +2,7 @@
 
 Status: PROPOSAL. Nothing here is a ratified decision. The slice count N, the hash and the key encoding need a maintainer decision (see "Decisions the maintainer must make"). #350 stays open.
 
-Related: #350 (this work), #351 (I-05, reader contract and slice range, offset identity), #347 (I-01, ADR on module topology and adapter capabilities), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers). PRD: `docs/prd/urd-platform-prd.md`, requirement P-03 (slices stable independently of node count and physical cell; migration preserves logical identities or explicitly invalidates incompatible cursors) and the risk row "choose slice count and mapping explicitly". The PRD lists the slice count among the product decisions still to be recorded in its linked issue or ADR before any guarantee is claimed.
+Related: #350 (this work), #438 (B2 propagation gap and B4 coverage), #351 (I-05, reader contract and slice range, offset identity), #347 (I-01, ADR on module topology and adapter capabilities), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers). PRD: `docs/prd/urd-platform-prd.md`, requirement P-03 (slices stable independently of node count and physical cell; migration preserves logical identities or explicitly invalidates incompatible cursors) and the risk row "choose slice count and mapping explicitly". The PRD lists the slice count among the product decisions still to be recorded in its linked issue or ADR before any guarantee is claimed.
 
 ## What the code does
 
@@ -31,9 +31,9 @@ Consequences of a later change (all are data migrations, not code edits):
 
 Proposal (not ratified): 1024, on the condition that the workload model (#390, #362) shows that tenants x projections x 1024 offset rows is acceptable. If the measured number of tenants x projections makes the offset table or its write rate a problem, choose 256. The only decisive input is that measurement. Recorded without data, the proposal is a judgement on granularity and on the cheap-coarsening property above, not a measured result.
 
-## #346 B2 versus #350
+## B2 propagation (#438) versus #350
 
-- B2 (#346) asks whether the slice value really reaches `Event.Shard` and `DurableState.Shard` on the write path. This work does not touch the write path, so B2 is not resolved here.
+- The B2 propagation gap, tracked in #438 (the baseline audit #346 is closed), asks whether the slice value really reaches `Event.Shard` and `DurableState.Shard` on the write path. This work does not touch the write path, so B2 is not resolved here.
 - #350 asks for a stability criterion: the slice of an entity does not change with the number of nodes. `sliceOfProvisional` meets it by construction since it has no topology input. The test over topologies 1, 3 and 5 checks that contract by construction. It does not execute on a real cluster and does not prove anything about runtime assignment.
 
 ## Migration plan outline for #359 / I-09b (OUTLINE, not implemented, not validated)
