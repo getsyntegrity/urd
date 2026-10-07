@@ -90,13 +90,14 @@ one ID:
 What the test proves:
 
 - neither later spawn returns an error;
-- neither later spawn adds an actor: the actor count of the system is the
-  same before and after `SpawnDurableState` and `SpawnSaga`. An event-sourced
-  entity is two actors (itself and a child it starts after its spawn
-  returns), so the test first waits, with a 10 s deadline, until the count is
-  the starting count plus two, and fails if it is not reached. The later
-  spawns are synchronous, so an actor they created would already be counted
-  when they return. The `+ 2` is the observed shape today, not a contract;
+- the name keeps its first holder: `ActorOf(id)` resolves to the
+  event-sourced actor (by its type) after the first spawn, and resolves to the
+  same actor (same ID, still running, same type) after `SpawnDurableState`
+  and `SpawnSaga`. Neither spawn replaced it or registered an actor of its own
+  under that name. The check is by name, not by a count of the actors in the
+  system, so it does not depend on what else starts or stops there. (An
+  earlier version counted actors and needed a wait for the entity's child
+  actor; it was replaced because the count is only a proxy);
 - a command to the shared ID is handled as an event-sourced entity, and the
   durable store stays empty.
 
@@ -106,8 +107,8 @@ also maps to `running` (`saga.StatusFromProto`), so the event-sourced actor
 that holds the name would give the same answer. The test asserts it only as
 the observed behaviour.
 
-So the collision is silent for both later kinds: no error, and no actor of
-their own. `resolveExistingSpawn` only verifies the binding of an existing
+So the collision is silent for both later kinds: no error, and the name stays
+with the first actor. `resolveExistingSpawn` only verifies the binding of an existing
 actor in the tenant-aware path.
 
 The test asserts today's behaviour. The fix will flip its assertions.

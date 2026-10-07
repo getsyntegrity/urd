@@ -37,7 +37,7 @@ func TestBaseline346(t *testing.T) {
 			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: dsID})).To(specs.BeNil())
 
 			for _, id := range []string{esID, dsID} {
-				state, rev, err := e.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 5}, time.Minute)
+				state, rev, err := e.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 5}, waitTimeout)
 				ctx.Expect(err).To(specs.BeNil())
 				ctx.Expect(rev).ToEqual(uint64(1))
 				account, ok := state.(*testpb.Account)
@@ -65,46 +65,55 @@ func TestBaseline346(t *testing.T) {
 
 		// B4: with no tenant resolver the actor name is the bare entity ID, so
 		// a durable-state entity and a saga spawned with the ID of an
-		// event-sourced entity return no error and add no actor to the system;
-		// a command to that ID is handled by the event-sourced entity.
-		s.It("B4: a durable-state or saga spawn with the ID of an event-sourced entity returns no error and creates no actor", func(ctx *specs.Context) {
+		// event-sourced entity return no error and leave the name held by the
+		// same event-sourced actor; a command to that ID is handled by it.
+		s.It("B4: a durable-state or saga spawn with the ID of an event-sourced entity returns no error and leaves the name with the first actor", func(ctx *specs.Context) {
 			es, ds := connectedEventsStore(ctx), connectedDurableStore(ctx)
 			e := newTestEngine(ctx.T, "baseline346b4", es, WithLogger(DiscardLogger), WithStateStore(ds))
 			ctx.Expect(e.Start(bg)).To(specs.BeNil())
 
 			id := "11111111-2222-3333-4444-555555555555"
 			sys := e.actorSystem.Load().sys
-			before := sys.NumActors()
 			ctx.Expect(e.SpawnEventSourced(bg, &domainOnlyEventSourced{id: id})).To(specs.BeNil())
-			// An event-sourced entity is two actors: itself, and a child it
-			// starts after the spawn returns. Wait for that observable
-			// condition, with a deadline, instead of for the count to stop
-			// changing. The test fails if the condition is not reached.
-			ctx.Eventually(func() any {
-				return sys.NumActors()
-			}, specs.Equal(before+2), specs.WithTimeout(waitTimeout), specs.WithInterval(10*time.Millisecond))
-			afterEventSourced := sys.NumActors()
+
+			// The name resolves to the event-sourced actor. The check is by
+			// name, not by a count of the actors in the system, so it does not
+			// depend on what else starts or stops there.
+			first, err := sys.ActorOf(bg, id)
+			ctx.Expect(err).To(specs.BeNil())
+			if _, ok := first.Actor().(*EventSourcedActor); !ok {
+				ctx.T.Fatalf("actor %s is %T, want *EventSourcedActor", id, first.Actor())
+			}
 
 			// Observed today: the later spawns return nil instead of a typed
-			// error. Spawn is synchronous, so an actor they created would
-			// already be counted when they return: neither adds one.
+			// error.
 			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: id})).To(specs.BeNil())
 			ctx.Expect(e.SpawnSaga(bg, &domainOnlySaga{id: id}, 0)).To(specs.BeNil())
-			ctx.Expect(sys.NumActors()).ToEqual(afterEventSourced)
+
+			// The name still resolves to the same, still running,
+			// event-sourced actor: neither spawn replaced it, and neither
+			// registered an actor of its own under that name.
+			second, err := sys.ActorOf(bg, id)
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(second.Equals(first)).ToEqual(true)
+			ctx.Expect(second.IsRunning()).ToEqual(true)
+			if _, ok := second.Actor().(*EventSourcedActor); !ok {
+				ctx.T.Fatalf("actor %s is %T after the later spawns, want *EventSourcedActor", id, second.Actor())
+			}
 
 			// SagaStatus answers without error and reports running. That does
 			// not tell a saga from the event-sourced actor that holds the name:
 			// a reply with no saga status also maps to running
-			// (saga.StatusFromProto). The actor count above is the evidence
-			// that no saga actor was created.
+			// (saga.StatusFromProto). The ActorOf check above is the evidence
+			// that no saga actor holds the name.
 			info, err := e.SagaStatus(bg, id, time.Second)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(info.Status).ToEqual(SagaRunning)
 
 			// The command is handled as an event-sourced entity (an event is
-			// stored) and the durable store stays empty, which is indirect
-			// evidence that the durable-state spawn created no actor of its own.
-			_, rev, err := e.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 3}, time.Minute)
+			// stored) and the durable store stays empty, which is consistent
+			// with the durable-state spawn having created no actor of its own.
+			_, rev, err := e.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 3}, waitTimeout)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(rev).ToEqual(uint64(1))
 
