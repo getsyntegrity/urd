@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/getsyntegrity/go-specs/specs"
 
@@ -47,7 +46,9 @@ func TestBaseline346(t *testing.T) {
 				ctx.Expect(account.GetAccountBalance()).ToEqual(float64(5))
 			}
 
-			// The shard the entity actors persist is the one Partition returned.
+			// The stored shard is 0. This does not prove the shard came from
+			// Partition: 0 is also the zero value of the field, so it would
+			// read the same if the actors never wrote it.
 			event, err := es.GetLatestEvent(bg, persistence.Unscoped(), esID)
 			ctx.Expect(err).To(specs.BeNil())
 			if event == nil {
@@ -100,15 +101,6 @@ func TestBaseline346(t *testing.T) {
 			if _, ok := second.Actor().(*EventSourcedActor); !ok {
 				ctx.T.Fatalf("actor %s is %T after the later spawns, want *EventSourcedActor", id, second.Actor())
 			}
-
-			// SagaStatus answers without error and reports running. That does
-			// not tell a saga from the event-sourced actor that holds the name:
-			// a reply with no saga status also maps to running
-			// (saga.StatusFromProto). The ActorOf check above is the evidence
-			// that no saga actor holds the name.
-			info, err := e.SagaStatus(bg, id, time.Second)
-			ctx.Expect(err).To(specs.BeNil())
-			ctx.Expect(info.Status).ToEqual(SagaRunning)
 
 			// The command is handled as an event-sourced entity (an event is
 			// stored) and the durable store stays empty, which is consistent

@@ -61,10 +61,13 @@ engine with in-memory event and state stores: `InCluster()` is false,
 `Partition("any-name")` is 0, and an event-sourced and a durable-state entity
 each spawn and answer `CreateAccount` with revision 1 and the expected state.
 No errors. The test also reads back what was persisted: the stored event and
-the stored durable state both carry `Shard == 0`.
+the stored durable state both carry `Shard == 0`. That does not prove the
+shard came from `Partition`: 0 is also the zero value of the field, so it
+would read the same if the actors never wrote it. Proving the propagation
+would need a test that injects a non-zero partition; none exists.
 
-Open observation (not a bug claim): outside a cluster every entity records
-shard 0, so any consumer that groups by shard sees one shard. Whether that
+Open observation (not a bug claim): outside a cluster the stored shard is 0
+for every entity, so any consumer that groups by shard sees one shard. Whether that
 matters for `GetShardEvents` consumers is not verified here.
 
 B2 is independent of tenancy: single-tenant with cluster and multi-tenant
@@ -101,15 +104,15 @@ What the test proves:
 - a command to the shared ID is handled as an event-sourced entity, and the
   durable store stays empty.
 
-What it does not prove: that `SagaStatus` tells the two apart. `SagaStatus`
-answers without error and reports `running`, but a reply with no saga status
-also maps to `running` (`saga.StatusFromProto`), so the event-sourced actor
-that holds the name would give the same answer. The test asserts it only as
-the observed behaviour.
+`SagaStatus` is not asserted. An exploratory probe showed that it answers
+without error and reports `running` for the shared ID, but a reply with no
+saga status also maps to `running` (`saga.StatusFromProto`), so the
+event-sourced actor that holds the name gives the same answer. It cannot
+tell the two apart, and pinning it would only fix incidental behaviour.
 
 So the collision is silent for both later kinds: no error, and the name stays
-with the first actor. `resolveExistingSpawn` only verifies the binding of an existing
-actor in the tenant-aware path.
+with the first actor. `resolveExistingSpawn` only verifies the binding of an
+existing actor in the tenant-aware path.
 
 The test asserts today's behaviour. The fix will flip its assertions.
 
