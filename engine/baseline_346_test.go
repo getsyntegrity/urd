@@ -49,22 +49,25 @@ func TestBaseline346(t *testing.T) {
 		})
 
 		// B4: with no tenant resolver the actor name is the bare entity ID, so
-		// an event-sourced entity, a durable-state entity and a saga with the
-		// same ID address one actor.
-		s.It("B4: a cross-kind spawn with the same ID is silently absorbed by the first actor", func(ctx *specs.Context) {
+		// a durable-state entity spawned with the ID of an event-sourced entity
+		// returns no error and creates no durable-state state. The saga spawn
+		// with the same ID is only checked for the absence of an error; what
+		// it creates is not verified here.
+		s.It("B4: a durable-state spawn with the ID of an event-sourced entity returns no error and creates no state", func(ctx *specs.Context) {
 			es, ds := connectedEventsStore(ctx), connectedDurableStore(ctx)
 			e := newTestEngine(ctx.T, "baseline346b4", es, WithLogger(DiscardLogger), WithStateStore(ds))
 			ctx.Expect(e.Start(bg)).To(specs.BeNil())
 
 			id := "11111111-2222-3333-4444-555555555555"
 			ctx.Expect(e.SpawnEventSourced(bg, &domainOnlyEventSourced{id: id})).To(specs.BeNil())
-			// Observed today: both later spawns return nil instead of a typed error.
+			// Observed today: the later spawns return nil instead of a typed error.
 			ctx.Expect(e.SpawnDurableState(bg, &domainOnlyDurableState{id: id})).To(specs.BeNil())
+			// Saga: only the absence of an error is asserted; no actor is checked.
 			ctx.Expect(e.SpawnSaga(bg, &domainOnlySaga{id: id}, 0)).To(specs.BeNil())
 
-			// One actor exists under the name, so the command is answered by
-			// the first (event-sourced) one; the durable-state entity was
-			// never created.
+			// The command is handled as an event-sourced entity (an event is
+			// stored) and the durable store stays empty, which is indirect
+			// evidence that the durable-state spawn created no actor of its own.
 			_, rev, err := e.SendCommand(bg, id, &testpb.CreateAccount{AccountBalance: 3}, time.Minute)
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(rev).ToEqual(uint64(1))
