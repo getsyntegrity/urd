@@ -22,16 +22,19 @@
 
 package persistence
 
-// SliceCount is the number of logical slices every (scope, entity id) pair is
-// mapped onto by SliceOf. It is deliberately independent of the cluster: it is
-// not the number of nodes, shards or partitions of any runtime.
+// provisionalSliceCount is the number of logical slices (scope, entity id)
+// pairs are mapped onto. It is PROVISIONAL: the final N (256 or 1024) is an
+// open maintainer decision tracked with #350 and #351, see
+// docs/decisions/logical-slices.md. Until that decision is recorded, the
+// constant and the functions below are unexported on purpose, so no public API
+// commits to a value that may still change. They are not wired to any write
+// path yet.
 //
-// SliceCount is fixed forever. Changing it, or changing the hash or the key
-// layout used by SliceOf, reassigns existing entities to different slices and
-// therefore requires a full data migration of every persisted shard_number and
-// of every projection offset keyed by it. See docs/decisions/logical-slices.md
-// for the rationale and the ratification status of this value.
-const SliceCount = 1024
+// Whatever N is finally chosen, changing it later, changing the hash, or
+// changing the key encoding reassigns existing entities to other slices. Each
+// of those is a data migration of every persisted shard_number and of every
+// projection offset keyed by it (see the decision doc), not a code-only edit.
+const provisionalSliceCount = 1024
 
 // FNV-1a 64-bit parameters. The hash is specified (not seeded, not
 // runtime-dependent), so a slice is stable across processes, restarts,
@@ -49,12 +52,12 @@ const (
 	sliceKeyInvalid  byte = 0xFF
 )
 
-// SliceOf returns the logical slice, in [0, SliceCount), that owns the entity
-// identified by the pair (scope, entityID).
+// sliceOfProvisional returns the logical slice, in [0, provisionalSliceCount),
+// that owns the entity identified by the pair (scope, entityID).
 //
 // It is a pure function: the result depends only on its arguments and never on
-// cluster topology, node count, time or process state, so the same entity maps
-// to the same slice on 1, 3 or 5 nodes and across restarts.
+// cluster topology, node count, time or process state. Independence from
+// topology therefore holds by construction.
 //
 // The hashed key is unambiguous. A tenant scope is encoded as a marker byte,
 // the tenant length as a uvarint, the tenant bytes, a 0x00 separator and the
@@ -62,13 +65,13 @@ const (
 // marker and carries no tenant, so it cannot collide with a tenant whose id
 // happens to read "unscoped". An invalid (zero) Scope gets a third marker
 // rather than panicking; callers are expected to have rejected it already.
-func SliceOf(scope Scope, entityID string) uint64 {
-	return sliceOf(scope, entityID, SliceCount)
+func sliceOfProvisional(scope Scope, entityID string) uint64 {
+	return sliceOfN(scope, entityID, provisionalSliceCount)
 }
 
-// sliceOf is SliceOf with an explicit slice count n, which must be > 0. It
-// exists so tests can exercise the mapping at other moduli.
-func sliceOf(scope Scope, entityID string, n uint64) uint64 {
+// sliceOfN is sliceOfProvisional with an explicit slice count n, which must be
+// > 0. It lets tests exercise other moduli and the 256 candidate.
+func sliceOfN(scope Scope, entityID string, n uint64) uint64 {
 	return sliceHash(scope, entityID) % n
 }
 

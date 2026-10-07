@@ -26,135 +26,139 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/getsyntegrity/go-specs/specs"
+
 	"github.com/getsyntegrity/urd/tenancy"
 )
 
-func tenantScope(t testing.TB, id string) Scope {
-	t.Helper()
-	s, err := NewTenantScope(tenancy.TenantID(id))
-	if err != nil {
-		t.Fatalf("NewTenantScope(%q): %v", id, err)
-	}
-	return s
+// sliceTenant builds a tenant scope for id, failing the case on error.
+func sliceTenant(ctx *specs.Context, id string) Scope {
+	scope, err := NewTenantScope(tenancy.TenantID(id))
+	ctx.Expect(err).To(specs.BeNil())
+	return scope
 }
 
-func TestSliceOfGoldenVectors(t *testing.T) {
-	// These vectors freeze FNV-1a 64 plus the key layout. If one changes,
-	// every persisted shard_number changes: that is a data migration, not a
-	// test update.
-	cases := []struct {
-		name   string
-		scope  Scope
-		id     string
-		golden uint64
-	}{
-		{"unscoped empty", Unscoped(), "", 991},
-		{"unscoped order-1", Unscoped(), "order-1", 159},
-		{"tenant acme order-1", tenantScope(t, "acme"), "order-1", 580},
-		{"tenant a/bc", tenantScope(t, "a"), "bc", 381},
-		{"tenant unscoped order-1", tenantScope(t, "unscoped"), "order-1", 65},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := SliceOf(tc.scope, tc.id); got != tc.golden {
-				t.Fatalf("SliceOf = %d, want %d", got, tc.golden)
+type goldenCase struct {
+	name   string
+	scope  func(ctx *specs.Context) Scope
+	id     string
+	golden uint64
+}
+
+// The golden vectors freeze FNV-1a 64 plus the key layout at N=1024. If one
+// changes, every persisted shard_number would change: that is a data
+// migration, not a test update.
+func TestSliceOfProvisionalGoldenVectors(t *testing.T) {
+	specs.Describe(t, "sliceOfProvisional golden vectors", func(s *specs.Spec) {
+		specs.Table(s, []goldenCase{
+			{"unscoped, empty id", func(*specs.Context) Scope { return Unscoped() }, "", 991},
+			{"unscoped, order-1", func(*specs.Context) Scope { return Unscoped() }, "order-1", 159},
+			{"tenant acme, order-1", func(c *specs.Context) Scope { return sliceTenant(c, "acme") }, "order-1", 580},
+			{"tenant a, bc", func(c *specs.Context) Scope { return sliceTenant(c, "a") }, "bc", 381},
+			{"tenant unscoped, order-1", func(c *specs.Context) Scope { return sliceTenant(c, "unscoped") }, "order-1", 65},
+		}, func(c goldenCase) string { return c.name }, func(ctx *specs.Context, c goldenCase) {
+			ctx.Expect(sliceOfProvisional(c.scope(ctx), c.id)).ToEqual(c.golden)
+		})
+	})
+}
+
+func TestSliceOfProvisionalIsDeterministicAndInRange(t *testing.T) {
+	specs.Describe(t, "sliceOfProvisional", func(s *specs.Spec) {
+		s.It("returns the same slice for the same input", func(ctx *specs.Context) {
+			scope := sliceTenant(ctx, "acme")
+			first := sliceOfProvisional(scope, "order-1")
+			for i := 0; i < 100; i++ {
+				ctx.Expect(sliceOfProvisional(scope, "order-1")).ToEqual(first)
 			}
 		})
-	}
-}
 
-func TestSliceOfDeterministicAndInRange(t *testing.T) {
-	scope := tenantScope(t, "acme")
-	first := SliceOf(scope, "order-1")
-	for i := 0; i < 100; i++ {
-		if got := SliceOf(scope, "order-1"); got != first {
-			t.Fatalf("not deterministic: %d != %d", got, first)
-		}
-	}
-	for i := 0; i < 10000; i++ {
-		if s := SliceOf(scope, fmt.Sprintf("id-%d", i)); s >= SliceCount {
-			t.Fatalf("slice %d out of range [0,%d)", s, SliceCount)
-		}
-	}
-	if s := sliceOf(scope, "x", 7); s >= 7 {
-		t.Fatalf("slice %d out of range [0,7)", s)
-	}
-}
+		s.It("stays within [0, provisionalSliceCount)", func(ctx *specs.Context) {
+			scope := sliceTenant(ctx, "acme")
+			for i := 0; i < 10000; i++ {
+				ctx.Expect(sliceOfProvisional(scope, fmt.Sprintf("id-%d", i)) < provisionalSliceCount).To(specs.BeTrue())
+			}
+		})
 
-// The scope-separation checks compare the full 64-bit hash so they do not
-// depend on the 1-in-1024 chance of two distinct keys sharing a slice.
-func TestSliceOfScopeSeparation(t *testing.T) {
-	t.Run("unscoped differs from tenant named unscoped", func(t *testing.T) {
-		if sliceHash(Unscoped(), "e") == sliceHash(tenantScope(t, "unscoped"), "e") {
-			t.Fatal("Unscoped collides with tenant \"unscoped\"")
-		}
-	})
-	t.Run("same id in two tenants", func(t *testing.T) {
-		if sliceHash(tenantScope(t, "acme"), "e") == sliceHash(tenantScope(t, "globex"), "e") {
-			t.Fatal("same id in two tenants hashed identically")
-		}
-	})
-	t.Run("key ambiguity", func(t *testing.T) {
-		if sliceHash(tenantScope(t, "a"), "bc") == sliceHash(tenantScope(t, "ab"), "c") {
-			t.Fatal(`("a","bc") collides with ("ab","c")`)
-		}
-	})
-	t.Run("invalid scope is distinct and does not panic", func(t *testing.T) {
-		if sliceHash(Scope{}, "e") == sliceHash(Unscoped(), "e") {
-			t.Fatal("invalid scope collides with Unscoped")
-		}
+		s.It("stays within [0, n) for another modulus", func(ctx *specs.Context) {
+			scope := sliceTenant(ctx, "acme")
+			for i := 0; i < 1000; i++ {
+				ctx.Expect(sliceOfN(scope, fmt.Sprintf("id-%d", i), 7) < 7).To(specs.BeTrue())
+			}
+		})
 	})
 }
 
-func TestSliceOfDistribution(t *testing.T) {
-	const keys = 100 * SliceCount
-	counts := make([]int, SliceCount)
-	scope := tenantScope(t, "acme")
-	for i := 0; i < keys; i++ {
-		counts[SliceOf(scope, fmt.Sprintf("entity-%d", i))]++
-	}
-	// The mean is 100 per slice; the bounds are loose on purpose. This guards
-	// against a degenerate hash, not against statistical noise.
-	for s, c := range counts {
-		if c < 40 || c > 180 {
-			t.Fatalf("slice %d holds %d keys, expected about 100", s, c)
-		}
-	}
+// The separation checks compare the full 64-bit hash, so they do not depend
+// on the 1-in-N chance of two distinct keys sharing a slice.
+func TestSliceHashSeparatesScopesAndKeys(t *testing.T) {
+	specs.Describe(t, "sliceHash key encoding", func(s *specs.Spec) {
+		s.It("keeps Unscoped apart from a tenant named unscoped", func(ctx *specs.Context) {
+			ctx.Expect(sliceHash(Unscoped(), "e") != sliceHash(sliceTenant(ctx, "unscoped"), "e")).To(specs.BeTrue())
+		})
+
+		s.It("keeps the same id apart in two tenants", func(ctx *specs.Context) {
+			ctx.Expect(sliceHash(sliceTenant(ctx, "acme"), "e") != sliceHash(sliceTenant(ctx, "globex"), "e")).To(specs.BeTrue())
+		})
+
+		s.It("does not confuse (a, bc) with (ab, c)", func(ctx *specs.Context) {
+			ctx.Expect(sliceHash(sliceTenant(ctx, "a"), "bc") != sliceHash(sliceTenant(ctx, "ab"), "c")).To(specs.BeTrue())
+		})
+
+		s.It("keeps the invalid scope apart from Unscoped without panicking", func(ctx *specs.Context) {
+			ctx.Expect(sliceHash(Scope{}, "e") != sliceHash(Unscoped(), "e")).To(specs.BeTrue())
+		})
+	})
 }
 
-// TestSliceOfIndependentOfTopology computes the slices of a fixed corpus under
-// topology 1, 3 and 5 and asserts they are identical. Honest caveat: SliceOf
-// takes no topology input, so this holds by construction. The test documents
-// and guards that contract (a future signature that adds topology or cluster
-// state would have to change this test) rather than exercising a real cluster.
-func TestSliceOfIndependentOfTopology(t *testing.T) {
-	type entry struct {
-		scope Scope
-		id    string
-	}
-	var corpus []entry
-	for _, sc := range []Scope{Unscoped(), tenantScope(t, "acme"), tenantScope(t, "globex")} {
-		for i := 0; i < 200; i++ {
-			corpus = append(corpus, entry{sc, fmt.Sprintf("entity-%d", i)})
-		}
-	}
-	compute := func(nodes int) []uint64 {
-		_ = nodes // topology is deliberately not an input of SliceOf
-		out := make([]uint64, len(corpus))
-		for i, c := range corpus {
-			out[i] = SliceOf(c.scope, c.id)
-		}
-		return out
-	}
-	base := compute(1)
-	for _, nodes := range []int{3, 5} {
-		t.Run(fmt.Sprintf("nodes=%d", nodes), func(t *testing.T) {
-			got := compute(nodes)
-			for i := range base {
-				if got[i] != base[i] {
-					t.Fatalf("entry %d: slice %d with %d nodes, %d with 1", i, got[i], nodes, base[i])
+func TestSliceOfProvisionalDistribution(t *testing.T) {
+	specs.Describe(t, "sliceOfProvisional distribution", func(s *specs.Spec) {
+		s.It("spreads keys without a degenerate bucket", func(ctx *specs.Context) {
+			const keys = 100 * provisionalSliceCount
+			counts := make([]int, provisionalSliceCount)
+			scope := sliceTenant(ctx, "acme")
+			for i := 0; i < keys; i++ {
+				counts[sliceOfProvisional(scope, fmt.Sprintf("entity-%d", i))]++
+			}
+			// The mean is 100 per slice; the bounds are loose on purpose. This
+			// guards against a degenerate hash, not against statistical noise.
+			outOfBounds := 0
+			for _, c := range counts {
+				if c < 40 || c > 180 {
+					outOfBounds++
 				}
 			}
+			ctx.Expect(outOfBounds).ToEqual(0)
 		})
-	}
+	})
+}
+
+// This test computes the slices of a fixed corpus under topology 1, 3 and 5
+// and asserts they are identical. Honest caveat: sliceOfProvisional takes no
+// topology input, so this holds by construction. The test documents and
+// guards that contract; it does not execute anything on a real cluster.
+func TestSliceOfProvisionalIsIndependentOfTopology(t *testing.T) {
+	specs.Describe(t, "sliceOfProvisional across topologies (by construction)", func(s *specs.Spec) {
+		type entry struct {
+			scope Scope
+			id    string
+		}
+		compute := func(corpus []entry, _ int) []uint64 { // topology is deliberately not an input
+			out := make([]uint64, len(corpus))
+			for i, c := range corpus {
+				out[i] = sliceOfProvisional(c.scope, c.id)
+			}
+			return out
+		}
+
+		specs.Table(s, []int{3, 5}, func(nodes int) string { return fmt.Sprintf("%d nodes matches 1 node", nodes) },
+			func(ctx *specs.Context, nodes int) {
+				var corpus []entry
+				for _, sc := range []Scope{Unscoped(), sliceTenant(ctx, "acme"), sliceTenant(ctx, "globex")} {
+					for i := 0; i < 200; i++ {
+						corpus = append(corpus, entry{sc, fmt.Sprintf("entity-%d", i)})
+					}
+				}
+				ctx.Expect(compute(corpus, nodes)).ToEqual(compute(corpus, 1))
+			})
+	})
 }
