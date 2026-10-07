@@ -1,8 +1,8 @@
 # Logical slices (#350, I-04)
 
-Status: PROPOSAL. N, the hash and the key encoding are NOT decided. #350 stays open.
+Status: P1 RATIFIED by the maintainer (recorded in #350 and #351): N = 1024, FNV-1a 64 and the key encoding below. The calculation is fixed. The ratification does NOT approve the migration strategy (P2, #359) and does NOT enable the new write calculation: `ActorSystem().Partition` still feeds `Event.Shard` and `DurableState.Shard`. #350 stays open until the objective (replacing `Partition`) is met. The cutover in `slice-cutover-359.md` is a PROPOSAL, not an approved decision.
 
-Related: #350 (this work), #351 (I-05, reader contract, slice range, offset identity), #349 (opaque Scope), #347 (ADR), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers), #438 (propagation and coverage follow-up), #355 (workload model, limits and SLO of a cell). #390 covers resource selection (pools per Scope, cell and role), not the workload model. PRD: `docs/prd/urd-platform-prd.md`, requirement P-03, and the "Remaining product decisions" paragraph, which lists the slice count as still to be recorded. ADR: `docs/decisions/module-topology-347.md`, pending decisions P1 (N, hash, encoding), P2 (offset migration, cutover, retention) and P3 (Scope shape).
+Related: #350 (this work), #351 (I-05, reader contract, slice range, offset identity), #349 (opaque Scope), #347 (ADR), #359 (I-09b, migration), #362 (checkpoint model), #373 (idempotent consumers), #438 (propagation and coverage follow-up), #355 (workload model, limits and SLO of a cell). #390 covers resource selection (pools per Scope, cell and role), not the workload model. PRD: `docs/prd/urd-platform-prd.md`, requirement P-03, and the "Remaining product decisions" paragraph, which lists the slice count as still to be recorded. ADR: `docs/decisions/module-topology-347.md`, decisions P1 (N, hash, encoding: ratified), P2 (offset migration, cutover, retention: pending) and P3 (Scope shape: pending).
 
 ## Three different things
 
@@ -10,15 +10,15 @@ Do not read one as the other.
 
 | Level | What | Where | State |
 | --- | --- | --- | --- |
-| Provisional function | `sliceOfProvisional(scope, entityID)` with `provisionalSliceCount = 1024`, FNV-1a 64 over a specified key. Unexported. | `persistence/slice.go`, PR #436 | Exists, unit-tested. Not an approval of anything. |
-| Approved decision | N, hash, key encoding, offset migration option, retention handling | #350, #351, #359, ADR P1/P2 | None approved. All pending a maintainer decision. |
-| Productive integration | Using the slice as `Event.Shard` / `DurableState.Shard`, replacing `ActorSystem().Partition` | `internal/engine/eventsource/event_sourced_actor.go:355`, `internal/engine/durablestate/durable_state_actor.go:169` | Not done. Writes are unchanged. Blocked by the decision and by the #359 cutover gate (see "Replacement contract"). |
+| Implemented function | `sliceOf(scope, entityID)` with `sliceCount = 1024`, FNV-1a 64 over the specified key. Unexported. | `persistence/slice.go`, PR #436 | Exists, unit-tested, the ratified calculation. Not wired to anything. |
+| Approved decision | P1: N = 1024, FNV-1a 64, the key encoding | #350, #351, ADR P1 | Ratified. P2 (offset migration, cutover, retention) and P3 (Scope shape) are NOT approved. |
+| Productive integration | Using the slice as `Event.Shard` / `DurableState.Shard`, replacing `ActorSystem().Partition` | `internal/engine/eventsource/event_sourced_actor.go:355`, `internal/engine/durablestate/durable_state_actor.go:169` | Not done. Writes are unchanged. Blocked by the #359 cutover gate (see "Replacement contract"). |
 
-#350's objective is to REPLACE `ActorSystem().Partition(id)` with `hash(scope, entity) mod N`. This PR does not do that: both call sites above still call `Partition(entity.persistenceID)`. The 1024 in the constant is a placeholder. An earlier comment on #350 claimed N=1024 was ratified; it was corrected and N is still pending (256 or 1024).
+#350's objective is to REPLACE `ActorSystem().Partition(id)` with `hash(scope, entity) mod N`. This PR does not do that: both call sites above still call `Partition(entity.persistenceID)`. An earlier comment on #350 wrongly said N=1024 was ratified before the maintainer had decided; it was corrected. The decision was taken afterwards and is recorded in #350 and #351.
 
 #350's migration criterion asks for a PLAN that feeds #359, not for executing the migration inside #350. The plan below is that input. It is not code.
 
-## Candidate algorithm (what the tests pin)
+## Ratified algorithm (what the tests pin)
 
 Key bytes, built from `(scope, entityID)`:
 
@@ -32,7 +32,7 @@ slice = hash mod N
 
 `len(tenant)` counts bytes, not runes. `NewTenantID` allows 1 to 128 bytes of valid UTF-8 with no control runes, so a valid Scope yields a one-byte prefix (up to 127 bytes) or a two-byte prefix (128 bytes). A three-byte prefix is not reachable with a valid Scope.
 
-`persistence/slice_test.go` pins this candidate. It does NOT ratify it.
+`persistence/slice_test.go` pins this algorithm. Changing any vector is a hash or encoding change, that is, a data migration (see the cutover proposal).
 
 - Slice vectors at N=1024 (the earlier golden vectors, unchanged).
 - Full 64-bit hash vectors, each compared with the standard library `hash/fnv` over a key built independently from the layout above (literal markers, `encoding/binary`), covering 127- and 128-byte tenants (both uvarint widths), Unicode tenants and ids, a 128-byte tenant whose rune count differs from its byte length, an id with a NUL byte, and the invalid scope. Tenants follow the real `NewTenantScope` validation.
@@ -47,7 +47,7 @@ The 1, 3 and 5 node test proves that the FUNCTION is independent of topology by 
 
 When `Scope` becomes opaque, `sliceHash` must keep consuming the same bytes: for Unscoped the marker alone, for a tenant the marker, uvarint byte length, tenant bytes, separator, then the id. The check is the FULL 64-bit hash against the reference vectors. A result that is identical modulo 1024 proves nothing, because many different hashes share a slice. If a full-hash vector must change, that is a hash or encoding change (P1) and a data migration, not a refactor.
 
-## Evidence for the proposal: measured, calculated, hypothesized
+## Evidence behind the decision: measured, calculated, hypothesized
 
 #355 and #362 contain no figures yet: #355's criteria are unchecked and say initial values are hypotheses, and the PRD states that no throughput or latency target is demonstrated. So there is no workload scenario to test N against. What exists is below, each item labeled by what it is.
 
@@ -95,21 +95,16 @@ So N=1024 costs about 4x rows only for scopes with roughly N or more entities; a
 - Node counts to support and the acceptable slices per node.
 - Who assigns persistence ids (threat model for concentration).
 
-## Recommendation (not ratified)
+## Decision (P1, ratified)
 
-This is a recommendation to the maintainer. Authorization to prepare this work does not ratify any value.
+The maintainer ratified P1 after the evidence above, and the decision is recorded in #350 and #351:
 
-- N = 1024. Not because the numbers favor it: the evidence above is neutral to slightly against it on cost (up to 4x rows where scopes are large). The deciding asymmetry is reversibility: going from 1024 to 256 (or any power-of-two divisor) is derivable from the stored `shard_number` (`new = old mod newN`), while going from 256 to 1024 requires every persistence id to be rehashed. If row cost proves too high, the grouping hypothesis above bounds it without a migration. Condition: if #351/#362 require one checkpoint row per slice and the measured tenants x projections exceeds the table budget, choose 256 before the first write with the new calculation.
-- Hash = FNV-1a 64. Both candidates are standard library, unseeded and stable. The measured costs are negligible for either and the measured distribution shows no defect for FNV-1a, so there is no evidence-based reason to depart from the simpler function that is easier to reimplement in other adapters. SHA-256 (`crypto/sha256`, no secret needed) stays a valid alternative; it does not change the next point.
-- Concentration of ids is not solved by any unkeyed hash, FNV or SHA-256: with N slices, an adversary who picks ids finds one that lands in a chosen slice in about N attempts. Only a keyed hash prevents it, and that needs a persisted secret shared by every writer and adapter, with its own compatibility and operations decisions. Because the key includes the tenant, concentration by one tenant's ids affects that tenant's own distribution; the cross-tenant effect exists only for slices shared between tenants (the feed and projection of a shared cell). Whether this matters depends on who assigns ids and is recorded as a threat-model input, not decided.
+- N = 1024. Not because the numbers favor it: the evidence is neutral to slightly against it on cost (up to 4x rows where scopes are large). The deciding asymmetry is reversibility: going from 1024 to 256 (or any power-of-two divisor) is derivable from the stored `shard_number` (`new = old mod newN`), while going from 256 to 1024 requires every persistence id to be rehashed. If row cost proves too high, the grouping hypothesis above bounds it without a migration. Condition kept open: if #351/#362 require one checkpoint row per slice and the measured tenants x projections exceeds the table budget, revisit N before the first write with the new calculation.
+- Hash = FNV-1a 64. Both candidates are standard library, unseeded and stable. The measured costs are negligible for either and the measured distribution shows no defect for FNV-1a. SHA-256 (`crypto/sha256`, no secret needed) was a valid alternative.
+- Concentration of ids is not solved by any unkeyed hash, FNV or SHA-256: with N slices, an adversary who picks ids finds one that lands in a chosen slice in about N attempts. Only a keyed hash prevents it, and that needs a persisted secret shared by every writer and adapter. Because the key includes the tenant, concentration by one tenant's ids affects that tenant's own distribution; the cross-tenant effect exists only for slices shared between tenants (the feed and projection of a shared cell). Whether this matters depends on who assigns ids; it stays a threat-model input, not decided.
 - Encoding = the layout above. It is unambiguous, keeps Unscoped apart from a tenant named `unscoped`, and matches the persisted key unchanged under #349 (`''` for Unscoped, the tenant id otherwise).
 
-Compatibility consequences if the maintainer chooses otherwise:
-- Any other N, hash or encoding than the one the first writer uses is a full recompute of `shard_number` plus a new slice identity for every offset (see the migration plan). 256 to 1024 also needs every id.
-- Choosing before the first write with the new calculation avoids all of it; after that, each change is a #359-style migration.
-- Choosing SHA-256 changes the golden vectors; the structure of the tests stays and the reference becomes `crypto/sha256` over the same key.
-
-Decision requested (single item): ratify P1 as recommended (N=1024, FNV-1a 64, the layout above), or name the alternative, and record it in #350.
+Scope of the ratification: it fixes the calculation. It does not approve the migration strategy (P2) and does not enable the new write calculation. Changing N, the hash or the encoding after the first write with the new calculation is a full #359-style migration.
 
 ## Replacement contract: what integrating the slice needs
 
@@ -125,7 +120,7 @@ Correction: an earlier revision of this document said the scope was missing at t
 
 What blocks the replacement, exactly:
 
-1. P1 is not ratified. The function and N are provisional and unexported, and exporting `SliceOf`/`SliceCount` is public API.
+1. Exporting. The function is ratified but unexported on purpose: exporting `SliceOf`/`SliceCount` is public API (checked by apidiff) and waits for a real consumer and for #351's slice-range contract. This is a sequencing choice, not a missing decision on the calculation.
 2. #359's cutover. Writing the new slice into `shard_number` while existing rows hold the GoAkt value leaves one column with two meanings, and projection offsets keyed by the old shard become wrong. The writes must be enabled by the same gated step that migrates data and offsets, not before. Enabling them earlier would break compatibility with existing data and offsets, which is the condition this work must not violate. #350's validation text (no schema changes before gates) also applies to any layout signal the cutover needs.
 3. #351. The reader that consumes slice ranges and the offset identity are specified there; #350 lists it as its dependency. The writer replacement itself does not need the reader, but the exported API and the cursor format must agree with it before they are public.
 
@@ -143,13 +138,13 @@ Nothing here adds a closing requirement beyond #350's own criteria and objective
 
 | #350 criterion or objective | Status | Evidence today | Pending |
 | --- | --- | --- | --- |
-| Objective: replace `ActorSystem().Partition` with `hash(scope, entity) mod N`, a pure function separate from physical cell assignment | Partly met | The pure function exists, unexported, with vectors and unambiguity tests; the replacement contract is specified. | The replacement in event-sourced and durable state is not done; blocked by P1 and the #359 cutover gate. |
-| N decided (256 or 1024) and documented | Documented, not decided | This document: comparison, measured/calculated/hypothesized evidence, recommendation. | A maintainer decision recorded in #350. |
-| Hash and key encoding | Documented, not decided | Candidate pinned by full 64-bit vectors against an independent FNV-1a. | A maintainer decision recorded in #350. |
+| Objective: replace `ActorSystem().Partition` with `hash(scope, entity) mod N`, a pure function separate from physical cell assignment | Partly met | The pure function exists, unexported, with vectors and unambiguity tests; the replacement contract is specified. | The replacement in event-sourced and durable state is not done; blocked by the #359 cutover gate. |
+| N decided (256 or 1024) and documented | Met | Maintainer decision N = 1024 recorded in #350 and #351; this document holds the comparison and the measured/calculated/hypothesized evidence. | Nothing for the criterion. |
+| Hash and key encoding (P1) | Decided | FNV-1a 64 and the layout above ratified and recorded in #350 and #351; pinned by full 64-bit vectors against an independent FNV-1a. | Nothing for the calculation. |
 | Slice does not change with 1, 3 and 5 nodes | Met for the function, by construction | Unit test; the function has no topology input. | Nothing required by the criterion as worded; real-cluster evidence is the end-to-end flow listed below. |
 | Plan for `shard_number` and existing offsets, feeding I-09b | Met as a plan | The plan section below: resolved items, hypotheses and pending items kept apart, covering concurrent writes, interruption, verification and rollback. | Its hypotheses and pending items are resolved and executed in #359 with #351/#362. The plan feeds #359; #350 does not execute it. |
 
-#350 is not complete: two criteria are open on a maintainer decision and the objective is open on the replacement.
+#350 is not complete: the objective is open on the replacement of `Partition`, which waits for the #359 cutover.
 
 Not part of closing #350: #438 (coverage follow-up, kept open on its own track), executing the migration (#359), the reader contract (#351).
 
@@ -216,10 +211,11 @@ Preconditions, cutover, writers, interruption, verification (shape to decide, no
 
 This evidence is recorded as pending and does not block #436.
 
-## Decisions the maintainer must make
+## Decisions still open
 
-1. Ratify or change P1: N (256 or 1024), the hash and the key encoding, recorded in #350. Recommendation above: 1024, FNV-1a 64, the layout above.
-2. When to export `SliceOf` and `SliceCount` (with #351).
-3. The offset migration option and the online or offline policy (#359).
-4. How the migration treats events already removed by retention (#359).
-5. The rollback guarantee, the preserved old layout and the layout signal that blocks incompatible writers (#359).
+P1 is decided. What remains is for #359 and #351, with the proposal in `slice-cutover-359.md`:
+
+1. When to export `SliceOf` and `SliceCount` (with #351).
+2. The offset migration option and the online or offline policy (#359).
+3. How the migration treats events already removed by retention (#359).
+4. The rollback guarantee, the preserved old layout and the layout signal that blocks incompatible writers (#359).
