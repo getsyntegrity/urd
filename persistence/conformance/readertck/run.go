@@ -157,18 +157,18 @@ func (r *runner) poll(c Consumer, limit int, persist bool, phase Phase) *PollRec
 		Limit:      limit,
 	})
 	rec := PollRecord{Consumer: c.Name, Phase: phase, Tick: r.truth.Clock(), Commits: r.truth.Commits(), Err: err}
-	if err == nil {
-		rec.Deliveries = slices.Clone(res.Deliveries)
-		for _, d := range rec.Deliveries {
-			if !r.delivered[c.Name][d.Event.Key()] {
-				rec.NewCount++
-				r.delivered[c.Name][d.Event.Key()] = true
-			}
+	// Deliveries are recorded even when the poll failed: a reader that serves
+	// events next to an error must not be able to hide them from the oracle.
+	rec.Deliveries = slices.Clone(res.Deliveries)
+	for _, d := range rec.Deliveries {
+		if !r.delivered[c.Name][d.Event.Key()] {
+			rec.NewCount++
+			r.delivered[c.Name][d.Event.Key()] = true
 		}
-		if persist {
-			r.persisted[c.Name] = slices.Clone(res.Cursor)
-			rec.Persisted = true
-		}
+	}
+	if err == nil && persist {
+		r.persisted[c.Name] = slices.Clone(res.Cursor)
+		rec.Persisted = true
 	}
 	r.trace.Polls = append(r.trace.Polls, rec)
 	return &r.trace.Polls[len(r.trace.Polls)-1]

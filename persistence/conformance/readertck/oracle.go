@@ -57,6 +57,7 @@ const (
 	CodePhantom         = "phantom"          // delivered before commit, or never committed
 	CodeUnknownEvent    = "unknown-event"    // delivered an event nobody wrote
 	CodeWrongSelection  = "wrong-selection"  // outside the consumer's scope or slice range
+	CodeAlteredEvent    = "altered-event"    // delivered slice or timestamp differs from the ground truth
 	CodeOrder           = "order"            // per-persistence-id order inverted
 	CodeDupInBatch      = "dup-in-batch"     // one batch carries an event twice
 	CodeDupToken        = "dup-token"        // idempotence signal not stable or not unique
@@ -160,6 +161,9 @@ func Evaluate(tr *Trace) Verdict {
 				safety = append(safety, Violation{CodePhantom, fmt.Sprintf("%s: %s (%s) was not committed (aborted=%v)", at, te.Label, key, te.Aborted)})
 			case !c.Selection.Matches(te.Scope) || !c.Slices.Contains(te.Slice):
 				safety = append(safety, Violation{CodeWrongSelection, fmt.Sprintf("%s: %s (%s) is outside the consumer's selection", at, te.Label, key)})
+			}
+			if d.Event.Slice != te.Slice || d.Event.Timestamp != te.Timestamp {
+				safety = append(safety, Violation{CodeAlteredEvent, fmt.Sprintf("%s: %s delivered with slice %d timestamp %d, journal has slice %d timestamp %d", at, key, d.Event.Slice, d.Event.Timestamp, te.Slice, te.Timestamp)})
 			}
 			if seenInBatch[key] {
 				safety = append(safety, Violation{CodeDupInBatch, fmt.Sprintf("%s: %s twice", at, key)})
