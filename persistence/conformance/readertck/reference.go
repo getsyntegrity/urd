@@ -82,7 +82,7 @@ func encodeCursor(v any) []byte {
 // no notion of, nothing else. Scopes and Slices are the cell's scopes and slices
 // as the scenario declares them, because EventsStore cannot enumerate scopes.
 // It is expected to fail the scenarios in which an event commits behind the
-// cursor (LegacySafetyFailure).
+// cursor (the per-property baseline is legacyKnownFailures in testkit_test.go).
 type LegacyReader struct {
 	Store  persistence.EventsStore
 	Scopes []persistence.Scope
@@ -124,19 +124,6 @@ func (r LegacyReader) Poll(req Request) (Result, error) {
 		}
 	}
 	return Result{Deliveries: out, Cursor: encodeCursor(offsets)}, nil
-}
-
-// LegacySafetyFailure reports whether the current timestamp-cursor API is
-// EXPECTED to fail the Safety property of the named catalogue scenario. Each
-// entry is a known failure to keep visible, not an accepted behaviour. The
-// scenarios absent from the list pass with the legacy reader.
-func LegacySafetyFailure(scenario string) bool {
-	switch scenario {
-	case ScenarioIssueCase, ScenarioTieLateCommit, ScenarioLongTransaction, ScenarioScopeSelection, ScenarioConditionsBroken:
-		return true
-	default:
-		return false
-	}
 }
 
 // StoreSetReader is a correct reference reader written only against the
