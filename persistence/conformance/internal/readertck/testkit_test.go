@@ -204,17 +204,76 @@ func (r storeSetReader) Poll(req Request) (Result, error) {
 func newLegacy(b *testkitBackend) Subject   { return legacyReader{b} }
 func newStoreSet(b *testkitBackend) Subject { return storeSetReader{b} }
 
+// expectation is the exact outcome of one property: its status and the distinct
+// violation codes it carries.
+type expectation struct {
+	status Status
+	codes  []string
+}
+
 // legacyKnownFailures is what the current timestamp-cursor API is EXPECTED to do
-// on testkit: scenario name -> properties that fail. Anything absent passes.
-// Each entry is a known failure to keep visible, not an accepted behaviour; the
-// PostgreSQL adapter shares the cursor shape and is pending its own run in the
-// integration lane.
-var legacyKnownFailures = map[string]property{
-	ScenarioIssueCase:        onSafety,
-	ScenarioTieLateCommit:    onSafety,
-	ScenarioLongTransaction:  onSafety,
-	ScenarioScopeSelection:   onSafety,
-	ScenarioConditionsBroken: onSafety,
+// on testkit, per scenario and per property. It is a measured baseline, not an
+// accepted behaviour: each row lists every property that fails with the exact
+// set of codes. A property absent from a row must not fail and must carry no
+// violation; a scenario absent from the map must pass entirely. The PostgreSQL
+// adapter shares the cursor shape and is pending its own run in the integration
+// lane.
+var legacyKnownFailures = map[string]map[property]expectation{
+	ScenarioIssueCase: {
+		onSafety:      {Fail, []string{CodeOmission}},
+		onEligibility: {Fail, []string{CodeLateVisibility}},
+		onProgress:    {Fail, []string{CodeStall}},
+	},
+	ScenarioLongTransaction: {
+		onSafety:      {Fail, []string{CodeOmission}},
+		onEligibility: {Fail, []string{CodeLateVisibility}},
+		onProgress:    {Fail, []string{CodeStall}},
+	},
+	ScenarioTieLateCommit: {
+		onSafety:   {Fail, []string{CodeOmission}},
+		onProgress: {Fail, []string{CodeStall}},
+	},
+	ScenarioScopeSelection: {
+		onSafety:   {Fail, []string{CodeOmission}},
+		onProgress: {Fail, []string{CodeStall}},
+	},
+	ScenarioConditionsBroken: {
+		onSafety:   {Fail, []string{CodeOmission}},
+		onProgress: {Fail, []string{CodeStall}},
+	},
+}
+
+func distinctCodes(p PropertyVerdict) []string {
+	var codes []string
+	for _, v := range p.Violations {
+		if !slices.Contains(codes, v.Code) {
+			codes = append(codes, v.Code)
+		}
+	}
+	slices.Sort(codes)
+	return codes
+}
+
+// deviations lists every way v differs from the declared row. Properties the
+// row does not mention must not fail and must carry no violation.
+func deviations(v Verdict, row map[property]expectation) []string {
+	var out []string
+	for _, p := range []property{onSafety, onEligibility, onProgress} {
+		got := v.of(p)
+		want, declared := row[p]
+		if !declared {
+			if got.Status == Fail || len(got.Violations) > 0 {
+				out = append(out, fmt.Sprintf("property %d: unexpected %v %v", p, got.Status, distinctCodes(got)))
+			}
+			continue
+		}
+		wantCodes := slices.Clone(want.codes)
+		slices.Sort(wantCodes)
+		if got.Status != want.status || !slices.Equal(distinctCodes(got), wantCodes) {
+			out = append(out, fmt.Sprintf("property %d: got %v %v, want %v %v", p, got.Status, distinctCodes(got), want.status, wantCodes))
+		}
+	}
+	return out
 }
 
 func TestScenariosRunAgainstTestkit(t *testing.T) {
@@ -228,12 +287,22 @@ func TestScenariosRunAgainstTestkit(t *testing.T) {
 		specs.Table(s, Catalogue(), func(sc Scenario) string { return "legacy GetShardEvents / " + sc.Name }, func(ctx *specs.Context, sc Scenario) {
 			v, err := verdictOf(sc, testkitFactory(newLegacy))
 			ctx.Expect(err).To(specs.BeNil())
-			if want, known := legacyKnownFailures[sc.Name]; known {
-				ctx.Expect(v.of(want).Status).To(specs.Equal(Fail))
-				ctx.Expect(v.of(want).Has(CodeOmission)).To(specs.BeTrue())
-				return
-			}
-			ctx.Expect(v.Failed()).To(specs.BeFalse())
+			ctx.Expect(deviations(v, legacyKnownFailures[sc.Name])).To(specs.BeEmpty())
+		})
+		s.It("rejects an additional violation next to the known omission", func(ctx *specs.Context) {
+			v, err := verdictOf(scenarioNamed(ScenarioIssueCase), testkitFactory(newLegacy))
+			ctx.Expect(err).To(specs.BeNil())
+			row := legacyKnownFailures[ScenarioIssueCase]
+			ctx.Expect(deviations(v, row)).To(specs.BeEmpty())
+
+			v.Safety.Violations = append(slices.Clone(v.Safety.Violations), Violation{CodeUnexpectedError, "extra"})
+			ctx.Expect(v.Safety.Has(CodeOmission)).To(specs.BeTrue())
+			ctx.Expect(deviations(v, row)).To(specs.HaveLen(1))
+
+			v, err = verdictOf(scenarioNamed(ScenarioTieLateCommit), testkitFactory(newLegacy))
+			ctx.Expect(err).To(specs.BeNil())
+			v.Eligibility = PropertyVerdict{Status: Fail, Violations: []Violation{{CodeLateVisibility, "extra"}}}
+			ctx.Expect(deviations(v, legacyKnownFailures[ScenarioTieLateCommit])).To(specs.HaveLen(1))
 		})
 	})
 }

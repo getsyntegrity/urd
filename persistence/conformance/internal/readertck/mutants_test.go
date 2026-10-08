@@ -23,6 +23,7 @@
 package readertck
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/getsyntegrity/go-specs/specs"
@@ -86,6 +87,90 @@ func TestHarnessFailsEveryMutant(t *testing.T) {
 			if r.stillPasses != 0 {
 				ctx.Expect(v.of(r.stillPasses).Status).To(specs.Equal(Pass))
 			}
+		})
+	})
+}
+
+// rejectLeaker is a reader that refuses an invalid request with ErrRejected but
+// serves an event next to the error.
+type rejectLeaker struct{ inner Subject }
+
+func (l rejectLeaker) Poll(req Request) (Result, error) {
+	res, err := l.inner.Poll(req)
+	if errors.Is(err, ErrRejected) {
+		e := ev("a1", scopeA, "a1", 1, 20)
+		return Result{Deliveries: []Delivery{{Event: e, Token: e.Key().String()}}}, err
+	}
+	return res, err
+}
+
+// tamperer delivers the right events, with the right identity and token, but
+// with a slice or timestamp that differs from the journal.
+type tamperer struct {
+	inner Subject
+	slice bool
+	ts    bool
+}
+
+func (t tamperer) Poll(req Request) (Result, error) {
+	res, err := t.inner.Poll(req)
+	for i := range res.Deliveries {
+		if t.slice {
+			res.Deliveries[i].Event.Slice += 7
+		}
+		if t.ts {
+			res.Deliveries[i].Event.Timestamp += 7
+		}
+	}
+	return res, err
+}
+
+func TestRunKeepsDeliveriesServedWithAnError(t *testing.T) {
+	specs.Describe(t, "events served next to a rejection are not hidden from the oracle", func(s *specs.Spec) {
+		s.It("flags delivered-on-reject for a reader that leaks an event with ErrRejected", func(ctx *specs.Context) {
+			leak := func(b *fakeBackend) Subject { return rejectLeaker{inner: newOrdReader(ordConfig{})(b)} }
+			tr, err := Run(scenarioNamed(ScenarioRejection), fakeFactory(leak))
+			ctx.Expect(err).To(specs.BeNil())
+			recorded := 0
+			for _, rec := range tr.Polls {
+				if rec.Err != nil {
+					recorded += len(rec.Deliveries)
+				}
+			}
+			ctx.Expect(recorded > 0).To(specs.BeTrue())
+			v := Evaluate(tr)
+			ctx.Expect(v.Safety.Status).To(specs.Equal(Fail))
+			ctx.Expect(v.Safety.Has(codeDeliveredReject)).To(specs.BeTrue())
+			ctx.Expect(v.Safety.Has(CodeUnexpectedError)).To(specs.BeFalse())
+		})
+		s.It("keeps passing the reader that rejects correctly", func(ctx *specs.Context) {
+			v, err := verdictOf(scenarioNamed(ScenarioRejection), fakeFactory(newOrdReader(ordConfig{})))
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(v.Failed()).To(specs.BeFalse())
+		})
+	})
+}
+
+func TestOracleComparesDeliveredFieldsWithTheTruth(t *testing.T) {
+	type row struct {
+		name  string
+		slice bool
+		ts    bool
+		want  bool
+	}
+	specs.Describe(t, "a delivery whose slice or timestamp differs from the journal violates safety", func(s *specs.Spec) {
+		specs.Table(s, []row{
+			{"altered slice", true, false, true},
+			{"altered timestamp", false, true, true},
+			{"faithful delivery", false, false, false},
+		}, func(r row) string { return r.name }, func(ctx *specs.Context, r row) {
+			mk := func(b *fakeBackend) Subject {
+				return tamperer{inner: newSetReader(0)(b), slice: r.slice, ts: r.ts}
+			}
+			v, err := verdictOf(scenarioNamed(ScenarioIssueCase), fakeFactory(mk))
+			ctx.Expect(err).To(specs.BeNil())
+			ctx.Expect(v.Safety.Has(CodeAlteredEvent)).To(specs.Equal(r.want))
+			ctx.Expect(v.Failed()).To(specs.Equal(r.want))
 		})
 	})
 }
