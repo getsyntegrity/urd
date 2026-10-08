@@ -99,17 +99,7 @@ func (b *fakeBackend) horizon() int {
 }
 
 // admit refuses the requests every reader must refuse.
-func admit(req Request) error {
-	switch {
-	case req.Selection.Kind == KindOneScope && !req.Selection.Scope.Valid():
-		return fmt.Errorf("zero scope: %w", ErrRejected)
-	case req.Selection.Kind == KindAllScopesInCell && !req.Privileged:
-		return fmt.Errorf("all scopes without privilege: %w", ErrRejected)
-	case req.Selection.Kind != KindOneScope && req.Selection.Kind != KindAllScopesInCell:
-		return fmt.Errorf("no selection: %w", ErrRejected)
-	}
-	return nil
-}
+func admit(req Request) error { return Admit(req) }
 
 func delivery(e *fbEvent, token string) Delivery {
 	if token == "" {

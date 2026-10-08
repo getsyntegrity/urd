@@ -29,50 +29,31 @@ import (
 	"github.com/getsyntegrity/go-specs/specs"
 )
 
-type property uint8
-
-const (
-	onSafety property = iota + 1
-	onEligibility
-	onProgress
-)
-
-func (v Verdict) of(p property) PropertyVerdict {
-	switch p {
-	case onSafety:
-		return v.Safety
-	case onEligibility:
-		return v.Eligibility
-	default:
-		return v.Progress
-	}
-}
-
 type mutantRow struct {
 	name     string
 	mk       func(*fakeBackend) Subject
 	scenario string
-	fails    property
+	fails    Property
 	code     string
 	// stillPasses is a property the defect must NOT trip, proving the three
 	// properties are judged separately. Zero means no claim.
-	stillPasses property
+	stillPasses Property
 }
 
 func mutantRows() []mutantRow {
 	return []mutantRow{
-		{"skips a late commit (timestamp cursor)", newTSReader(false), ScenarioIssueCase, onSafety, CodeOmission, 0},
-		{"skips a late commit (insertion-id cursor)", newOrdReader(ordConfig{noHorizon: true}), ScenarioIDOrderLate, onSafety, CodeOmission, 0},
-		{"skips a tie group completed by a later commit", newTSReader(false), ScenarioTieLateCommit, onSafety, CodeOmission, 0},
-		{"cuts a tie group at the batch limit", newTSReader(true), ScenarioTieBatchCut, onSafety, CodeOmission, 0},
-		{"duplicates with a new idempotence token on every delivery", newOrdReader(ordConfig{countTokens: true}), ScenarioRetry, onSafety, CodeDupToken, 0},
-		{"ignores the scope selection (unscoped read leaks tenants)", newOrdReader(ordConfig{ignoreScope: true}), ScenarioScopeSelection, onSafety, CodeWrongSelection, 0},
-		{"ignores scope validation (serves the wildcard unprivileged)", newOrdReader(ordConfig{ignoreScope: true}), ScenarioRejection, onSafety, CodeNotRejected, 0},
-		{"ignores the slice range", newOrdReader(ordConfig{ignoreSlice: true}), ScenarioSliceRange, onSafety, CodeWrongSelection, 0},
-		{"resumes past the persisted cursor after a restart", newOrdReader(ordConfig{resumeSkip: true}), ScenarioRestartResume, onSafety, CodeOmission, 0},
-		{"delivers events that never committed", newOrdReader(ordConfig{noHorizon: true, uncommitted: true}), ScenarioAbortReleases, onSafety, CodePhantom, 0},
-		{"stalls before every batch although no writer is open", newOrdReader(ordConfig{stall: 3}), ScenarioIssueCase, onProgress, CodeStall, onSafety},
-		{"makes committed events wait one tick past T", newSetReader(6), ScenarioIssueCase, onEligibility, CodeLateVisibility, onSafety},
+		{"skips a late commit (timestamp cursor)", newTSReader(false), ScenarioIssueCase, OnSafety, CodeOmission, 0},
+		{"skips a late commit (insertion-id cursor)", newOrdReader(ordConfig{noHorizon: true}), ScenarioIDOrderLate, OnSafety, CodeOmission, 0},
+		{"skips a tie group completed by a later commit", newTSReader(false), ScenarioTieLateCommit, OnSafety, CodeOmission, 0},
+		{"cuts a tie group at the batch limit", newTSReader(true), ScenarioTieBatchCut, OnSafety, CodeOmission, 0},
+		{"duplicates with a new idempotence token on every delivery", newOrdReader(ordConfig{countTokens: true}), ScenarioRetry, OnSafety, CodeDupToken, 0},
+		{"ignores the scope selection (unscoped read leaks tenants)", newOrdReader(ordConfig{ignoreScope: true}), ScenarioScopeSelection, OnSafety, CodeWrongSelection, 0},
+		{"ignores scope validation (serves the wildcard unprivileged)", newOrdReader(ordConfig{ignoreScope: true}), ScenarioRejection, OnSafety, CodeNotRejected, 0},
+		{"ignores the slice range", newOrdReader(ordConfig{ignoreSlice: true}), ScenarioSliceRange, OnSafety, CodeWrongSelection, 0},
+		{"resumes past the persisted cursor after a restart", newOrdReader(ordConfig{resumeSkip: true}), ScenarioRestartResume, OnSafety, CodeOmission, 0},
+		{"delivers events that never committed", newOrdReader(ordConfig{noHorizon: true, uncommitted: true}), ScenarioAbortReleases, OnSafety, CodePhantom, 0},
+		{"stalls before every batch although no writer is open", newOrdReader(ordConfig{stall: 3}), ScenarioIssueCase, OnProgress, CodeStall, OnSafety},
+		{"makes committed events wait one tick past T", newSetReader(6), ScenarioIssueCase, OnEligibility, CodeLateVisibility, OnSafety},
 	}
 }
 
@@ -82,10 +63,10 @@ func TestHarnessFailsEveryMutant(t *testing.T) {
 			v, err := verdictOf(scenarioNamed(r.scenario), fakeFactory(r.mk))
 			ctx.Expect(err).To(specs.BeNil())
 			ctx.Expect(v.Failed()).To(specs.BeTrue())
-			ctx.Expect(v.of(r.fails).Status).To(specs.Equal(Fail))
-			ctx.Expect(v.of(r.fails).Has(r.code)).To(specs.BeTrue())
+			ctx.Expect(v.Of(r.fails).Status).To(specs.Equal(Fail))
+			ctx.Expect(v.Of(r.fails).Has(r.code)).To(specs.BeTrue())
 			if r.stillPasses != 0 {
-				ctx.Expect(v.of(r.stillPasses).Status).To(specs.Equal(Pass))
+				ctx.Expect(v.Of(r.stillPasses).Status).To(specs.Equal(Pass))
 			}
 		})
 	})
