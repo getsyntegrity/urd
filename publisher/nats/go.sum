@@ -1,13 +1,13 @@
 github.com/flowchartsman/retry v1.2.0 h1:qDhlw6RNufXz6RGr+IiYimFpMMkt77SUSHY5tgFaUCU=
 github.com/flowchartsman/retry v1.2.0/go.mod h1:+sfx8OgCCiAr3t5jh2Gk+T0fRTI+k52edaYxURQxY64=
-github.com/getsyntegrity/go-specs v0.3.3 h1:jP1E71uhvz29fgDZbb5QyGgxJYipZojHBF8IHZMIDps=
-github.com/getsyntegrity/go-specs v0.3.3/go.mod h1:aCL4z/2SIwyuC4f4VxIU2EuycJMt+K7tSc/I0C7oqGI=
+github.com/getsyntegrity/go-specs v0.4.0 h1:U9cMp53v6ZemuZHAiZWPT68/hWLbhojfuwXgmPuO9hw=
+github.com/getsyntegrity/go-specs v0.4.0/go.mod h1:GhPuo1oQ9hg3HSAse+hlAeLga0EcvnCW/3bqyAAqo+8=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
 github.com/klauspost/compress v1.20.1/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
-github.com/nats-io/nats.go v1.54.0 h1:vsXoOxjHp/GmPUN+EcI7uOf/uB+iAP+kEsAFNQN0yzA=
-github.com/nats-io/nats.go v1.54.0/go.mod h1:y+DZoD1oBOYfZTU681eTUiUjI0vbqYGixNVFHcjHJ0k=
+github.com/nats-io/nats.go v1.55.0 h1:Ng8QKHdvdHIWoaiq0+d/aH1BWkxvcJxWJ0Y/9BPKx3M=
+github.com/nats-io/nats.go v1.55.0/go.mod h1:y+DZoD1oBOYfZTU681eTUiUjI0vbqYGixNVFHcjHJ0k=
 github.com/nats-io/nkeys v0.4.16 h1:rd5oAuLOb8mnAycB0xleuEBNS1pVVnN0fv/FF34Eypg=
 github.com/nats-io/nkeys v0.4.16/go.mod h1:llLgWoI0o4z/Q57q2R1kHfmocyhGV6VG/U18Glg1Afs=
 github.com/nats-io/nuid v1.0.1 h1:5iA8DT8V7q8WK2EScv2padNa/rTESc1KdnPw4TC2paw=
